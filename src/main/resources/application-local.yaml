@@ -1,0 +1,18 @@
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:25432}/${POSTGRES_DB:expo_application}
+    username: ${POSTGRES_USER:expo}
+    password: ${POSTGRES_PASSWORD}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:26379}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+eureka:
+  client:
+    enabled: false

@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: expo-application-server
+  datasource:
+    hikari:
+      maximum-pool-size: 15
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
