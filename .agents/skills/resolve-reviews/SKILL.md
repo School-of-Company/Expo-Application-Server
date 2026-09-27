@@ -42,7 +42,7 @@ For each comment in `pr_comments.json`, apply the following **layered judgment c
 
 1. **Project conventions** (primary): apply rules discovered above
    - DTO annotation rules, commit scope, logging style, exception message format, etc.
-2. **Language/framework best practices** (secondary): Kotlin official guide, Spring Boot recommendations
+2. **Language/framework best practices** (secondary): the official guide for the language and framework this project actually uses
    - Apply only when no matching project rule exists
 
 ### Verdicts
@@ -51,7 +51,7 @@ For each comment in `pr_comments.json`, apply the following **layered judgment c
 - **INVALID**: reviewer is wrong with a clear refutation → skip, post refutation reply
 - **PARTIAL**: intent is correct but application method or scope is ambiguous → confirm with the user
 
-Always cite a specific source in the rationale (e.g. `CLAUDE.md §Logging Style`, `Kotlin: prefer val over var`).
+Always cite a specific source in the rationale (e.g. `CLAUDE.md §Logging Style`, or the language guide's own wording).
 
 ## Step 3 — Act on Each Verdict
 
@@ -93,9 +93,9 @@ Accept? (y / n / s = skip for now)
 
 | # | Reviewer | File | Verdict | Rationale | Action |
 |---|----------|------|---------|-----------|--------|
-| 1 | alice | Foo.kt:12 | ✅ VALID | CLAUDE.md §Logging Style | Auto-fixed (abc1234) |
-| 2 | bob | Bar.kt:34 | ❌ INVALID | CLAUDE.md §Exception Message | Skipped |
-| 3 | alice | Baz.kt:56 | ⚠️ PARTIAL | - | PENDING |
+| 1 | alice | `<file>:12` | ✅ VALID | CLAUDE.md §Logging Style | Auto-fixed (abc1234) |
+| 2 | bob | `<file>:34` | ❌ INVALID | CLAUDE.md §Exception Message | Skipped |
+| 3 | alice | `<file>:56` | ⚠️ PARTIAL | - | PENDING |
 ```
 
 ## Step 5 — Push Commits

@@ -10,7 +10,6 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 [[ "$FILE_PATH" == *.kt || "$FILE_PATH" == *.java ]] || exit 0
 [[ "$FILE_PATH" == */test/* ]] && exit 0
 FILE_NAME=$(basename "$FILE_PATH")
-[[ "$FILE_NAME" == *ServiceImpl.kt || "$FILE_NAME" == *ServiceImpl.java ]] || exit 0
 
 if [[ "$FILE_PATH" == /* ]]; then
     FILE_ABS="$FILE_PATH"
@@ -45,8 +44,22 @@ else
     TEST_TASK=":${REL//\//:}:test"
 fi
 
+# 대응하는 테스트 클래스가 실제로 있을 때만 돌린다.
+#
+# 예전에는 `*ServiceImpl` 파일만 대상으로 삼았는데, 그 명명 관례가 없는 프로젝트에서는 아무 일도
+# 일어나지 않았다(조용한 무동작). 파일명 관례 대신 "짝이 되는 테스트가 존재하는가"로 판단하면
+# 관례와 무관하게 동작하고, 테스트가 없는 파일에서 무의미한 전체 빌드도 피할 수 있다.
 BASE="${FILE_NAME%.*}"
-TEST_CLASS="${BASE%Impl}Test"
+TEST_CLASS=""
+for candidate in "${BASE%Impl}Test" "${BASE}Test" "${BASE%Impl}Tests" "${BASE}Spec"; do
+    if compgen -G "$MODULE_DIR/src/test/**/$candidate.*" > /dev/null 2>&1 \
+       || find "$MODULE_DIR/src/test" -name "$candidate.*" -print -quit 2>/dev/null | grep -q .; then
+        TEST_CLASS="$candidate"
+        break
+    fi
+done
+[[ -z "$TEST_CLASS" ]] && exit 0
+
 echo "[Hook] Running $TEST_TASK --tests $TEST_CLASS ..." >&2
 TEST_OUTPUT=$(cd "$PROJECT_ROOT" && "$GRADLE_CMD" "$TEST_TASK" --tests "$TEST_CLASS" 2>&1)
 TEST_EXIT=$?
