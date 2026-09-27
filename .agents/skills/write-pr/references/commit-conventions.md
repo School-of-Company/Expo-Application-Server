@@ -21,7 +21,8 @@
 
 ## PR Title Format
 
-`[scope] description`
+`description`
 
-- Scope는 커밋의 scope와 동일한 어휘 사용, 소문자 대괄호로 표기: `[server]`, `[catalog]`
-- 여러 scope에 걸친 변경은 `[global]` 사용
+- 한글로 변경 내용을 직접 표현하고 대괄호 접두사를 붙이지 않는다
+- `[server]`, `[form]`, `[global]`, `[ci/cd]` 같은 scope 표기는 PR 제목에 사용하지 않는다
+- 커밋 메시지의 Conventional Commit scope 규칙은 그대로 유지한다
