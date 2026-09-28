@@ -4,34 +4,63 @@ description: Generate PR title, body, and labels from commits since the base bra
 allowed-tools: Bash(git *:*), Bash(bash *create-pr.sh:*), Bash(cat *:*), Read, Write
 ---
 
-## Step 1 — Gather Context
+## Step 1 — Find the Base Branch
+
+Don't assume `develop` or `main` — ask the repo, since projects here use both.
 
 ```bash
 git branch --show-current
-git fetch origin develop --quiet 2>/dev/null || true
-git log origin/develop..HEAD --oneline 2>/dev/null || git log --oneline -15
-git diff origin/develop...HEAD --stat 2>/dev/null || git diff HEAD~5...HEAD --stat
-git diff origin/develop...HEAD 2>/dev/null || git diff HEAD~5...HEAD
+gh repo view --json defaultBranchRef -q .defaultBranchRef.name
+git ls-remote --heads origin develop development dev | sed 's#.*refs/heads/##'
 ```
 
-Also read the PR template:
+`BASE` is the integration branch if the remote has one, otherwise the default branch. Use it everywhere
+below.
+
+## Step 2 — Gather Context
 
 ```bash
-cat .github/PULL_REQUEST_TEMPLATE.md
+git fetch origin "$BASE" --quiet 2>/dev/null || true
+git log "origin/$BASE..HEAD" --oneline
+git diff "origin/$BASE...HEAD" --stat
+git diff "origin/$BASE...HEAD"
+cat .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null
 ```
 
-## Step 2 — Determine Labels
+## Step 3 — Learn This Project's Title Vocabulary
 
-Read `${CLAUDE_SKILL_DIR}/references/labels.md` and select 1–2 appropriate labels based on the nature of the changes.
-Read `${CLAUDE_SKILL_DIR}/references/commit-conventions.md` for commit type and scope naming rules.
+Read recent PR titles and the changed paths to reuse the repository's terminology without copying
+legacy bracketed prefixes:
 
-## Step 3 — Generate PR Content
+```bash
+gh pr list --state all --limit 100 --json title -q '.[].title'
+git diff --name-only "origin/$BASE...HEAD"
+```
 
-**Title** — Generate 3 options in the format `[scope] description`:
+Use a direct title that names the change. Do not prepend repository, module, domain, or work-type
+prefixes such as `[server]`, `[form]`, `[global]`, or `[ci/cd]`. Conventional Commit scopes remain a
+separate commit-message convention.
 
-- Scope: determine from changed file paths and directory structure (`server` / `catalog`, or infer a more specific one from the path). Lowercase, wrapped in brackets: `[server]`, `[catalog]`. Use `[global]` / `[ci/cd]` for cross-cutting changes only.
+## Step 4 — Determine Labels
+
+Labels differ per repo, so read the repo's own set and match against it:
+
+```bash
+gh label list --limit 100
+```
+
+Pick **1–2** by meaning, using `${CLAUDE_SKILL_DIR}/references/labels.md` as the mapping guide. If nothing
+matches, attach none — a wrong label is worse than no label, and an undefined one fails PR creation.
+
+Read `${CLAUDE_SKILL_DIR}/references/commit-conventions.md` for type and scope naming rules.
+
+## Step 5 — Generate PR Content
+
+**Title** — Generate 3 direct title options without bracketed prefixes:
+
 - Description: Korean, concise, no emojis, max 50 characters total
-- Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `QueryProjectServiceImpl`, `SKILL.md`)
+- Do not add `[server]`, `[form]`, `[global]`, `[ci/cd]`, or similar prefixes
+- Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `MemberService`, `SKILL.md`)
 
 **Body** — Follow the `.github/PULL_REQUEST_TEMPLATE.md` structure:
 
@@ -40,7 +69,7 @@ Read `${CLAUDE_SKILL_DIR}/references/commit-conventions.md` for commit type and 
 - Max 2500 characters
 - Wrap all proper nouns and technical identifiers in backticks: class names, method names, annotations, file names, field names, config keys, module names, and agent names.
 
-## Step 4 — Write Body & Show Preview
+## Step 6 — Write Body & Show Preview
 
 Write the body to `PR_BODY.md`, then display:
 
@@ -59,9 +88,10 @@ Write the body to `PR_BODY.md`, then display:
 
 Use AskUserQuestion to ask the user which title to use (present options 1/2/3). Wait for the answer before proceeding.
 
-## Step 5 — Create PR
+## Step 7 — Create PR
 
-Run the creation script with the confirmed title and labels:
+Run the creation script with the confirmed title and labels (it resolves the base branch the same way
+and silently drops labels this repo doesn't define):
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/create-pr.sh" "<confirmed-title>" "PR_BODY.md" "<label1>,<label2>"
