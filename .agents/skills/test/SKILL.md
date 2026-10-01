@@ -38,7 +38,11 @@ care about.
 
 ```bash
 git diff --name-only HEAD          # uncommitted work
-git diff --name-only origin/HEAD...HEAD   # this branch
+
+# this branch — resolve the base rather than assuming `origin/HEAD` is set; it usually isn't in a CI clone
+BASE=$(git ls-remote --heads origin develop development dev | sed 's#.*refs/heads/##' | head -1)
+BASE=${BASE:-$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)}
+git diff --name-only "origin/${BASE:-main}...HEAD"
 ```
 
 One source file changed → run its test file. One module → that module. Broad or unclear → everything.
