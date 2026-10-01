@@ -27,19 +27,11 @@ git diff "origin/$BASE...HEAD"
 cat .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null
 ```
 
-## Step 3 — Learn This Project's Title Vocabulary
+## Step 3 — Learn This Project's Scope Vocabulary
 
-Read recent PR titles and the changed paths to reuse the repository's terminology without copying
-legacy bracketed prefixes:
-
-```bash
-gh pr list --state all --limit 100 --json title -q '.[].title'
-git diff --name-only "origin/$BASE...HEAD"
-```
-
-Use a direct title that names the change. Do not prepend repository, module, domain, or work-type
-prefixes such as `[server]`, `[form]`, `[global]`, or `[ci/cd]`. Conventional Commit scopes remain a
-separate commit-message convention.
+Read `.agents/shared/commit-conventions.md` — it holds the commands for reading the repo's existing
+scope vocabulary, the fallback for deriving one from the changed paths, and the title format. It ships
+with this skill, so it is always present.
 
 ## Step 4 — Determine Labels
 
@@ -52,14 +44,12 @@ gh label list --limit 100
 Pick **1–2** by meaning, using `.agents/skills/write-pr/references/labels.md` as the mapping guide. If nothing
 matches, attach none — a wrong label is worse than no label, and an undefined one fails PR creation.
 
-Read `.agents/skills/write-pr/references/commit-conventions.md` for type and scope naming rules.
-
 ## Step 5 — Generate PR Content
 
-**Title** — Generate 3 direct title options without bracketed prefixes:
+**Title** — Generate 3 options in the format `[scope] description`:
 
+- Scope: from Step 3. Lowercase, in brackets — `[member]`, `[expo]`, `[global]`
 - Description: Korean, concise, no emojis, max 50 characters total
-- Do not add `[server]`, `[form]`, `[global]`, `[ci/cd]`, or similar prefixes
 - Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `MemberService`, `SKILL.md`)
 
 **Body** — Follow the `.github/PULL_REQUEST_TEMPLATE.md` structure:

@@ -36,37 +36,47 @@ The shared branches are the default branch plus any integration branch the remot
 **Otherwise** (already on a work branch): proceed directly to the commit flow. Don't reuse a branch
 that belongs to work someone already merged — start a new one.
 
+Either way, compare the branch name against what actually changed. If they describe clearly different
+work — the branch says `feat/repo-select-dropdown` but the diff is an unrelated hotfix — stop and branch
+again. If they're only loosely related, go ahead but say so.
+
 ---
 
 ## Commit Message Rules
 
-Format: `type(scope): description`
-
-- **Type**: `feat` / `fix` / `refactor` / `docs` / `chore` / `test`
-- **Scope**: 이 프로젝트의 도메인 이름. 고정 목록이 아니라 **레포가 이미 쓰는 어휘를 그대로** 쓴다
-
-  ```bash
-  git log --pretty=%s -200 | grep -oE '^[a-z]+\(([^)]+)\)' | sed -E 's/.*\((.*)\)/\1/' | sort | uniq -c | sort -rn
-  ```
-
-  히스토리에 어휘가 없으면 변경 경로에서 도메인 세그먼트를 뽑는다 (`.../domain/member/` → `member`,
-  `modules/expo/` → `expo`, `apps/web/` → `web`). 계층(`service`, `controller`)보다 도메인이 낫다
-- **Description**: 한글, 명사형 종결, 마침표 없음
-  - Good: `레포 선택 드롭다운 구현`, `PR 생성 시 base branch 조회 실패 처리`
-- Subject line only (no body) — breaking change일 때만 예외적으로 본문에 `BREAKING CHANGE: <설명>` 추가
-- Do NOT add AI as co-author
+Read `.claude/shared/commit-conventions.md` in full before writing any message. It holds the type and
+scope vocabulary — both read off this repo's own history rather than a fixed list — the description
+format, and the rule that the repo's own `CLAUDE.md` wins over all of it. It ships with this skill, so
+it is always present.
 
 ## Commit Flow
 
-1. Inspect changes: `git status`, `git diff`
+Commit when the user asks for it. Finishing a piece of work is not itself a request to commit.
+
+1. Inspect changes: `git status`, `git diff --staged`
+   - Stop if anything secret-shaped is staged — `.env` / `.env.*`, key or certificate files, a literal
+     token or password. Committed secrets stay in history after the file is deleted, so this check is
+     worth more than the seconds it costs.
 2. Group changed files by logical unit of change:
    - Same feature or bug fix → one commit
    - Related files that must change together → one commit
    - Unrelated changes → separate commits
 3. For each logical group:
-   - Stage the relevant files: `git add <file1> <file2> ...`
+   - Stage the relevant files **by name**: `git add <file1> <file2> ...`
+   - Never `git add -A` or `git add .` — they sweep in whatever else is in the tree, which is how an
+     unrelated file or a secret ends up in someone's commit. Leave the rest unstaged and tell the user
+     what you skipped.
    - Write a commit message: `type(scope): description`
    - `git commit -m "message"`
 4. Verify with `git log --oneline -n <count>`
+
+## Push
+
+Push only when asked, as its own step — never bundled into the commit. Never push to the shared branch
+found in Step 0; push the work branch and let the PR carry it.
+
+```bash
+git push -u origin <branch-name>
+```
 
 > **Rule**: One logical change = One commit. Files that must change together belong in the same commit. Unrelated changes must be split.
