@@ -18,7 +18,6 @@ jobs:
       SVC: application
       DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
       REMOTE_ROOT: /srv/users/festa/2026/dev/team1/expo
-      SPRING_PROFILES_ACTIVE: local
     steps:
       - uses: actions/checkout@v7
 
@@ -37,6 +36,10 @@ jobs:
 
       # build = 테스트·린트(ktlint/spotless) + bootJar. 테스트가 실패하면 업로드 전에 멈춘다.
       - name: Build and test
+        # 테스트가 compose 로 띄운 로컬 DB/Redis 를 쓰도록 local 프로필로 실행 (기존 CI 와 동일).
+        # 서버에서 실행할 때는 이 값이 쓰이지 않는다.
+        env:
+          SPRING_PROFILES_ACTIVE: local
         run: ./gradlew build --no-daemon
 
       - name: Stop test services
