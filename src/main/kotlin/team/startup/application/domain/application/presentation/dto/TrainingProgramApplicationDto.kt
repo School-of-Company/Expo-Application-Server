@@ -17,3 +17,11 @@ data class ApplyTrainingProgramsCommand(
     val trainee: TraineeReference,
     val programs: List<TrainingProgramReference>,
 )
+
+data class TrainingApplicationResponse(
+    val applicationId: Long,
+    val traineeId: Long,
+    val status: Boolean,
+    val entryTime: String?,
+    val leaveTime: String?,
+)
