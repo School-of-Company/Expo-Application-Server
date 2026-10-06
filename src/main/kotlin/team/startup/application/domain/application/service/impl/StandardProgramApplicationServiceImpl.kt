@@ -19,6 +19,7 @@ class StandardProgramApplicationServiceImpl(
         require(programIds.isNotEmpty() && programIds.all { it > 0 } && programIds.distinct().size == programIds.size)
         require(command.programs.all { it.expoId == command.participant.expoId })
 
+        programIds.sorted().forEach(applications::lockStandardProgram)
         command.programs.forEach { program ->
             if (applications.existsByParticipantIdAndStandardProgramId(command.participant.id, program.id)) {
                 throw ProgramApplicationConflictException("이미 신청한 일반 프로그램입니다.")

@@ -124,6 +124,33 @@ class ProgramApplicationServiceTests {
     }
 
     @Test
+    fun `일반 프로그램 동시 중복 신청은 한 건만 저장하고 충돌을 반환한다`() {
+        val command =
+            ApplyStandardProgramsCommand(
+                ParticipantReference(1, "expo-1"),
+                listOf(StandardProgramReference(30, "expo-1")),
+            )
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val results =
+                (1..2).map {
+                    executor.submit<Throwable?> {
+                        start.await()
+                        runCatching { standardApplications.execute(command) }.exceptionOrNull()
+                    }
+                }
+            start.countDown()
+            val outcomes = results.map { it.get(15, TimeUnit.SECONDS) }
+            assertEquals(1, outcomes.count { it == null })
+            assertTrue(outcomes.filterNotNull().single() is ProgramApplicationConflictException)
+            assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM tb_standard_program_application", Long::class.java))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `일반 프로그램은 25명을 초과한 서로 다른 참가자의 신청을 저장한다`() {
         (1L..26L).forEach { participantId ->
             standardApplications.execute(
