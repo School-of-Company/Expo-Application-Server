@@ -14,3 +14,11 @@ data class ApplyStandardProgramsCommand(
     val participant: ParticipantReference,
     val programs: List<StandardProgramReference>,
 )
+
+data class StandardApplicationResponse(
+    val applicationId: Long,
+    val participantId: Long,
+    val status: Boolean,
+    val entryTime: String?,
+    val leaveTime: String?,
+)

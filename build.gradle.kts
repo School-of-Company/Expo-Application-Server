@@ -80,6 +80,7 @@ allOpen {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    systemProperty("application.internal-token", "test-token")
 }
 
 noArg {
