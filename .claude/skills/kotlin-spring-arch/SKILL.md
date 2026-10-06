@@ -1,9 +1,23 @@
 ---
 name: kotlin-spring-arch
-description: Architecture reference for this project — Controller/Service/Repository layer responsibilities, @Transactional strategy (readOnly optimization, N+1 prevention), ExpectedException usage (no subclasses), and Entity↔DTO conversion patterns.
+description: Architecture reference for Kotlin + Spring Boot projects — Controller/Service/Repository layer responsibilities, @Transactional strategy (readOnly optimization, N+1 prevention), ExpectedException usage (no subclasses), and Entity↔DTO conversion patterns.
 ---
 
 # Kotlin + Spring Boot Architecture Guide
+
+## Applies To
+
+Kotlin + Spring Boot. **Check before using any of it** — items are picked by hand on a dashboard, and
+Kotlin repos have ended up with the Java version installed alongside this one:
+
+```bash
+ls build.gradle.kts pom.xml package.json 2>/dev/null
+ls -d src/main/kotlin src/main/java 2>/dev/null
+```
+
+If it's `src/main/java` with no Kotlin, use `java-spring-arch`; if it's `package.json` with NestJS, use
+`nestjs-arch`. When both this and `java-spring-arch` are installed, follow the one matching the source
+tree and ignore the other — they cover the same ground in two languages.
 
 ## Layer Structure
 

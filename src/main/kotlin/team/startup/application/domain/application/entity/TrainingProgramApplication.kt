@@ -7,6 +7,8 @@ import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
+import java.time.LocalDate
+import java.time.LocalTime
 
 @Entity
 @Table(
@@ -26,4 +28,12 @@ class TrainingProgramApplication(
     val traineeId: Long,
     @field:Column(name = "training_program_id", nullable = false)
     val trainingProgramId: Long,
+    @field:Column(name = "status", nullable = false)
+    val status: Boolean = false,
+    @field:Column(name = "entry_time")
+    val entryTime: LocalTime? = null,
+    @field:Column(name = "leave_time")
+    val leaveTime: LocalTime? = null,
+    @field:Column(name = "attendance_date")
+    val attendanceDate: LocalDate? = null,
 )
