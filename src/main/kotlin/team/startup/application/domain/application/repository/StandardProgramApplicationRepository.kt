@@ -22,7 +22,7 @@ interface StandardProgramApplicationRepository : JpaRepository<StandardProgramAp
         standardProgramId: Long,
     ): Boolean
 
-    fun findAllByStandardProgramId(standardProgramId: Long): List<StandardProgramApplication>
+    fun findAllByStandardProgramIdOrderByIdAsc(standardProgramId: Long): List<StandardProgramApplication>
 
     @Modifying
     @Query(value = "INSERT INTO tb_deleted_standard_program (program_id) VALUES (:programId) ON CONFLICT DO NOTHING", nativeQuery = true)

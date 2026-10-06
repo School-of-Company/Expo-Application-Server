@@ -133,6 +133,22 @@ class StandardProgramApplicationHttpTests {
     }
 
     @Test
+    fun `일반 프로그램 목록은 신청 ID 오름차순이다`() {
+        val program = 908L
+        jdbc.update("INSERT INTO tb_standard_program_application (id, participant_id, standard_program_id) VALUES (200, 18, ?)", program)
+        jdbc.update("INSERT INTO tb_standard_program_application (id, participant_id, standard_program_id) VALUES (100, 19, ?)", program)
+
+        val body =
+            mvc
+                .perform(
+                    get("$PATH/program/$program").header(TOKEN_HEADER, TOKEN),
+                ).andExpect(status().isOk)
+                .andReturn()
+                .response.contentAsString
+        assertTrue(body.indexOf("\"applicationId\":100") < body.indexOf("\"applicationId\":200"), body)
+    }
+
+    @Test
     fun `동시 중복 신청 중 하나만 저장한다`() {
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)

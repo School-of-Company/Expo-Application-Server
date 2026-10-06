@@ -56,7 +56,7 @@ class ApplicationPersistenceTests {
         val newApplication = standardApplications.saveAndFlush(StandardProgramApplication(participantId = 56L, standardProgramId = 78L))
         assertEquals(1L, newApplication.id)
         assertTrue(standardApplications.existsByParticipantIdAndStandardProgramId(56L, 78L))
-        assertEquals(listOf(newApplication.id), standardApplications.findAllByStandardProgramId(78L).map { it.id })
+        assertEquals(listOf(newApplication.id), standardApplications.findAllByStandardProgramIdOrderByIdAsc(78L).map { it.id })
     }
 
     @Test

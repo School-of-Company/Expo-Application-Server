@@ -39,7 +39,7 @@ class StandardProgramApplicationServiceImpl(
 
     @Transactional(readOnly = true)
     override fun list(programId: Long): List<StandardApplicationResponse> =
-        applications.findAllByStandardProgramId(programId).map { application ->
+        applications.findAllByStandardProgramIdOrderByIdAsc(programId).map { application ->
             StandardApplicationResponse(
                 application.id!!,
                 application.participantId,
