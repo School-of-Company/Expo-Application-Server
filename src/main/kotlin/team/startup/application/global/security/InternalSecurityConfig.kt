@@ -20,13 +20,23 @@ import java.security.MessageDigest
 @Configuration
 class InternalSecurityConfig(
     private val internalTokenVerifier: InternalTokenVerifier,
+    @Value("\${application.registration.enabled:false}") private val registrationEnabled: Boolean,
 ) {
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
         val internal = PathPatternRequestMatcher.withDefaults().matcher("/internal/**")
+        val registration =
+            listOf(
+                "/application/{expoId}",
+                "/application/pre-standard/{expoId}",
+                "/application/field/{expoId}",
+                "/application/field/standard/{expoId}",
+            ).map { PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, it) }
         return http
-            .csrf { it.ignoringRequestMatchers(internal) }
-            .authorizeHttpRequests { requests ->
+            .csrf { csrf ->
+                csrf.ignoringRequestMatchers(internal)
+                if (registrationEnabled) csrf.ignoringRequestMatchers(*registration.toTypedArray())
+            }.authorizeHttpRequests { requests ->
                 requests
                     .dispatcherTypeMatchers(DispatcherType.ERROR)
                     .permitAll()
@@ -42,7 +52,10 @@ class InternalSecurityConfig(
                         context,
                         ->
                         AuthorizationDecision(internalTokenVerifier.matches(context.request.getHeader("X-Internal-Token")))
-                    }.anyRequest()
+                    }
+                if (registrationEnabled) requests.requestMatchers(*registration.toTypedArray()).permitAll()
+                requests
+                    .anyRequest()
                     .authenticated()
             }.exceptionHandling { it.defaultAuthenticationEntryPointFor(HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED), internal) }
             .cors(withDefaults())
