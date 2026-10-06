@@ -44,6 +44,7 @@ class TrainingProgramApplicationHttpTests {
         listOf(null, "wrong-token", "").forEach { token ->
             assertEquals(401, request("POST", BASE, applyBody(42, 7), token).statusCode())
             assertEquals(401, request("POST", BASE, "{}", token).statusCode())
+            assertEquals(401, request("PUT", "$BASE/trainee/42", applyBody(42, 7), token).statusCode())
             assertEquals(401, request("GET", "$BASE/program/7", token = token).statusCode())
             assertEquals(401, request("DELETE", "$BASE/program/7", token = token).statusCode())
         }
@@ -164,6 +165,168 @@ class TrainingProgramApplicationHttpTests {
 
                 assertEquals(204, delete.get(15, TimeUnit.SECONDS))
                 assertTrue(applies.map { it.get(15, TimeUnit.SECONDS) }.all { it == 201 || it == 409 })
+                assertEquals(0L, count(programId))
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `교체는 선택 항목을 유지하고 빠진 항목을 지우며 재시도해도 출석과 신청 ID를 보존한다`() {
+        assertEquals(201, request("POST", BASE, applyBody(42, 7, 8)).statusCode())
+        jdbc.update("UPDATE tb_training_program_application SET status = true WHERE trainee_id = 42 AND training_program_id = 8")
+
+        repeat(2) {
+            val result = request("PUT", "$BASE/trainee/42", applyBody(42, 8, 9))
+            assertEquals(204, result.statusCode())
+            assertEquals("", result.body())
+        }
+        assertEquals(0L, count(7))
+        assertEquals(1L, count(8))
+        assertEquals(1L, count(9))
+        assertEquals(
+            1L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_training_program_application WHERE trainee_id = 42 AND training_program_id = 8 AND id = 2 AND status = true",
+                Long::class.java,
+            ),
+        )
+        assertEquals(201, request("POST", BASE, applyBody(43, 7)).statusCode())
+    }
+
+    @Test
+    fun `빈 목록은 해당 연수자의 모든 신청을 취소하고 재시도도 성공한다`() {
+        assertEquals(201, request("POST", BASE, applyBody(42, 7, 8)).statusCode())
+        assertEquals(201, request("POST", BASE, applyBody(43, 7)).statusCode())
+        repeat(2) { assertEquals(204, request("PUT", "$BASE/trainee/42", applyBody(42)).statusCode()) }
+        assertEquals(1L, count(7))
+        assertEquals(0L, count(8))
+    }
+
+    @Test
+    fun `정원이 찬 프로그램에 대한 본인 신청은 교체 때 유지할 수 있다`() {
+        jdbc.update(
+            "INSERT INTO tb_training_program_application (trainee_id, training_program_id) " +
+                "SELECT person_id, 30 FROM generate_series(1000, 1023) AS person_id",
+        )
+        assertEquals(201, request("POST", BASE, applyBody(42, 30)).statusCode())
+        assertEquals(204, request("PUT", "$BASE/trainee/42", applyBody(42, 30, 31)).statusCode())
+        assertEquals(25L, count(30))
+        assertEquals(1L, count(31))
+    }
+
+    @Test
+    fun `교체 요청의 불일치 중복 삭제된 프로그램 정원 초과는 기존 신청을 보존한다`() {
+        assertEquals(201, request("POST", BASE, applyBody(42, 7)).statusCode())
+        jdbc.update(
+            "INSERT INTO tb_training_program_application (trainee_id, training_program_id) " +
+                "SELECT person_id, 30 FROM generate_series(1000, 1024) AS person_id",
+        )
+        assertEquals(204, request("DELETE", "$BASE/program/40").statusCode())
+        val invalid =
+            listOf(
+                400 to applyBody(43, 8),
+                400 to applyBody(42, 8, 8),
+                400 to """{"trainee":{"id":42,"expoId":"expo-1"},"programs":[{"id":8,"expoId":"expo-2","category":"CHOICE"}]}""",
+                409 to applyBody(42, 30),
+                409 to applyBody(42, 40),
+            )
+        invalid.forEach { (status, body) ->
+            assertEquals(status, request("PUT", "$BASE/trainee/42", body).statusCode(), body)
+        }
+        assertEquals(1L, count(7))
+        assertEquals(0L, count(8))
+    }
+
+    @Test
+    fun `교체의 저장 실패는 삭제까지 롤백한다`() {
+        assertEquals(201, request("POST", BASE, applyBody(42, 7)).statusCode())
+        jdbc.execute(
+            "CREATE FUNCTION fail_training_insert() RETURNS trigger LANGUAGE plpgsql AS '\n" +
+                "BEGIN IF NEW.training_program_id = 8 THEN RAISE EXCEPTION ''forced insert failure''; END IF; RETURN NEW; END'",
+        )
+        jdbc.execute(
+            "CREATE TRIGGER fail_training_insert BEFORE INSERT ON tb_training_program_application " +
+                "FOR EACH ROW EXECUTE FUNCTION fail_training_insert()",
+        )
+        try {
+            assertEquals(500, request("PUT", "$BASE/trainee/42", applyBody(42, 8)).statusCode())
+            assertEquals(1L, count(7))
+            assertEquals(0L, count(8))
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_training_insert ON tb_training_program_application")
+            jdbc.execute("DROP FUNCTION fail_training_insert()")
+        }
+    }
+
+    @Test
+    fun `동시 교체와 추가 신청은 한 연수자에 부분 목록을 남기지 않는다`() {
+        val executor = Executors.newFixedThreadPool(3)
+        try {
+            repeat(5) { round ->
+                val traineeId = 200L + round
+                val start = CountDownLatch(1)
+                val tasks =
+                    listOf(
+                        executor.submit<Int> {
+                            start.await()
+                            request("PUT", "$BASE/trainee/$traineeId", applyBody(traineeId, 50, 51)).statusCode()
+                        },
+                        executor.submit<Int> {
+                            start.await()
+                            request("PUT", "$BASE/trainee/$traineeId", applyBody(traineeId, 60, 61)).statusCode()
+                        },
+                        executor.submit<Int> {
+                            start.await()
+                            request("POST", BASE, applyBody(traineeId, 70)).statusCode()
+                        },
+                    )
+                start.countDown()
+                val statuses = tasks.map { it.get(15, TimeUnit.SECONDS) }
+                assertEquals(listOf(204, 204), statuses.take(2))
+                assertTrue(statuses[2] == 201 || statuses[2] == 409)
+                val ids =
+                    jdbc.queryForList(
+                        "SELECT training_program_id FROM tb_training_program_application WHERE trainee_id = ? ORDER BY training_program_id",
+                        Long::class.java,
+                        traineeId,
+                    )
+                val validLists =
+                    listOf(
+                        listOf(50L, 51L),
+                        listOf(60L, 61L),
+                        listOf(50L, 51L, 70L),
+                        listOf(60L, 61L, 70L),
+                    )
+                assertTrue(ids in validLists, "$ids")
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `교체와 프로그램 삭제가 경합해도 삭제된 프로그램의 신청은 남지 않는다`() {
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            repeat(5) { round ->
+                val traineeId = 300L + round
+                val programId = 300L + round
+                val start = CountDownLatch(1)
+                val replace =
+                    executor.submit<Int> {
+                        start.await()
+                        request("PUT", "$BASE/trainee/$traineeId", applyBody(traineeId, programId)).statusCode()
+                    }
+                val delete =
+                    executor.submit<Int> {
+                        start.await()
+                        request("DELETE", "$BASE/program/$programId").statusCode()
+                    }
+                start.countDown()
+                assertTrue(replace.get(15, TimeUnit.SECONDS) in listOf(204, 409))
+                assertEquals(204, delete.get(15, TimeUnit.SECONDS))
                 assertEquals(0L, count(programId))
             }
         } finally {

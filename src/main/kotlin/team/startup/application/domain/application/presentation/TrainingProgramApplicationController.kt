@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -24,6 +25,11 @@ import team.startup.application.domain.application.service.TrainingProgramApplic
 data class TrainingApplicationRequest(
     @field:Valid val trainee: TraineeReferenceRequest,
     @field:Valid @field:NotEmpty val programs: List<TrainingProgramReferenceRequest>,
+)
+
+data class TrainingReplacementRequest(
+    @field:Valid val trainee: TraineeReferenceRequest,
+    @field:Valid val programs: List<TrainingProgramReferenceRequest>,
 )
 
 data class TraineeReferenceRequest(
@@ -54,6 +60,21 @@ class TrainingProgramApplicationController(
             ),
         )
         return ResponseEntity.status(HttpStatus.CREATED).build()
+    }
+
+    @PutMapping("/trainee/{traineeId}")
+    fun replace(
+        @PathVariable @Positive traineeId: Long,
+        @Valid @RequestBody request: TrainingReplacementRequest,
+    ): ResponseEntity<Void> {
+        require(traineeId == request.trainee.id)
+        service.replace(
+            ApplyTrainingProgramsCommand(
+                TraineeReference(request.trainee.id, request.trainee.expoId),
+                request.programs.map { TrainingProgramReference(it.id, it.expoId, it.category) },
+            ),
+        )
+        return ResponseEntity.noContent().build()
     }
 
     @GetMapping("/program/{programId}")

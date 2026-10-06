@@ -12,6 +12,12 @@ interface TrainingProgramApplicationRepository : JpaRepository<TrainingProgramAp
         @Param("programId") programId: Long,
     ): String?
 
+    // 프로그램 ID는 양수이고 연수자 잠금은 음수 키를 사용한다.
+    @Query(value = "SELECT CAST(pg_advisory_xact_lock(:traineeId * -1) AS text)", nativeQuery = true)
+    fun lockTrainee(
+        @Param("traineeId") traineeId: Long,
+    ): String?
+
     @Query(value = "SELECT EXISTS (SELECT 1 FROM tb_deleted_training_program WHERE program_id = :programId)", nativeQuery = true)
     fun isDeleted(
         @Param("programId") programId: Long,
@@ -40,4 +46,6 @@ interface TrainingProgramApplicationRepository : JpaRepository<TrainingProgramAp
     ): Int
 
     fun findAllByTraineeIdIn(traineeIds: Collection<Long>): List<TrainingProgramApplication>
+
+    fun findAllByTraineeId(traineeId: Long): List<TrainingProgramApplication>
 }

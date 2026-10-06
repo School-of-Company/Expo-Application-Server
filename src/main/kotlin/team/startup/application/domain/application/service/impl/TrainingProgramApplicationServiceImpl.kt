@@ -21,6 +21,7 @@ class TrainingProgramApplicationServiceImpl(
         require(programIds.isNotEmpty() && programIds.all { it > 0 } && programIds.distinct().size == programIds.size)
         require(command.programs.all { it.expoId == command.trainee.expoId })
 
+        applications.lockTrainee(command.trainee.id)
         programIds.sorted().forEach(applications::lockTrainingProgram)
         command.programs.forEach { program ->
             if (applications.isDeleted(program.id)) {
@@ -35,6 +36,34 @@ class TrainingProgramApplicationServiceImpl(
         }
         applications.saveAllAndFlush(
             command.programs.map { program ->
+                TrainingProgramApplication(traineeId = command.trainee.id, trainingProgramId = program.id)
+            },
+        )
+    }
+
+    @Transactional
+    override fun replace(command: ApplyTrainingProgramsCommand) {
+        val programIds = command.programs.map { it.id }
+        require(command.trainee.id > 0 && command.trainee.expoId.isNotBlank())
+        require(programIds.all { it > 0 } && programIds.distinct().size == programIds.size)
+        require(command.programs.all { it.expoId == command.trainee.expoId })
+
+        applications.lockTrainee(command.trainee.id)
+        val oldIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }
+        (oldIds + programIds).distinct().sorted().forEach(applications::lockTrainingProgram)
+        val existing = applications.findAllByTraineeId(command.trainee.id)
+        val retainedIds = existing.map { it.trainingProgramId }.toSet()
+        command.programs.forEach { program ->
+            if (applications.isDeleted(program.id)) {
+                throw ProgramApplicationConflictException("삭제된 연수 프로그램입니다.")
+            }
+            if (program.id !in retainedIds && applications.countByTrainingProgramId(program.id) >= program.category.capacity) {
+                throw ProgramApplicationConflictException("연수 프로그램 정원이 찼습니다.")
+            }
+        }
+        applications.deleteAll(existing.filter { it.trainingProgramId !in programIds })
+        applications.saveAllAndFlush(
+            command.programs.filter { it.id !in retainedIds }.map { program ->
                 TrainingProgramApplication(traineeId = command.trainee.id, trainingProgramId = program.id)
             },
         )

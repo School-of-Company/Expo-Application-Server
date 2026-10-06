@@ -6,6 +6,8 @@ import team.startup.application.domain.application.presentation.dto.TrainingAppl
 interface TrainingProgramApplicationService {
     fun execute(command: ApplyTrainingProgramsCommand)
 
+    fun replace(command: ApplyTrainingProgramsCommand)
+
     fun findAllByProgram(programId: Long): List<TrainingApplicationResponse>
 
     fun deleteAllByProgram(programId: Long)
