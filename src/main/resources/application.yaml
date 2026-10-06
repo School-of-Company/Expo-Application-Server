@@ -8,3 +8,6 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+
+application:
+  internal-token: ${APPLICATION_INTERNAL_TOKEN:}
