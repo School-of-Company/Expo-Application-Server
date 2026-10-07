@@ -57,8 +57,6 @@ The scope is not a fixed list. **Reuse the vocabulary the repo already uses:**
 ```bash
 # scopes in commit history:  feat(member): ... -> member
 git log --pretty=%s -200 | grep -oE '^[a-z]+\(([^)]+)\)' | sed -E 's/.*\((.*)\)/\1/' | sort | uniq -c | sort -rn
-# scopes in past PR titles:  [member] ... -> member
-gh pr list --state all --limit 100 --json title -q '.[].title' | grep -oE '^\[[^]]+\]' | sort | uniq -c | sort -rn
 ```
 
 **If the history shows a vocabulary, reuse it verbatim** — matching the project beats a more accurate
@@ -78,7 +76,7 @@ change spans several scopes, use `global`; for build/CI-only changes, `ci`.
 
 ## PR Title Format
 
-`[scope] description`
+`description`
 
-- Same vocabulary as the commit scope, lowercase in brackets: `[member]`, `[expo]`, `[global]`
-- Description: Korean, concise, no emojis, max 50 characters total
+- Describe the change directly in Korean, without a leading bracketed scope or Conventional Commit prefix.
+- No emojis; max 50 characters total. Commit scopes remain in commit messages only.

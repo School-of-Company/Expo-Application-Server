@@ -10,6 +10,40 @@ if [ ! -f "$BODY_FILE" ]; then
   exit 1
 fi
 
+if [[ "$TITLE" == \[* ]]; then
+  echo "ERROR: PR title must not start with a bracketed prefix." >&2
+  exit 1
+fi
+
+TEMPLATE=.github/PULL_REQUEST_TEMPLATE.md
+if [ ! -f "$TEMPLATE" ]; then
+  echo "ERROR: PR template not found: $TEMPLATE" >&2
+  exit 1
+fi
+if cmp -s "$TEMPLATE" "$BODY_FILE"; then
+  echo "ERROR: Fill in the PR template before creating a PR." >&2
+  exit 1
+fi
+if ! diff -q <(grep '^## ' "$TEMPLATE") <(grep '^## ' "$BODY_FILE") >/dev/null; then
+  echo "ERROR: PR body must keep all template sections in order." >&2
+  exit 1
+fi
+if grep -Fq -- '> 이번 PR에서 어떤 작업을 했는지 간단히 요약해주세요.' "$BODY_FILE" ||
+  grep -Fq -- '- 리뷰어가 알면 좋은 변경 이유, 배경, 고려했던 점 등을 적어주세요.' "$BODY_FILE" ||
+  grep -Fxq -- '- Close #' "$BODY_FILE"; then
+  echo "ERROR: Replace PR template placeholders with actual content." >&2
+  exit 1
+fi
+if ! awk '
+  /^## / { if (seen && !filled) empty = 1; seen = 1; filled = 0; next }
+  /^[[:space:]]*$/ || /^---$/ || /^>/ { next }
+  seen { filled = 1 }
+  END { if (!seen || !filled || empty) exit 1 }
+' "$BODY_FILE"; then
+  echo "ERROR: Fill in every PR template section." >&2
+  exit 1
+fi
+
 # Base branch — ask the repo instead of assuming a branching model.
 #
 # A hardcoded develop/master pair fails in two directions: it targets a branch that doesn't exist in
