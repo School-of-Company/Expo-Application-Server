@@ -61,6 +61,7 @@ data class ParticipantRegistration(
 data class ParticipantRegistrationResult(
     val participantId: Long,
     val phoneNumber: String,
+    val participantIds: List<Long> = listOf(participantId),
 )
 
 data class TraineeRegistrationResult(
@@ -102,12 +103,34 @@ class RegistrationGateway(
         val path = if (type == "STANDARD") "/internal/standard-participants" else "/internal/trainees"
         val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
         return if (type == "STANDARD") {
-            decode(response.body(), ParticipantRegistrationResult::class.java)
+            val body = decode(response.body(), JsonNode::class.java)
+            val result =
+                if (body.isArray) {
+                    if (body.size() !in 1..5) invalidParticipantResponse()
+                    val ids =
+                        (0 until body.size()).map { index ->
+                            val id = body.get(index).get("id")
+                            if (id == null || !id.isIntegralNumber || !id.canConvertToLong()) invalidParticipantResponse()
+                            id.longValue()
+                        }
+                    ParticipantRegistrationResult(ids.first(), registration.phoneNumber, ids)
+                } else {
+                    val participant = decode(response.body(), ParticipantRegistrationResult::class.java)
+                    participant.copy(participantIds = listOf(participant.participantId))
+                }
+            if (result.participantIds.size > 5 || result.participantIds.any { it <= 0 } ||
+                result.participantIds.distinct().size != result.participantIds.size
+            ) {
+                invalidParticipantResponse()
+            }
+            result
         } else {
             val trainee = decode(response.body(), TraineeRegistrationResult::class.java)
             ParticipantRegistrationResult(trainee.traineeId, trainee.phoneNumber)
         }
     }
+
+    private fun invalidParticipantResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 참가자 응답이 올바르지 않습니다.")
 
     fun countStandard(
         expoId: String,

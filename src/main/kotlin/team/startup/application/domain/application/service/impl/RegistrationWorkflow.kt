@@ -77,6 +77,7 @@ class RegistrationWorkflow(
         }
         val occupation = answer("OCCUPATION")
         val school = answer("SCHOOL")
+        if (school != null && school.length > 100) badRequest("학교는 100자 이하여야 합니다.")
         if (occupation in setOf("TEACHER", "SCHOOL_STAFF", "ELEMENTARY_STUDENT", "MIDDLE_SCHOOL_STUDENT", "HIGH_SCHOOL_STUDENT") &&
             school == null
         ) {
@@ -105,7 +106,7 @@ class RegistrationWorkflow(
                     questions,
                 ),
             )
-        if (participantType == "STANDARD") gateway.countStandard(expoId, participant.participantId)
+        if (participantType == "STANDARD") participant.participantIds.forEach { gateway.countStandard(expoId, it) }
     }
 
     private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
