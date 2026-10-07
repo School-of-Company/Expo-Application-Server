@@ -75,10 +75,14 @@ class RegistrationGateway(
     @Value("\${application.registration.form-url:}") private val formUrl: String,
     @Value("\${application.registration.user-url:}") private val userUrl: String,
     @Value("\${application.internal-token:}") private val internalToken: String,
+    @Value("\${application.registration.expo-internal-token:}") private val expoInternalToken: String = internalToken,
+    @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String = internalToken,
+    @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String = internalToken,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
-    fun expoPeriod(expoId: String): ExpoPeriod = decode(call(expoUrl, "/internal/expo/$expoId").body(), ExpoPeriod::class.java)
+    fun expoPeriod(expoId: String): ExpoPeriod =
+        decode(call(expoUrl, "/internal/expo/$expoId", token = expoInternalToken).body(), ExpoPeriod::class.java)
 
     fun form(
         expoId: String,
@@ -87,7 +91,7 @@ class RegistrationGateway(
         required: Boolean,
     ): RegistrationForm? {
         val path = "/internal/forms/$expoId?type=$participantType&applicationType=$applicationType"
-        val response = call(formUrl, path, allowNotFound = !required)
+        val response = call(formUrl, path, allowNotFound = !required, token = formInternalToken)
         return if (response.statusCode() == 404) null else decode(response.body(), RegistrationForm::class.java)
     }
 
@@ -96,7 +100,7 @@ class RegistrationGateway(
         registration: ParticipantRegistration,
     ): ParticipantRegistrationResult {
         val path = if (type == "STANDARD") "/internal/standard-participants" else "/internal/trainees"
-        val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration))
+        val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
         return if (type == "STANDARD") {
             decode(response.body(), ParticipantRegistrationResult::class.java)
         } else {
@@ -110,7 +114,7 @@ class RegistrationGateway(
         participantId: Long,
     ) {
         try {
-            call(expoUrl, "/internal/expo/$expoId/standard-registrations/$participantId", "PUT")
+            call(expoUrl, "/internal/expo/$expoId/standard-registrations/$participantId", "PUT", token = expoInternalToken)
         } catch (ex: ResponseStatusException) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "신청 인원을 반영할 수 없습니다.", ex)
         }
@@ -132,13 +136,14 @@ class RegistrationGateway(
         method: String = "GET",
         body: String? = null,
         allowNotFound: Boolean = false,
+        token: String,
     ): HttpResponse<String> {
         if (base.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스 연결 주소가 없습니다.")
         val request =
             HttpRequest
                 .newBuilder(URI.create(base.trimEnd('/') + path))
                 .timeout(Duration.ofSeconds(8))
-                .header("X-Internal-Token", internalToken)
+                .header("X-Internal-Token", token)
                 .header("Content-Type", "application/json")
                 .method(method, body?.let { HttpRequest.BodyPublishers.ofString(it) } ?: HttpRequest.BodyPublishers.noBody())
                 .build()

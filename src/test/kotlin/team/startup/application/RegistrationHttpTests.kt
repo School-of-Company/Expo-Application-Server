@@ -234,6 +234,45 @@ class RegistrationHttpTests {
     }
 
     @Test
+    fun `등록 호출은 대상 서비스별 내부 토큰을 사용한다`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val tokens = mutableMapOf<String, String?>()
+        server.createContext("/internal/expo/") { exchange ->
+            tokens["expo"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            val response = "{\"startedDay\":\"2026-10-01\",\"finishedDay\":\"2026-10-31\"}".toByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.createContext("/internal/forms/") { exchange ->
+            tokens["form"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        }
+        server.createContext("/internal/standard-participants") { exchange ->
+            tokens["user"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            val response = "{\"participantId\":42,\"phoneNumber\":\"01012345678\"}".toByteArray()
+            exchange.sendResponseHeaders(201, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val actualGateway = RegistrationGateway(mapper, url, url, url, "shared-token", "expo-token", "form-token", "user-token")
+            actualGateway.expoPeriod(EXPO_1)
+            actualGateway.form(EXPO_1, "STANDARD", "FIELD", false)
+            actualGateway.participant(
+                "STANDARD",
+                ParticipantRegistration(EXPO_1, "홍길동", "01012345678", "{}", true, "FIELD", null, null, null, "request-1", null, null),
+            )
+            assertEquals("expo-token", tokens["expo"])
+            assertEquals("form-token", tokens["form"])
+            assertEquals("user-token", tokens["user"])
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `현장 등록에 폼이 있으면 기간과 무관하게 스냅샷을 전달한다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
@@ -336,6 +375,18 @@ class RegistrationHttpTests {
         mockMvc
             .perform(post("/application/pre-standard/invalid-id").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
             .andExpect(status().isBadRequest)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `User 계약보다 긴 재시도 키는 하위 서비스를 호출하기 전에 거부한다`() {
+        mockMvc
+            .perform(
+                post("/application/field/standard/$EXPO_1")
+                    .header("Idempotency-Key", "a".repeat(101))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isBadRequest)
         verifyNoMoreInteractions(gateway)
     }
 
