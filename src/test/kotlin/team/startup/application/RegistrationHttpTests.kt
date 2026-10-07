@@ -135,15 +135,64 @@ class RegistrationHttpTests {
                 listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL")),
             ),
         )
-        mockMvc
-            .perform(
-                post("/application/pre-standard/$EXPO_3")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(body("{\"직업\":\"TEACHER\"}")),
-            ).andExpect(status().isBadRequest)
-        verify(gateway).expoPeriod(EXPO_3)
-        verify(gateway).form(EXPO_3, "STANDARD", "PRE", true)
+        for (occupation in listOf("TEACHER", "PRE_SERVICE_TEACHER")) {
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_3")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(mapper.writeValueAsString(mapOf("직업" to occupation)))),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(2)).expoPeriod(EXPO_3)
+        verify(gateway, org.mockito.Mockito.times(2)).form(EXPO_3, "STANDARD", "PRE", true)
         verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `교직원과 학생은 학교 답변 없이 등록할 수 있다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL"))
+        `when`(gateway.form(EXPO_3, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields),
+        )
+        val questions =
+            fields.mapIndexed { order, item ->
+                RegistrationQuestion(item.id, item.title, order, item.formType, item.jsonData, item.otherJson, item.dynamicFormType)
+            }
+        for ((index, occupation) in listOf(
+            "SCHOOL_STAFF",
+            "ELEMENTARY_STUDENT",
+            "MIDDLE_SCHOOL_STUDENT",
+            "HIGH_SCHOOL_STUDENT",
+        ).withIndex()) {
+            val answers = mapper.writeValueAsString(mapOf("직업" to occupation))
+            val requestId = "school-optional-$index"
+            val registration =
+                ParticipantRegistration(
+                    EXPO_3,
+                    "홍길동",
+                    "01012345678",
+                    answers,
+                    true,
+                    "PRE",
+                    null,
+                    occupation,
+                    null,
+                    requestId,
+                    FORM_ID,
+                    questions,
+                )
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(index + 1L, "01012345678"))
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_3")
+                        .header("Idempotency-Key", requestId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(answers)),
+                ).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration)
+        }
     }
 
     @Test
