@@ -3,6 +3,7 @@ package team.startup.application.domain.application.presentation
 import io.swagger.v3.oas.annotations.Operation
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Size
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -19,11 +20,11 @@ import team.startup.application.domain.application.service.RegisterTraineePreSer
 import team.startup.application.domain.application.service.RegistrationCommand
 
 data class RegistrationRequest(
-    @field:NotBlank val name: String,
-    @field:NotBlank val phoneNumber: String,
+    @field:NotBlank @field:Size(max = 10) val name: String,
+    @field:NotBlank @field:Size(max = 15) val phoneNumber: String,
     @field:NotBlank val informationJson: String,
     val personalInformationStatus: Boolean,
-    val trainingId: String? = null,
+    @field:Size(max = 15) val trainingId: String? = null,
 )
 
 @RestController

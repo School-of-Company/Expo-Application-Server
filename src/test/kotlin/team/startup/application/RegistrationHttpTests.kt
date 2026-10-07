@@ -426,6 +426,43 @@ class RegistrationHttpTests {
         verify(gateway).countStandard(EXPO_1, 42)
     }
 
+    @Test
+    fun `User 길이 제한을 넘는 입력은 외부 호출 전에 400으로 거부한다`() {
+        for ((key, value) in listOf("name" to "가".repeat(11), "phoneNumber" to "1".repeat(16), "trainingId" to "t".repeat(16))) {
+            val request =
+                mutableMapOf<String, Any>(
+                    "name" to "홍길동",
+                    "phoneNumber" to "01012345678",
+                    "informationJson" to "{}",
+                    "personalInformationStatus" to true,
+                    "trainingId" to "training-1",
+                )
+            request[key] = value
+            mockMvc
+                .perform(post("/application/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest)
+        }
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `User 학교 길이 제한을 넘는 답변은 참가자 저장 전에 400으로 거부한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "TRAINEE", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(3, "학교", "SCHOOL"))),
+        )
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body(mapper.writeValueAsString(mapOf("학교" to "가".repeat(101))), "training-1")),
+            ).andExpect(status().isBadRequest)
+        verify(gateway).expoPeriod(EXPO_1)
+        verify(gateway).form(EXPO_1, "TRAINEE", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
     private fun body(
         answers: String,
         trainingId: String? = null,
