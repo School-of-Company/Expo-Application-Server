@@ -5,7 +5,8 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import team.startup.application.domain.application.service.ProgramApplicationLookupService
+import team.startup.application.domain.application.service.CheckStandardProgramApplicationService
+import team.startup.application.domain.application.service.CheckTrainingProgramApplicationService
 
 data class ProgramApplicationLookupResponse(
     val applied: Boolean,
@@ -14,17 +15,18 @@ data class ProgramApplicationLookupResponse(
 @RestController
 @RequestMapping("/internal/program-applications")
 class ProgramApplicationLookupController(
-    private val service: ProgramApplicationLookupService,
+    private val checkStandardService: CheckStandardProgramApplicationService,
+    private val checkTrainingService: CheckTrainingProgramApplicationService,
 ) {
     @GetMapping("/standard/{programId}/participants/{participantId}")
     fun standard(
         @PathVariable @Positive programId: Long,
         @PathVariable @Positive participantId: Long,
-    ) = ProgramApplicationLookupResponse(service.isStandardApplied(programId, participantId))
+    ) = ProgramApplicationLookupResponse(checkStandardService.execute(programId, participantId))
 
     @GetMapping("/training/{programId}/trainees/{traineeId}")
     fun training(
         @PathVariable @Positive programId: Long,
         @PathVariable @Positive traineeId: Long,
-    ) = ProgramApplicationLookupResponse(service.isTrainingApplied(programId, traineeId))
+    ) = ProgramApplicationLookupResponse(checkTrainingService.execute(programId, traineeId))
 }

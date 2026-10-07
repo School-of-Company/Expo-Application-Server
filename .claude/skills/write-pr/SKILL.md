@@ -27,11 +27,10 @@ git diff "origin/$BASE...HEAD"
 cat .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null
 ```
 
-## Step 3 — Learn This Project's Scope Vocabulary
+## Step 3 — Read This Project's Conventions
 
-Read `.claude/shared/commit-conventions.md` — it holds the commands for reading the repo's existing
-scope vocabulary, the fallback for deriving one from the changed paths, and the title format. It ships
-with this skill, so it is always present.
+Read `.claude/shared/commit-conventions.md` for the repo's commit convention and PR title rule.
+Commit scopes do not become PR title prefixes.
 
 ## Step 4 — Determine Labels
 
@@ -46,14 +45,16 @@ matches, attach none — a wrong label is worse than no label, and an undefined 
 
 ## Step 5 — Generate PR Content
 
-**Title** — Generate 3 options in the format `[scope] description`:
+**Title** — Generate 3 concise Korean descriptions of the change:
 
-- Scope: from Step 3. Lowercase, in brackets — `[member]`, `[expo]`, `[global]`
-- Description: Korean, concise, no emojis, max 50 characters total
+- No leading `[scope]` or other bracketed prefix. Do not copy a Conventional Commit prefix into the PR title.
+- No emojis; max 50 characters total.
 - Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `MemberService`, `SKILL.md`)
 
-**Body** — Follow the `.github/PULL_REQUEST_TEMPLATE.md` structure:
+**Body** — Start from the repository's `.github/PULL_REQUEST_TEMPLATE.md` and fill it in:
 
+- Keep every template heading in its original order. Replace instructional placeholders with actual change details in every section, including review notes and related issues (`관련 이슈 없음` when none apply).
+- Mark checklist items `[x]` only when verified; leave others `[ ]` with a short reason. Never submit an empty template section or the untouched template.
 - Korean 합쇼체: `~하였습니다`, `~되었습니다`, `~추가하였습니다`
 - No emojis
 - Max 2500 characters
@@ -61,7 +62,7 @@ matches, attach none — a wrong label is worse than no label, and an undefined 
 
 ## Step 6 — Write Body & Show Preview
 
-Write the body to `PR_BODY.md`, then display:
+Write the completed template to `PR_BODY.md`, verify it against `.github/PULL_REQUEST_TEMPLATE.md`, then display:
 
 ```
 ## PR 제목 후보
