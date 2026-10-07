@@ -20,8 +20,8 @@ import team.startup.application.domain.application.presentation.dto.ParticipantR
 import team.startup.application.domain.application.presentation.dto.StandardProgramReference
 import team.startup.application.domain.application.presentation.dto.TraineeReference
 import team.startup.application.domain.application.presentation.dto.TrainingProgramReference
-import team.startup.application.domain.application.service.StandardProgramApplicationService
-import team.startup.application.domain.application.service.TrainingProgramApplicationService
+import team.startup.application.domain.application.service.ApplyStandardProgramsService
+import team.startup.application.domain.application.service.ApplyTrainingProgramsService
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -30,10 +30,10 @@ import java.util.concurrent.TimeUnit
 @Testcontainers
 class ProgramApplicationServiceTests {
     @Autowired
-    private lateinit var trainingApplications: TrainingProgramApplicationService
+    private lateinit var trainingApplications: ApplyTrainingProgramsService
 
     @Autowired
-    private lateinit var standardApplications: StandardProgramApplicationService
+    private lateinit var standardApplications: ApplyStandardProgramsService
 
     @Autowired
     private lateinit var jdbc: JdbcTemplate

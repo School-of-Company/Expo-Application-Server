@@ -20,7 +20,10 @@ import team.startup.application.domain.application.presentation.dto.ApplyTrainin
 import team.startup.application.domain.application.presentation.dto.TraineeReference
 import team.startup.application.domain.application.presentation.dto.TrainingApplicationResponse
 import team.startup.application.domain.application.presentation.dto.TrainingProgramReference
-import team.startup.application.domain.application.service.TrainingProgramApplicationService
+import team.startup.application.domain.application.service.ApplyTrainingProgramsService
+import team.startup.application.domain.application.service.DeleteTrainingProgramApplicationsService
+import team.startup.application.domain.application.service.GetTrainingProgramApplicationsService
+import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 
 data class TrainingApplicationRequest(
     @field:Valid val trainee: TraineeReferenceRequest,
@@ -47,13 +50,16 @@ data class TrainingProgramReferenceRequest(
 @RestController
 @RequestMapping("/internal/training-program-applications")
 class TrainingProgramApplicationController(
-    private val service: TrainingProgramApplicationService,
+    private val applyService: ApplyTrainingProgramsService,
+    private val replaceService: ReplaceTrainingProgramsService,
+    private val getService: GetTrainingProgramApplicationsService,
+    private val deleteService: DeleteTrainingProgramApplicationsService,
 ) {
     @PostMapping
     fun apply(
         @Valid @RequestBody request: TrainingApplicationRequest,
     ): ResponseEntity<Void> {
-        service.execute(
+        applyService.execute(
             ApplyTrainingProgramsCommand(
                 TraineeReference(request.trainee.id, request.trainee.expoId),
                 request.programs.map { TrainingProgramReference(it.id, it.expoId, it.category) },
@@ -68,7 +74,7 @@ class TrainingProgramApplicationController(
         @Valid @RequestBody request: TrainingReplacementRequest,
     ): ResponseEntity<Void> {
         require(traineeId == request.trainee.id)
-        service.replace(
+        replaceService.execute(
             ApplyTrainingProgramsCommand(
                 TraineeReference(request.trainee.id, request.trainee.expoId),
                 request.programs.map { TrainingProgramReference(it.id, it.expoId, it.category) },
@@ -80,13 +86,13 @@ class TrainingProgramApplicationController(
     @GetMapping("/program/{programId}")
     fun list(
         @PathVariable @Positive programId: Long,
-    ): List<TrainingApplicationResponse> = service.findAllByProgram(programId)
+    ): List<TrainingApplicationResponse> = getService.execute(programId)
 
     @DeleteMapping("/program/{programId}")
     fun delete(
         @PathVariable @Positive programId: Long,
     ): ResponseEntity<Void> {
-        service.deleteAllByProgram(programId)
+        deleteService.execute(programId)
         return ResponseEntity.noContent().build()
     }
 

@@ -1,10 +1,9 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.http.HttpStatus
-import org.springframework.stereotype.Service
+import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.service.RegistrationCommand
-import team.startup.application.domain.application.service.RegistrationService
 import tools.jackson.databind.ObjectMapper
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -12,12 +11,16 @@ import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
-@Service
-class RegistrationServiceImpl(
+@Component
+class RegistrationWorkflow(
     private val gateway: RegistrationGateway,
     private val mapper: ObjectMapper,
-) : RegistrationService {
-    override fun register(command: RegistrationCommand) {
+) {
+    fun register(
+        command: RegistrationCommand,
+        participantType: String,
+        applicationType: String,
+    ) {
         val request = command.request
         val expoId =
             try {
@@ -29,7 +32,7 @@ class RegistrationServiceImpl(
             badRequest("박람회 ID가 올바르지 않습니다.")
         }
         if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.")
-        if (command.participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
+        if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
         if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 128)) {
             badRequest("Idempotency-Key는 1~128자여야 합니다.")
         }
@@ -43,8 +46,8 @@ class RegistrationServiceImpl(
             }
         if (today.isBefore(started) || today.isAfter(finished)) badRequest("박람회 등록 기간이 아닙니다.")
 
-        val form = gateway.form(expoId, command.participantType, command.applicationType, command.applicationType == "PRE")
-        if (command.applicationType == "PRE" && form != null) {
+        val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
+        if (applicationType == "PRE" && form != null) {
             val now = OffsetDateTime.now(ZoneId.of("Asia/Seoul"))
             val (start, end) =
                 try {
@@ -86,14 +89,14 @@ class RegistrationServiceImpl(
             }
         val participant =
             gateway.participant(
-                command.participantType,
+                participantType,
                 ParticipantRegistration(
                     expoId,
                     request.name,
                     request.phoneNumber,
                     request.informationJson,
                     request.personalInformationStatus,
-                    command.applicationType,
+                    applicationType,
                     request.trainingId,
                     occupation,
                     school,
@@ -102,7 +105,7 @@ class RegistrationServiceImpl(
                     questions,
                 ),
             )
-        if (command.participantType == "STANDARD") gateway.countStandard(expoId, participant.participantId)
+        if (participantType == "STANDARD") gateway.countStandard(expoId, participant.participantId)
     }
 
     private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)

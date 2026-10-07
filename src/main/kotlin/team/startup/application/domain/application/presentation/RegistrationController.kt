@@ -12,8 +12,11 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.service.RegisterStandardFieldService
+import team.startup.application.domain.application.service.RegisterStandardPreService
+import team.startup.application.domain.application.service.RegisterTraineeFieldService
+import team.startup.application.domain.application.service.RegisterTraineePreService
 import team.startup.application.domain.application.service.RegistrationCommand
-import team.startup.application.domain.application.service.RegistrationService
 
 data class RegistrationRequest(
     @field:NotBlank val name: String,
@@ -25,7 +28,10 @@ data class RegistrationRequest(
 
 @RestController
 class RegistrationController(
-    private val service: RegistrationService,
+    private val traineePreService: RegisterTraineePreService,
+    private val standardPreService: RegisterStandardPreService,
+    private val traineeFieldService: RegisterTraineeFieldService,
+    private val standardFieldService: RegisterStandardFieldService,
     @Value("\${application.registration.enabled:false}") private val enabled: Boolean,
 ) {
     @Operation(summary = "연수자 사전 등록")
@@ -34,7 +40,7 @@ class RegistrationController(
         @PathVariable expoId: String,
         @Valid @RequestBody request: RegistrationRequest,
         @RequestHeader(name = "Idempotency-Key", required = false) key: String?,
-    ) = register(expoId, request, key, "TRAINEE", "PRE")
+    ) = register(expoId, request, key, traineePreService::execute)
 
     @Operation(summary = "일반 사전 등록")
     @PostMapping("/application/pre-standard/{expoId}")
@@ -42,7 +48,7 @@ class RegistrationController(
         @PathVariable expoId: String,
         @Valid @RequestBody request: RegistrationRequest,
         @RequestHeader(name = "Idempotency-Key", required = false) key: String?,
-    ) = register(expoId, request, key, "STANDARD", "PRE")
+    ) = register(expoId, request, key, standardPreService::execute)
 
     @Operation(summary = "연수자 현장 등록")
     @PostMapping("/application/field/{expoId}")
@@ -50,7 +56,7 @@ class RegistrationController(
         @PathVariable expoId: String,
         @Valid @RequestBody request: RegistrationRequest,
         @RequestHeader(name = "Idempotency-Key", required = false) key: String?,
-    ) = register(expoId, request, key, "TRAINEE", "FIELD")
+    ) = register(expoId, request, key, traineeFieldService::execute)
 
     @Operation(summary = "일반 현장 등록")
     @PostMapping("/application/field/standard/{expoId}")
@@ -58,17 +64,16 @@ class RegistrationController(
         @PathVariable expoId: String,
         @Valid @RequestBody request: RegistrationRequest,
         @RequestHeader(name = "Idempotency-Key", required = false) key: String?,
-    ) = register(expoId, request, key, "STANDARD", "FIELD")
+    ) = register(expoId, request, key, standardFieldService::execute)
 
     private fun register(
         expoId: String,
         request: RegistrationRequest,
         key: String?,
-        participantType: String,
-        applicationType: String,
+        execute: (RegistrationCommand) -> Unit,
     ): ResponseEntity<Void> {
         if (!enabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "박람회 등록이 비활성화되었습니다.")
-        service.register(RegistrationCommand(expoId, participantType, applicationType, request, key))
+        execute(RegistrationCommand(expoId, request, key))
         return ResponseEntity.status(HttpStatus.CREATED).build()
     }
 }

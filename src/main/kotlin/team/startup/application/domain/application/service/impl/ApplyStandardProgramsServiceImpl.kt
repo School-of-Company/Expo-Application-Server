@@ -5,15 +5,13 @@ import org.springframework.transaction.annotation.Transactional
 import team.startup.application.domain.application.entity.StandardProgramApplication
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyStandardProgramsCommand
-import team.startup.application.domain.application.presentation.dto.StandardApplicationResponse
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
-import team.startup.application.domain.application.service.StandardProgramApplicationService
-import java.time.format.DateTimeFormatter
+import team.startup.application.domain.application.service.ApplyStandardProgramsService
 
 @Service
-class StandardProgramApplicationServiceImpl(
+class ApplyStandardProgramsServiceImpl(
     private val applications: StandardProgramApplicationRepository,
-) : StandardProgramApplicationService {
+) : ApplyStandardProgramsService {
     @Transactional
     override fun execute(command: ApplyStandardProgramsCommand) {
         val programIds = command.programs.map { it.id }
@@ -35,28 +33,5 @@ class StandardProgramApplicationServiceImpl(
                 StandardProgramApplication(participantId = command.participant.id, standardProgramId = program.id)
             },
         )
-    }
-
-    @Transactional(readOnly = true)
-    override fun list(programId: Long): List<StandardApplicationResponse> =
-        applications.findAllByStandardProgramIdOrderByIdAsc(programId).map { application ->
-            StandardApplicationResponse(
-                application.id!!,
-                application.participantId,
-                application.status,
-                application.entryTime?.format(TIME_FORMAT),
-                application.leaveTime?.format(TIME_FORMAT),
-            )
-        }
-
-    @Transactional
-    override fun delete(programId: Long) {
-        applications.lockProgram(programId)
-        applications.markDeleted(programId)
-        applications.deleteAllByStandardProgramId(programId)
-    }
-
-    private companion object {
-        val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     }
 }

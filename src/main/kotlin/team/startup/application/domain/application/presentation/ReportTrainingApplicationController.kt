@@ -19,7 +19,7 @@ class ReportTrainingApplicationController(
     @PostMapping("/trainees")
     fun listByTrainees(
         @Valid @RequestBody request: TrainingApplicationsByTraineesRequest,
-    ): List<TrainingApplicationForReportResponse> = service.findAllByTrainees(request)
+    ): List<TrainingApplicationForReportResponse> = service.execute(request)
 
     @ExceptionHandler(IllegalArgumentException::class)
     fun badRequest(): ResponseEntity<Void> = ResponseEntity.badRequest().build()

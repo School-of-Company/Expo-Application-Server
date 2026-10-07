@@ -12,7 +12,7 @@ class ReportTrainingApplicationServiceImpl(
     private val applications: TrainingProgramApplicationRepository,
 ) : ReportTrainingApplicationService {
     @Transactional(readOnly = true)
-    override fun findAllByTrainees(request: TrainingApplicationsByTraineesRequest): List<TrainingApplicationForReportResponse> {
+    override fun execute(request: TrainingApplicationsByTraineesRequest): List<TrainingApplicationForReportResponse> {
         require(request.traineeIds.all { it > 0 })
         if (request.traineeIds.isEmpty()) return emptyList()
         return applications.findAllByTraineeIdIn(request.traineeIds).sortedBy { requireNotNull(it.id) }.map { application ->

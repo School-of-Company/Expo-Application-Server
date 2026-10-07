@@ -4,5 +4,5 @@ import team.startup.application.domain.application.presentation.dto.TrainingAppl
 import team.startup.application.domain.application.presentation.dto.TrainingApplicationsByTraineesRequest
 
 interface ReportTrainingApplicationService {
-    fun findAllByTrainees(request: TrainingApplicationsByTraineesRequest): List<TrainingApplicationForReportResponse>
+    fun execute(request: TrainingApplicationsByTraineesRequest): List<TrainingApplicationForReportResponse>
 }

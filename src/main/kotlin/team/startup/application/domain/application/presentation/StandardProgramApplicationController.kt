@@ -17,7 +17,9 @@ import team.startup.application.domain.application.presentation.dto.ApplyStandar
 import team.startup.application.domain.application.presentation.dto.ParticipantReference
 import team.startup.application.domain.application.presentation.dto.StandardApplicationResponse
 import team.startup.application.domain.application.presentation.dto.StandardProgramReference
-import team.startup.application.domain.application.service.StandardProgramApplicationService
+import team.startup.application.domain.application.service.ApplyStandardProgramsService
+import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
+import team.startup.application.domain.application.service.GetStandardProgramApplicationsService
 
 data class StandardApplicationRequest(
     @field:Valid val participant: ParticipantReferenceRequest,
@@ -37,7 +39,9 @@ data class StandardProgramReferenceRequest(
 @RestController
 @RequestMapping("/internal/standard-program-applications")
 class StandardProgramApplicationController(
-    private val service: StandardProgramApplicationService,
+    private val applyService: ApplyStandardProgramsService,
+    private val getService: GetStandardProgramApplicationsService,
+    private val deleteService: DeleteStandardProgramApplicationsService,
 ) {
     @PostMapping
     fun apply(
@@ -48,7 +52,7 @@ class StandardProgramApplicationController(
         }
         val programs = request.programs.distinctBy { it.id }
         if (programs.isNotEmpty()) {
-            service.execute(
+            applyService.execute(
                 ApplyStandardProgramsCommand(
                     ParticipantReference(request.participant.id, request.participant.expoId),
                     programs.map { StandardProgramReference(it.id, it.expoId) },
@@ -61,13 +65,13 @@ class StandardProgramApplicationController(
     @GetMapping("/program/{programId}")
     fun list(
         @Positive @PathVariable programId: Long,
-    ): List<StandardApplicationResponse> = service.list(programId)
+    ): List<StandardApplicationResponse> = getService.execute(programId)
 
     @DeleteMapping("/program/{programId}")
     fun delete(
         @Positive @PathVariable programId: Long,
     ): ResponseEntity<Void> {
-        service.delete(programId)
+        deleteService.execute(programId)
         return ResponseEntity.noContent().build()
     }
 }
