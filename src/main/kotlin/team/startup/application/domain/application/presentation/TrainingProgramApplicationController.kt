@@ -4,6 +4,7 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotEmpty
 import jakarta.validation.constraints.Positive
+import jakarta.validation.constraints.PositiveOrZero
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
@@ -19,20 +20,29 @@ import team.startup.application.domain.application.entity.TrainingProgramCategor
 import team.startup.application.domain.application.presentation.dto.ApplyTrainingProgramsCommand
 import team.startup.application.domain.application.presentation.dto.TraineeReference
 import team.startup.application.domain.application.presentation.dto.TrainingApplicationResponse
+import team.startup.application.domain.application.presentation.dto.TrainingApplicationVersionResponse
+import team.startup.application.domain.application.presentation.dto.TrainingOperationReceipt
 import team.startup.application.domain.application.presentation.dto.TrainingProgramReference
 import team.startup.application.domain.application.service.ApplyTrainingProgramsService
 import team.startup.application.domain.application.service.DeleteTrainingProgramApplicationsService
+import team.startup.application.domain.application.service.GetTrainingApplicationVersionService
+import team.startup.application.domain.application.service.GetTrainingOperationReceiptService
 import team.startup.application.domain.application.service.GetTrainingProgramApplicationsService
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
+import java.util.UUID
 
 data class TrainingApplicationRequest(
     @field:Valid val trainee: TraineeReferenceRequest,
     @field:Valid @field:NotEmpty val programs: List<TrainingProgramReferenceRequest>,
+    val operationId: UUID? = null,
+    @field:PositiveOrZero val expectedVersion: Long? = null,
 )
 
 data class TrainingReplacementRequest(
     @field:Valid val trainee: TraineeReferenceRequest,
     @field:Valid val programs: List<TrainingProgramReferenceRequest>,
+    val operationId: UUID? = null,
+    @field:PositiveOrZero val expectedVersion: Long? = null,
 )
 
 data class TraineeReferenceRequest(
@@ -54,6 +64,8 @@ class TrainingProgramApplicationController(
     private val replaceService: ReplaceTrainingProgramsService,
     private val getService: GetTrainingProgramApplicationsService,
     private val deleteService: DeleteTrainingProgramApplicationsService,
+    private val receiptService: GetTrainingOperationReceiptService,
+    private val versionService: GetTrainingApplicationVersionService,
 ) {
     @PostMapping
     fun apply(
@@ -63,6 +75,8 @@ class TrainingProgramApplicationController(
             ApplyTrainingProgramsCommand(
                 TraineeReference(request.trainee.id, request.trainee.expoId),
                 request.programs.map { TrainingProgramReference(it.id, it.expoId, it.category) },
+                request.operationId,
+                request.expectedVersion,
             ),
         )
         return ResponseEntity.status(HttpStatus.CREATED).build()
@@ -78,6 +92,8 @@ class TrainingProgramApplicationController(
             ApplyTrainingProgramsCommand(
                 TraineeReference(request.trainee.id, request.trainee.expoId),
                 request.programs.map { TrainingProgramReference(it.id, it.expoId, it.category) },
+                request.operationId,
+                request.expectedVersion,
             ),
         )
         return ResponseEntity.noContent().build()
@@ -87,6 +103,17 @@ class TrainingProgramApplicationController(
     fun list(
         @PathVariable @Positive programId: Long,
     ): List<TrainingApplicationResponse> = getService.execute(programId)
+
+    @GetMapping("/operations/{operationId}")
+    fun receipt(
+        @PathVariable operationId: UUID,
+    ): ResponseEntity<TrainingOperationReceipt> =
+        receiptService.execute(operationId)?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
+
+    @GetMapping("/trainee/{traineeId}/version")
+    fun version(
+        @PathVariable @Positive traineeId: Long,
+    ): TrainingApplicationVersionResponse = versionService.execute(traineeId)
 
     @DeleteMapping("/program/{programId}")
     fun delete(

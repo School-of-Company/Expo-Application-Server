@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation.dto
 
 import team.startup.application.domain.application.entity.TrainingProgramCategory
+import java.util.UUID
 
 data class TraineeReference(
     val id: Long,
@@ -16,6 +17,8 @@ data class TrainingProgramReference(
 data class ApplyTrainingProgramsCommand(
     val trainee: TraineeReference,
     val programs: List<TrainingProgramReference>,
+    val operationId: UUID? = null,
+    val expectedVersion: Long? = null,
 )
 
 data class TrainingApplicationResponse(
