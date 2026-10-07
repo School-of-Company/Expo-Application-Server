@@ -5,12 +5,14 @@ import org.springframework.transaction.annotation.Transactional
 import team.startup.application.domain.application.entity.TrainingProgramApplication
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyTrainingProgramsCommand
+import team.startup.application.domain.application.presentation.dto.TrainingOperationType
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 
 @Service
 class ReplaceTrainingProgramsServiceImpl(
     private val applications: TrainingProgramApplicationRepository,
+    private val journal: TrainingOperationJournal,
 ) : ReplaceTrainingProgramsService {
     @Transactional
     override fun execute(command: ApplyTrainingProgramsCommand) {
@@ -18,10 +20,12 @@ class ReplaceTrainingProgramsServiceImpl(
         require(command.trainee.id > 0 && command.trainee.expoId.isNotBlank())
         require(programIds.all { it > 0 } && programIds.distinct().size == programIds.size)
         require(command.programs.all { it.expoId == command.trainee.expoId })
+        if (journal.replay(command, TrainingOperationType.REPLACE)) return
 
         applications.lockTrainee(command.trainee.id)
         val oldIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }
         (oldIds + programIds).distinct().sorted().forEach(applications::lockTrainingProgram)
+        val version = journal.lockVersion(command)
         val existing = applications.findAllByTraineeId(command.trainee.id)
         val retainedIds = existing.map { it.trainingProgramId }.toSet()
         command.programs.forEach { program ->
@@ -38,5 +42,6 @@ class ReplaceTrainingProgramsServiceImpl(
                 TrainingProgramApplication(traineeId = command.trainee.id, trainingProgramId = program.id)
             },
         )
+        journal.complete(command, TrainingOperationType.REPLACE, version, retainedIds != programIds.toSet(), programIds)
     }
 }
