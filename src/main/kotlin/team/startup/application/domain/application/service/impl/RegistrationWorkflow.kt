@@ -33,8 +33,8 @@ class RegistrationWorkflow(
         }
         if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.")
         if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 128)) {
-            badRequest("Idempotency-Key는 1~128자여야 합니다.")
+        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
+            badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         val expo = gateway.expoPeriod(expoId)
