@@ -100,7 +100,7 @@ class RegistrationIntegrationContractTests {
                     true,
                 )
             val mvc = MockMvcBuilders.standaloneSetup(controller).build()
-            val answers = """{"동반자":[{"name":"동반자","school":"광주고"}]}"""
+            val answers = """{"동반자":[{"name":"동반자","occupation":"TEACHER","region":"GWANGJU","school":"광주고"}]}"""
             val body =
                 mapper.writeValueAsString(
                     mapOf(
