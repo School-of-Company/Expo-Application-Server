@@ -46,6 +46,8 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(EndpointRequest.to("prometheus").withHttpMethod(HttpMethod.GET))
                     .permitAll()
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity")
+                    .permitAll()
                     .requestMatchers(internal)
                     .access {
                         _,
