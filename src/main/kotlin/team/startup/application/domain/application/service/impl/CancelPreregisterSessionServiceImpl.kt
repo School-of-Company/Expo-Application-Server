@@ -12,6 +12,7 @@ import team.startup.application.domain.application.service.CancelPreregisterSess
 class CancelPreregisterSessionServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
+    private val attendance: SessionAttendanceOutbox,
 ) : CancelPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -42,6 +43,7 @@ class CancelPreregisterSessionServiceImpl(
                 val cancelled =
                     selected.filter { it.status != "CANCELLED" }.map {
                         repository.status(it.id, "CANCELLED")
+                        if (it.status == "CONFIRMED") attendance.cancelled(command.expoId, it.participantId)
                         it.copy(status = "CANCELLED")
                     }
                 val promoted =

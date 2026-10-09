@@ -17,6 +17,7 @@ class PreregisterSessionLedger(
     private val repository: PreregisterSessionRepository,
     private val gateway: PreregisterSessionGateway,
     transactionManager: PlatformTransactionManager,
+    private val attendance: SessionAttendanceOutbox,
 ) {
     val transactions = TransactionTemplate(transactionManager)
 
@@ -94,6 +95,7 @@ class PreregisterSessionLedger(
         }
         return repository.waiting(definition.expoId, definition.id, available).map {
             repository.status(it.id, "CONFIRMED")
+            attendance.confirmed(definition.expoId, it.participantId, definition.id)
             it.copy(status = "CONFIRMED")
         }
     }
