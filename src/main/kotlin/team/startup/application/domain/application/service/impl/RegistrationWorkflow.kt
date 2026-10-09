@@ -4,6 +4,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.service.RegistrationCommand
+import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -81,6 +82,20 @@ class RegistrationWorkflow(
         if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER") && school == null) {
             badRequest("직업에 해당하는 학교를 입력해야 합니다.")
         }
+        var companionCount = 0
+        form?.dynamicForm?.filter { it.formType == "COMPANION" }?.forEach { field ->
+            val companions = answers.get(field.title) ?: return@forEach
+            val limit = field.otherJson?.get("maxSelection")
+            if (limit != null && (!limit.isIntegralNumber || !limit.canConvertToInt() || limit.intValue() <= 0)) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "폼의 동행자 최대 인원 응답이 올바르지 않습니다.")
+            }
+            val maxCount = minOf(limit?.intValue() ?: 4, 4)
+            if (!companions.isArray) badRequest("동행자 답변은 JSON 배열이어야 합니다.")
+            if (companions.size() > maxCount) badRequest("동행자는 최대 ${maxCount}명까지 입력할 수 있습니다.")
+            companionCount += companions.size()
+            if (companionCount > 4) badRequest("대표자를 포함해 최대 5명까지 신청할 수 있습니다.")
+            companions.forEach(::validateCompanion)
+        }
         val requestId = command.idempotencyKey ?: UUID.randomUUID().toString()
         val questions =
             form?.dynamicForm?.mapIndexed { order, field ->
@@ -105,6 +120,37 @@ class RegistrationWorkflow(
                 ),
             )
         if (participantType == "STANDARD") participant.participantIds.forEach { gateway.countStandard(expoId, it) }
+    }
+
+    private fun validateCompanion(companion: JsonNode) {
+        if (!companion.isObject) badRequest("동행자 답변은 JSON 객체여야 합니다.")
+
+        fun text(key: String) = companion.get(key)?.takeIf { it.isString }?.stringValue()
+        val name = text("name")?.trim()
+        if (name.isNullOrEmpty() || name.length > 10) badRequest("동행자 이름은 1~10자여야 합니다.")
+        val occupation = text("occupation")
+        if (occupation !in
+            setOf(
+                "KINDERGARTEN_STUDENT",
+                "ELEMENTARY_STUDENT",
+                "MIDDLE_SCHOOL_STUDENT",
+                "HIGH_SCHOOL_STUDENT",
+                "SCHOOL_STAFF",
+                "PARENT",
+                "GENERAL",
+                "TEACHER",
+                "PRE_SERVICE_TEACHER",
+            )
+        ) {
+            badRequest("동행자 직업이 올바르지 않습니다.")
+        }
+        if (text("region") !in setOf("GWANGJU", "JEONNAM", "OTHER")) badRequest("동행자 지역이 올바르지 않습니다.")
+        if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER")) {
+            val school = text("school")?.trim()
+            if (school.isNullOrEmpty() || school.length > 100) badRequest("동행자 학교는 1~100자여야 합니다.")
+        } else if (companion.has("school")) {
+            badRequest("이 직업은 동행자 학교를 받지 않습니다.")
+        }
     }
 
     private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
