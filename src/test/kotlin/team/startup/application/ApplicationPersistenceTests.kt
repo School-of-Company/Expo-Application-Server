@@ -73,6 +73,35 @@ class ApplicationPersistenceTests {
         assertFalse(trainingApplications.existsByTraineeIdAndTrainingProgramId(99L, 34L))
     }
 
+    @Test
+    fun `회차 원장 마이그레이션은 박람회당 활성 참가자를 유일하게 유지한다`() {
+        val expoId = java.util.UUID.randomUUID()
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}'), (?, 2, '{}')",
+            expoId,
+            expoId,
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 42, 42, 'CONFIRMED')",
+            expoId,
+        )
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update(
+                "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                    "VALUES (?, 2, 42, 42, 'WAITING')",
+                expoId,
+            )
+        }
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE expo_id = ?", expoId)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 2, 42, 42, 'WAITING')",
+            expoId,
+        )
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE expo_id = ?", Int::class.java, expoId))
+    }
+
     companion object {
         @Container
         @ServiceConnection
