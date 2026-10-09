@@ -14,6 +14,7 @@ class ApplyPreregisterSessionServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
     private val mapper: ObjectMapper,
+    private val attendance: SessionAttendanceOutbox,
 ) : ApplyPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: ApplyPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -54,18 +55,21 @@ class ApplyPreregisterSessionServiceImpl(
                 }
                 val receipt =
                     command.participantIds.map { participantId ->
-                        existing[participantId]?.first ?: repository.insert(
-                            command.expoId,
-                            command.sessionId,
-                            command.representativeId,
-                            participantId,
-                            if (confirmed < definition.capacity) {
-                                confirmed++
-                                "CONFIRMED"
-                            } else {
-                                "WAITING"
-                            },
-                        )
+                        existing[participantId]?.first ?: repository
+                            .insert(
+                                command.expoId,
+                                command.sessionId,
+                                command.representativeId,
+                                participantId,
+                                if (confirmed < definition.capacity) {
+                                    confirmed++
+                                    "CONFIRMED"
+                                } else {
+                                    "WAITING"
+                                },
+                            ).also {
+                                if (it.status == "CONFIRMED") attendance.confirmed(command.expoId, participantId, command.sessionId)
+                            }
                     }
                 repository.saveRequest(command.expoId, command.requestId, serialized, receipt)
                 receipt
