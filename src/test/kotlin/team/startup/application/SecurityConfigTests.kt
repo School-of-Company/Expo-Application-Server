@@ -54,6 +54,15 @@ class SecurityConfigTests {
         mockMvc.perform(get("/actuator/info").with(user("user"))).andExpect(status().isOk)
     }
 
+    @Test
+    fun `잔여석 GET은 공개지만 원장 조회 구현이 준비되지 않으면 503을 반환한다`() {
+        val path = "/application/expos/0199c000-0000-7000-8000-000000000001/preregister-sessions/7/capacity"
+        mockMvc.perform(get(path)).andExpect(status().isServiceUnavailable)
+        mockMvc.perform(head(path)).andExpect(status().isUnauthorized)
+        mockMvc.perform(post(path).with(csrf())).andExpect(status().isUnauthorized)
+        mockMvc.perform(get(path.substringBeforeLast('/'))).andExpect(status().isUnauthorized)
+    }
+
     companion object {
         @Container
         @ServiceConnection
