@@ -86,6 +86,8 @@ class PreregisterRegistrationHttpTests {
         upstreamAvailable = true
         userGate.set(null)
         countGate.set(null)
+        expoDayOffset.set(0)
+        formDayOffset.set(0)
     }
 
     private fun submit(
@@ -121,6 +123,42 @@ class PreregisterRegistrationHttpTests {
     }
 
     private fun count(table: String): Int = jdbc.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
+
+    @Test
+    fun `PRE accepts before the event within the form period while FIELD still rejects`() {
+        expoDayOffset.set(10)
+        assertEquals(201, submit())
+        assertEquals(1, count("tb_preregister_application"))
+        val body =
+            mapper.writeValueAsString(
+                mapOf(
+                    "name" to "person",
+                    "phoneNumber" to "01000000002",
+                    "personalInformationStatus" to true,
+                    "informationJson" to "{}",
+                    "trainingId" to "training-1",
+                ),
+            )
+        for (path in listOf("/application/field/standard/$EXPO", "/application/field/$EXPO")) {
+            assertEquals(
+                400,
+                mvc
+                    .perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andReturn()
+                    .response.status,
+            )
+        }
+        assertEquals(1, userRequests.size)
+    }
+
+    @Test
+    fun `PRE before the event still rejects an expired form without saving User`() {
+        expoDayOffset.set(10)
+        formDayOffset.set(-3)
+        assertEquals(400, submit())
+        assertTrue(userRequests.isEmpty())
+        assertEquals(0, count("tb_preregister_reservation"))
+    }
 
     @Test
     fun `operator review retains seats stops background retry and repeats the original User request after repair`() {
@@ -569,6 +607,8 @@ class PreregisterRegistrationHttpTests {
         private val userStatus = AtomicInteger(201)
         private val responseIds = AtomicInteger(0)
         private val countStatus = AtomicInteger(204)
+        private val expoDayOffset = AtomicInteger(0)
+        private val formDayOffset = AtomicInteger(0)
         private val countGate =
             java.util.concurrent.atomic
                 .AtomicReference<Pair<CountDownLatch, CountDownLatch>?>()
@@ -636,7 +676,7 @@ class PreregisterRegistrationHttpTests {
                             }
 
                             path.startsWith("/internal/forms/") -> {
-                                val now = OffsetDateTime.now()
+                                val now = OffsetDateTime.now().plusDays(formDayOffset.get().toLong())
                                 200 to
                                     """{"id":"$EXPO","startDate":"${now.minusDays(
                                         1,
@@ -646,7 +686,7 @@ class PreregisterRegistrationHttpTests {
                             }
 
                             else -> {
-                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
+                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(expoDayOffset.get().toLong())
                                 200 to """{"startedDay":"$today","finishedDay":"$today"}"""
                             }
                         }

@@ -164,6 +164,40 @@ class RegistrationHttpTests {
     }
 
     @Test
+    fun `개최 전 연수 사전등록은 폼 접수 기간으로 판정한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.plusDays(10).toString(), today.plusDays(11).toString()))
+        `when`(gateway.form(EXPO_2, "TRAINEE", "PRE", true)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString()),
+        )
+        val registration =
+            ParticipantRegistration(
+                EXPO_2,
+                "홍길동",
+                "01012345678",
+                "{}",
+                true,
+                "PRE",
+                "training-1",
+                null,
+                null,
+                "request-2",
+                FORM_ID,
+                emptyList(),
+            )
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/$EXPO_2")
+                    .header("Idempotency-Key", "request-2")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}", "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+        verify(gateway, org.mockito.Mockito.never()).countStandard(EXPO_2, 7)
+    }
+
+    @Test
     fun `학교가 필요한 직업에 학교 답변이 없으면 참가자를 만들지 않는다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))

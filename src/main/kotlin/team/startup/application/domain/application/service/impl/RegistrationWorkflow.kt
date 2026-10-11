@@ -51,7 +51,9 @@ class RegistrationWorkflow(
             } catch (ex: DateTimeParseException) {
                 throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 날짜 응답이 올바르지 않습니다.", ex)
             }
-        if (today.isBefore(started) || today.isAfter(finished)) badRequest("박람회 등록 기간이 아닙니다.")
+        if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
+            badRequest("박람회 등록 기간이 아닙니다.")
+        }
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {
