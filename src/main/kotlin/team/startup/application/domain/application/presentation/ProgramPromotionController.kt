@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation
 
 import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.responses.ApiResponse
 import io.swagger.v3.oas.annotations.security.SecurityRequirement
 import jakarta.validation.Valid
 import org.springframework.web.bind.annotation.PostMapping
@@ -12,6 +13,7 @@ import team.startup.application.domain.application.service.CheckProgramPromotion
 
 @RestController
 @SecurityRequirement(name = "internalToken")
+@ApiResponse(responseCode = "401", description = "X-Internal-Token 인증 실패")
 class ProgramPromotionController(
     private val service: CheckProgramPromotionService,
 ) {

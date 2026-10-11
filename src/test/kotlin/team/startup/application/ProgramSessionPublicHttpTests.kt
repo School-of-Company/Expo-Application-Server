@@ -28,7 +28,7 @@ import java.util.UUID
 
 @WebMvcTest(
     controllers = [ProgramSessionApplicationController::class],
-    properties = ["application.program-sessions.enabled=true"],
+    properties = ["application.program-sessions.enabled=true", "application.owner.session-cookie-name=CUSTOM_PARTICIPANT_SESSION"],
 )
 @Import(
     ProgramSessionSecurityConfig::class,
@@ -61,7 +61,7 @@ class ProgramSessionPublicHttpTests {
     @Test
     fun `real cookie csrf roundtrip delegates only the participant cookie and server path`() {
         mvc
-            .perform(request().header(header, token).cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "verified")))
+            .perform(request().header(header, token).cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", "verified")))
             .andExpect(status().isCreated)
             .andExpect(jsonPath("$.status").value("CONFIRMED"))
         val command = service.commands.single()
@@ -72,13 +72,22 @@ class ProgramSessionPublicHttpTests {
     }
 
     @Test
+    fun `old cookie name is rejected even with valid csrf`() {
+        mvc
+            .perform(request().header(header, token).cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "verified")))
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
+        assertEquals(0, service.commands.size)
+    }
+
+    @Test
     fun `csrf cookie ownership and request validation fail before service invocation`() {
         mvc
-            .perform(request().cookie(Cookie("PARTICIPANT_SESSION", "verified")))
+            .perform(request().cookie(Cookie("CUSTOM_PARTICIPANT_SESSION", "verified")))
             .andExpect(status().isForbidden)
             .andExpect(jsonPath("$.code").value("CSRF_REQUIRED"))
         mvc
-            .perform(request().header(header, "invalid").cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "verified")))
+            .perform(request().header(header, "invalid").cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", "verified")))
             .andExpect(status().isForbidden)
         mvc
             .perform(request().header(header, token).cookie(csrfCookie).header("X-Internal-Token", "test-token"))
@@ -86,13 +95,17 @@ class ProgramSessionPublicHttpTests {
             .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
         mvc
             .perform(
-                request().header(header, token).cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "a"), Cookie("PARTICIPANT_SESSION", "b")),
+                request()
+                    .header(
+                        header,
+                        token,
+                    ).cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", "a"), Cookie("CUSTOM_PARTICIPANT_SESSION", "b")),
             ).andExpect(status().isUnauthorized)
         mvc
             .perform(
                 request()
                     .header(header, token)
-                    .cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "verified"))
+                    .cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", "verified"))
                     .content(body.replace("\"participantId\":1", "\"participantId\":0")),
             ).andExpect(status().isBadRequest)
             .andExpect(jsonPath("$.code").value("INVALID_APPLICATION"))
@@ -103,7 +116,7 @@ class ProgramSessionPublicHttpTests {
     fun `session expiry and supplier failures use public errors without provider details`() {
         mapOf("expired" to (401 to "SESSION_EXPIRED"), "unavailable" to (503 to "SUPPLIER_UNAVAILABLE")).forEach { (session, expected) ->
             mvc
-                .perform(request().header(header, token).cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", session)))
+                .perform(request().header(header, token).cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", session)))
                 .andExpect(status().`is`(expected.first))
                 .andExpect(jsonPath("$.code").value(expected.second))
         }
