@@ -100,20 +100,15 @@ class TrainingProgramApplicationHttpTests {
     }
 
     @Test
-    fun `신청은 201 빈 본문이고 목록은 신청 ID와 false null 형식이다`() {
+    fun `신청은 201 빈 본문이고 목록은 신청 ID만 반환한다`() {
         val created = request("POST", BASE, applyBody(42, 7))
         assertEquals(201, created.statusCode())
         assertEquals("", created.body())
         assertEquals(201, request("POST", BASE, applyBody(43, 7)).statusCode())
-        jdbc.update(
-            "UPDATE tb_training_program_application SET status = true, entry_time = '09:05:30', leave_time = '10:00' WHERE trainee_id = 43",
-        )
-
         val list = request("GET", "$BASE/program/7")
         assertEquals(200, list.statusCode())
         assertEquals(
-            """[{"applicationId":1,"traineeId":42,"status":false,"entryTime":null,"leaveTime":null},""" +
-                """{"applicationId":2,"traineeId":43,"status":true,"entryTime":"09:05","leaveTime":"10:00"}]""",
+            """[{"applicationId":1,"traineeId":42},{"applicationId":2,"traineeId":43}]""",
             list.body(),
         )
         assertEquals("[]", request("GET", "$BASE/program/8").body())
@@ -206,9 +201,8 @@ class TrainingProgramApplicationHttpTests {
     }
 
     @Test
-    fun `교체는 선택 항목을 유지하고 빠진 항목을 지우며 재시도해도 출석과 신청 ID를 보존한다`() {
+    fun `교체는 선택 항목을 유지하고 빠진 항목을 지우며 재시도해도 신청 ID를 보존한다`() {
         assertEquals(201, request("POST", BASE, applyBody(42, 7, 8)).statusCode())
-        jdbc.update("UPDATE tb_training_program_application SET status = true WHERE trainee_id = 42 AND training_program_id = 8")
 
         repeat(2) {
             val result = request("PUT", "$BASE/trainee/42", applyBody(42, 8, 9))
@@ -221,7 +215,7 @@ class TrainingProgramApplicationHttpTests {
         assertEquals(
             1L,
             jdbc.queryForObject(
-                "SELECT count(*) FROM tb_training_program_application WHERE trainee_id = 42 AND training_program_id = 8 AND id = 2 AND status = true",
+                "SELECT count(*) FROM tb_training_program_application WHERE trainee_id = 42 AND training_program_id = 8 AND id = 2",
                 Long::class.java,
             ),
         )
