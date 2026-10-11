@@ -13,6 +13,18 @@ enum class AdminApplicationStatus { CONFIRMED, WAITING, CANCELLED }
 
 enum class AdminApplicationSort { CREATED_ASC, CREATED_DESC }
 
+enum class AdminOccupation {
+    KINDERGARTEN_STUDENT,
+    ELEMENTARY_STUDENT,
+    MIDDLE_SCHOOL_STUDENT,
+    HIGH_SCHOOL_STUDENT,
+    SCHOOL_STAFF,
+    PARENT,
+    GENERAL,
+    TEACHER,
+    PRE_SERVICE_TEACHER,
+}
+
 data class AdminApplicationQuery(
     val programType: ProgramSessionType? = null,
     @field:Positive val programId: Long? = null,
@@ -25,7 +37,12 @@ data class AdminApplicationQuery(
     @field:Min(0) val page: Int = 0,
     @field:Min(1) @field:Max(100) val size: Int = 20,
     val sort: AdminApplicationSort = AdminApplicationSort.CREATED_DESC,
+    @field:Size(min = 1, max = 50) val q: String? = null,
+    val occupation: AdminOccupation? = null,
 ) {
+    @get:AssertTrue(message = "q must not be blank")
+    val isParticipantQueryValid: Boolean get() = q == null || q.isNotBlank()
+
     @get:AssertTrue(message = "from must precede until")
     val isDateRangeValid: Boolean get() = from == null || until == null || from < until
 
@@ -48,6 +65,54 @@ data class AdminApplicationRow(
     val questions: JsonNode,
     val answers: JsonNode,
     val history: List<AdminApplicationHistory>,
+    val participant: AdminParticipantDetail? = null,
+)
+
+data class AdminApplicationReadCommand(
+    val expoId: UUID,
+    val query: AdminApplicationQuery,
+    val includeParticipantDetails: Boolean,
+)
+
+data class AdminParticipantDetail(
+    val participantId: Long,
+    val name: String,
+    val phoneNumber: String?,
+    val notificationPhoneNumber: String?,
+    val occupation: AdminOccupation?,
+    val representativeId: Long?,
+    val linkedTraineeId: Long?,
+    val applicationType: String,
+    val information: JsonNode,
+)
+
+data class AdminExpoAccess(
+    val expoId: UUID,
+    val adminId: Long,
+    val permission: String,
+    val policyVersion: String,
+    val scope: String,
+)
+
+data class AdminCurrentSessionQuery(
+    val programType: ProgramSessionType? = null,
+    @field:Positive val programId: Long? = null,
+    val groupId: UUID? = null,
+    @field:Min(0) val page: Int = 0,
+    @field:Min(1) @field:Max(100) val size: Int = 20,
+    @field:Size(min = 1, max = 100) val definitionVersion: String? = null,
+) {
+    @get:AssertTrue(message = "programId requires programType; subsequent pages require definitionVersion")
+    val isSelectionValid: Boolean get() = (programId == null || programType != null) && (page == 0 || !definitionVersion.isNullOrBlank())
+}
+
+data class AdminCurrentSessionPage(
+    val expoId: UUID,
+    val items: List<JsonNode>,
+    val page: Int,
+    val size: Int,
+    val totalElements: Long,
+    val definitionVersion: String,
 )
 
 data class AdminApplicationHistory(

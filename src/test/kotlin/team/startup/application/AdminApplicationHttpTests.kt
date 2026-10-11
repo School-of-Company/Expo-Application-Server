@@ -25,9 +25,12 @@ import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.presentation.dto.AdminApplicationQuery
 import team.startup.application.domain.application.presentation.dto.AdminApplicationSessionSummary
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.repository.AdminApplicationQueryRepository
 import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
+import team.startup.application.domain.application.service.impl.AdminParticipantGateway
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
 import java.util.UUID
@@ -46,6 +49,10 @@ class AdminApplicationHttpTests {
 
     @Autowired private lateinit var transactionManager: PlatformTransactionManager
 
+    @Autowired private lateinit var repository: AdminApplicationQueryRepository
+
+    @Autowired private lateinit var participants: AdminParticipantGateway
+
     private val expoId = UUID.randomUUID()
     private val groupId = UUID.randomUUID()
     private val first = UUID.fromString("00000000-0000-0000-0000-000000000001")
@@ -57,12 +64,23 @@ class AdminApplicationHttpTests {
         attendanceStatus = 200
         attendanceBody = null
         attendanceRequests.clear()
+        userStatus = 200
+        userBody = null
+        batchBody = null
+        userRequests.clear()
+        expoStatus = 200
+        expoBody = null
+        expoRequests.clear()
         jdbc.execute("TRUNCATE tb_program_session_application CASCADE")
         insert(first, expoId, "CONFIRMED")
         insert(second, expoId, "WAITING")
         insert(UUID.randomUUID(), expoId, "CANCELLED", "TRAINING", 8)
         insert(UUID.randomUUID(), UUID.randomUUID(), "CONFIRMED")
         jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, 'CONFIRMED')", first)
+        participantIds =
+            jdbc.query(
+                "SELECT DISTINCT participant_id FROM tb_program_session_application ORDER BY participant_id",
+            ) { rs, _ -> rs.getLong(1) }
     }
 
     private fun insert(
@@ -86,11 +104,195 @@ class AdminApplicationHttpTests {
             status,
             UUID.randomUUID(),
         )
+        participantIds =
+            jdbc.query(
+                "SELECT DISTINCT participant_id FROM tb_program_session_application ORDER BY participant_id",
+            ) { rs, _ -> rs.getLong(1) }
     }
 
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
 
     private fun summary(query: String = "") = read("/summary$query")
+
+    private fun admin(
+        query: String = "",
+        authorization: String? = "Bearer original-admin-jwt",
+    ) = mvc
+        .perform(
+            get("/application/admin/expos/$expoId/program-session-applications$query").apply {
+                if (authorization != null) header("Authorization", authorization)
+            },
+        ).andReturn()
+        .response
+
+    @Test
+    fun `관리자 원본 JWT와 현재 권한은 모든 개인정보 원천 조회 전에 검증한다`() {
+        for (suffix in listOf("", "/summary", "/current-sessions")) {
+            assertEquals(401, admin(suffix, null).status)
+            assertEquals(401, admin(suffix, "Basic ignored").status)
+            for (status in listOf(401, 403, 404, 503)) {
+                expoStatus = status
+                assertEquals(status, admin(suffix).status)
+            }
+        }
+        assertTrue(userRequests.isEmpty())
+        assertTrue(attendanceRequests.isEmpty())
+        expoStatus = 200
+        val response = admin("?applicationId=$first")
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val item = mapper.readTree(response.contentAsString)["items"][0]
+        assertEquals("saved", item["answers"]["1"].asString())
+        assertEquals("current", item["participant"]["information"]["answer"].asString())
+        assertEquals("CONFIRMED", item["history"][0]["status"].asString())
+        assertTrue(item["participant"]["phoneNumber"].isNull)
+        assertEquals("010-1234-5678", item["participant"]["notificationPhoneNumber"].asString())
+        assertTrue(expoRequests.all { it == "Bearer original-admin-jwt" })
+        expoStatus = 403
+        userRequests.clear()
+        assertEquals(403, admin().status)
+        assertTrue(userRequests.isEmpty())
+    }
+
+    @Test
+    fun `잘못된 권한 성공 응답과 공급자 오류는 허용이나 빈 결과로 바뀌지 않는다`() {
+        for (body in listOf(
+            "{}",
+            "not-json",
+            """{"expoId":"$expoId","adminId":1,"permission":"WRITE","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}""",
+            """{"expoId":"${UUID.randomUUID()}","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}""",
+        )) {
+            expoBody = body
+            assertEquals(502, admin().status)
+            assertTrue(userRequests.isEmpty())
+        }
+        expoBody = null
+        for (status in listOf(400, 429, 302, 500)) {
+            expoStatus = status
+            assertEquals(if (status == 500) 503 else 502, admin().status)
+        }
+    }
+
+    @Test
+    fun `User 사람 후보는 목록 건수 요약 Report 대상 모두 페이지 이전에 교차한다`() {
+        val candidate = Math.floorMod(first.hashCode(), 100000).toLong() + 1
+        val otherApplication = UUID.randomUUID()
+        insert(otherApplication, expoId, "CANCELLED", "STANDARD", 10)
+        jdbc.update("UPDATE tb_program_session_application SET participant_id = ? WHERE id = ?", candidate, otherApplication)
+        val expected =
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_application WHERE expo_id = ? AND participant_id = ?",
+                Long::class.java,
+                expoId,
+                candidate,
+            )
+        val filter = "?q=chosen&occupation=TEACHER&size=1"
+        val list = mapper.readTree(admin(filter).contentAsString)
+        val summary = mapper.readTree(admin("/summary$filter").contentAsString)
+        assertEquals(expected, list["totalElements"].asLong())
+        assertEquals(list["statusCounts"], summary["statusCounts"])
+        assertEquals(list["totalElements"], summary["totalElements"])
+        assertEquals(1, summary["uniqueParticipants"].asInt())
+        val candidates = participants.resolve(expoId, "chosen", "TEACHER")
+        assertEquals(listOf(candidate), candidates)
+        assertEquals(expected?.toInt(), repository.targets(expoId, AdminApplicationQuery(), 100, participantIds = candidates).size)
+        val empty = mapper.readTree(admin("?q=missing").contentAsString)
+        assertEquals(0, empty["totalElements"].asInt())
+        assertEquals(0, repository.targets(expoId, AdminApplicationQuery(), 100, participantIds = emptyList()).size)
+        assertEquals(0, mapper.readTree(admin("/summary?q=missing").contentAsString)["totalElements"].asInt())
+        assertTrue(userRequests.any { it.contains("q=chosen") && it.contains("occupation=TEACHER") })
+    }
+
+    @Test
+    fun `User 실패와 누락 순서불일치 비정상커서는 조회 전체를 실패시킨다`() {
+        for (status in listOf(400, 401, 403, 404, 429, 500, 503)) {
+            userStatus = status
+            assertEquals(if (status >= 500) 503 else 502, admin("?q=chosen").status)
+            assertEquals(if (status >= 500) 503 else 502, admin("/summary?q=chosen").status)
+        }
+        userStatus = 200
+        for (body in listOf("{}", "not-json", """{"items":[],"nextCursor":1}""", """{"items":[],"nextCursor":"bad"}""")) {
+            userBody = body
+            assertEquals(502, admin("?q=chosen").status)
+        }
+        userBody = null
+        batchBody = "[]"
+        assertEquals(502, admin("?q=chosen").status)
+        assertEquals(502, admin("/summary?q=chosen").status)
+        batchBody = """[{"participantId":999999}]"""
+        assertEquals(502, admin("?q=chosen").status)
+    }
+
+    @Test
+    fun `현재 회차는 빈 접수에도 조회하며 버전 변경과 타 행사 선택을 구분한다`() {
+        val response = admin("/current-sessions")
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        assertEquals(99, mapper.readTree(response.contentAsString)["items"][0]["id"].asInt())
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE program_id = 99", Int::class.java))
+        assertEquals(400, admin("/current-sessions?page=1").status)
+        assertEquals(400, admin("/current-sessions?programId=99").status)
+        for (status in listOf(404, 409, 503)) {
+            expoStatus = status
+            assertEquals(status, read("/current-sessions?programType=STANDARD&programId=99").status)
+        }
+        expoStatus = 200
+        expoBody = "{}"
+        assertEquals(502, admin("/current-sessions").status)
+    }
+
+    @Test
+    fun `사람 필터 검증과 제목 필터는 모든 관리자 조회에 동일하게 적용한다`() {
+        for (filter in listOf("q= ", "q=${"a".repeat(51)}", "q=one&q=two", "occupation=ADMIN", "occupation=", "unknown=1")) {
+            assertEquals(400, admin("?$filter").status)
+            assertEquals(400, admin("/summary?$filter").status)
+        }
+        assertEquals(0, mapper.readTree(admin("?search=missing&q=chosen").contentAsString)["totalElements"].asInt())
+    }
+
+    @Test
+    fun `후보 커서와 확정 배치는 500명 경계를 유지하며 무필터 요약은 User 전체를 훑지 않는다`() {
+        participantIds = (1L..501L).toList()
+        assertEquals(participantIds, participants.resolve(expoId, null, "TEACHER"))
+        assertEquals(2, userRequests.count { it.startsWith("/internal/expos/") })
+        assertEquals(2, userRequests.count { it.startsWith("batch:") })
+        assertTrue(userRequests.any { it.contains("cursor=500") })
+        userRequests.clear()
+        userStatus = 503
+        assertEquals(200, admin("/summary").status)
+        assertTrue(userRequests.isEmpty())
+        val internalList = read()
+        assertEquals(200, internalList.status)
+        assertTrue(mapper.readTree(internalList.contentAsString)["items"][0]["participant"].isNull)
+        assertTrue(userRequests.isEmpty())
+    }
+
+    @Test
+    fun `사람 원천 정수 오버플로와 중복 ID는 잘못된 성공이다`() {
+        val id = "9223372036854775808"
+        userBody =
+            """{"items":[{"participantId":$id,"name":"Person","phoneNumber":null,"notificationPhoneNumber":null,"occupation":"TEACHER","representativeId":null,"linkedTraineeId":null,"applicationType":"PRE","information":{}}],"nextCursor":null}"""
+        assertEquals(502, admin("?q=chosen").status)
+        userBody = null
+        batchBody = """[{"participantId":$id}]"""
+        assertEquals(502, admin("?q=chosen").status)
+        participantIds = listOf(2L, 2L)
+        batchBody = null
+        assertEquals(502, admin("?q=chosen").status)
+    }
+
+    @Test
+    fun `넓은 직업 후보 7만 명도 바인드 상한 없이 동일한 원장 집합을 조회한다`() {
+        val candidates = ((1L..70_000L).toList() + participantIds).distinct()
+        val query = AdminApplicationQuery(size = 1)
+        val (rows, counts) = repository.query(expoId, query, candidates)
+        val summary = repository.summary(expoId, query, candidates)
+        assertEquals(1, rows.size)
+        assertEquals(3L, counts.values.sum())
+        assertEquals(counts, summary.statusCounts)
+        assertEquals(3L, summary.totalElements)
+        assertEquals(3, repository.targets(expoId, query, 100, participantIds = candidates).size)
+    }
 
     @Test
     fun `출석 조회 미설정과 연결 실패는 서비스 불가이며 중복 회차는 한 번만 요청한다`() {
@@ -269,12 +471,16 @@ class AdminApplicationHttpTests {
         transaction.isReadOnly = true
         transaction.isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
         transaction.executeWithoutResult {
-            val before = mapper.readTree(summary("?status=CONFIRMED").contentAsString)
+            val query =
+                AdminApplicationQuery(
+                    status = team.startup.application.domain.application.presentation.dto.AdminApplicationStatus.CONFIRMED,
+                )
+            val before = repository.summary(expoId, query)
             CompletableFuture
                 .runAsync {
                     jdbc.update("UPDATE tb_program_session_application SET status = 'CANCELLED' WHERE id = ?", first)
                 }.get(10, TimeUnit.SECONDS)
-            assertEquals(before, mapper.readTree(summary("?status=CONFIRMED").contentAsString))
+            assertEquals(before, repository.summary(expoId, query))
         }
         assertEquals(0, mapper.readTree(summary("?status=CONFIRMED").contentAsString)["totalElements"].asInt())
     }
@@ -340,8 +546,8 @@ class AdminApplicationHttpTests {
         transaction.isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
         transaction.executeWithoutResult {
             jdbc.execute("SET LOCAL TIME ZONE 'Asia/Seoul'")
-            val body = mapper.readTree(read("?applicationId=$first").contentAsString)
-            val item = body["items"][0]
+            val rows = repository.query(expoId, AdminApplicationQuery(applicationId = first)).first
+            val item: tools.jackson.databind.JsonNode = mapper.valueToTree(rows.single())
             assertEquals("2026-10-11T00:00:00.123456Z", item["createdAt"].asString())
             assertEquals(item["createdAt"].asString(), item["history"][0]["createdAt"].asString())
         }
@@ -392,6 +598,73 @@ class AdminApplicationHttpTests {
     }
 
     companion object {
+        private var participantIds = emptyList<Long>()
+        private var userStatus = 200
+        private var userBody: String? = null
+        private var batchBody: String? = null
+        private val userRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private var expoStatus = 200
+        private var expoBody: String? = null
+        private val expoRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private val sources =
+            HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                createContext("/internal/expos/") { exchange ->
+                    assertEquals("user-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                    userRequests.add(exchange.requestURI.toString())
+                    val query =
+                        exchange.requestURI.rawQuery.split("&").associate {
+                            val parts = it.split("=", limit = 2)
+                            parts[0] to java.net.URLDecoder.decode(parts[1], java.nio.charset.StandardCharsets.UTF_8)
+                        }
+                    val cursor = query.getValue("cursor").toLong()
+                    val ids =
+                        participantIds.filter {
+                            it > cursor &&
+                                when (query["q"]) {
+                                    "missing" -> false
+                                    "chosen" -> it == 2L
+                                    else -> true
+                                }
+                        }
+                    val next = if (ids.size > 500) ids[499].toString() else "null"
+                    val body =
+                        userBody ?: ids.take(500).joinToString(",", "{\"items\":[", "],\"nextCursor\":$next}") { id ->
+                            """{"participantId":$id,"name":"Person $id","phoneNumber":null,"notificationPhoneNumber":"010-1234-5678","occupation":"TEACHER","representativeId":1,"linkedTraineeId":null,"applicationType":"PRE","information":{"answer":"current"},"surveyAnswer":null,"personalInformationStatus":true}"""
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(userStatus, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                createContext("/internal/standard-participants/details") { exchange ->
+                    assertEquals("user-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                    val request = ObjectMapper().readTree(exchange.requestBody.bufferedReader().readText())
+                    userRequests.add("batch:${request["expoId"].asString()}")
+                    val ids = request["participantIds"]
+                    val body = batchBody ?: (0 until ids.size()).joinToString(",", "[", "]") { "{\"participantId\":${ids[it].asLong()}}" }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(userStatus, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                createContext("/internal/expo/") { exchange ->
+                    assertEquals("expo-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                    val id = exchange.requestURI.path.split("/")[3]
+                    val isAccess = exchange.requestURI.path.endsWith("/admin-access")
+                    if (isAccess) expoRequests.add(exchange.requestHeaders.getFirst("Authorization"))
+                    val body =
+                        expoBody ?: if (isAccess) {
+                            """{"expoId":"$id","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
+                        } else {
+                            """{"expoId":"$id","items":[{"expoId":"$id","programType":"STANDARD","id":99,"title":"Empty session","startedAt":"2026-10-12T09:00","endedAt":"2026-10-12T10:00","groupId":"00000000-0000-0000-0000-000000000099","revision":1,"policy":null}],"page":0,"size":20,"totalElements":1,"definitionVersion":"version-one"}"""
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(expoStatus, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                start()
+            }
         private var attendanceStatus = 200
         private var attendanceBody: String? = null
         private val attendanceRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
@@ -422,12 +695,17 @@ class AdminApplicationHttpTests {
         fun attendanceProperties(registry: DynamicPropertyRegistry) {
             registry.add("application.attendance.url") { "http://127.0.0.1:${attendance.address.port}" }
             registry.add("application.attendance.internal-token") { "attendance-token" }
+            registry.add("application.registration.user-url") { "http://127.0.0.1:${sources.address.port}" }
+            registry.add("application.registration.user-internal-token") { "user-token" }
+            registry.add("application.registration.expo-url") { "http://127.0.0.1:${sources.address.port}" }
+            registry.add("application.registration.expo-internal-token") { "expo-token" }
         }
 
         @AfterAll
         @JvmStatic
         fun stopAttendance() {
             attendance.stop(0)
+            sources.stop(0)
         }
 
         @Container
