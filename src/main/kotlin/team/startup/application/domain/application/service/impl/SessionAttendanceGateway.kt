@@ -34,16 +34,17 @@ class SessionAttendanceGateway(
 
     fun send(message: SessionAttendanceMessage) {
         val path = "/internal/expos/${message.expoId}/participants/${message.participantId}/preregister-session"
+        val target = if (message.sessionId == null) "$path?revision=${message.revision}" else path
         val request =
             HttpRequest
-                .newBuilder(URI.create(url.trimEnd('/') + path))
+                .newBuilder(URI.create(url.trimEnd('/') + target))
                 .timeout(Duration.ofSeconds(8))
                 .header("X-Internal-Token", token)
         if (message.sessionId == null) {
             request.DELETE()
         } else {
             request.header("Content-Type", "application/json")
-            request.PUT(HttpRequest.BodyPublishers.ofString("{\"sessionId\":${message.sessionId}}"))
+            request.PUT(HttpRequest.BodyPublishers.ofString("{\"sessionId\":${message.sessionId},\"revision\":${message.revision}}"))
         }
         val response = client.send(request.build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() != 204) throw IOException("Attendance HTTP ${response.statusCode()}")

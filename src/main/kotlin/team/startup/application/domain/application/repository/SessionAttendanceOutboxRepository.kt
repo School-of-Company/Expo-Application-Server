@@ -10,7 +10,11 @@ data class SessionAttendanceMessage(
     val participantId: Long,
     val sessionId: Long?,
     val attempts: Int,
-)
+) {
+    // Reserve the next revision for purge DELETE compensation of this immutable PUT.
+    val revision: Long
+        get() = Math.addExact(Math.multiplyExact(id, 2L), if (sessionId == null) 1L else 0L)
+}
 
 @Repository
 class SessionAttendanceOutboxRepository(
