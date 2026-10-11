@@ -1,10 +1,12 @@
 package team.startup.application
 
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.http.MediaType
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
 import org.springframework.test.web.servlet.MockMvc
@@ -19,6 +21,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 @SpringBootTest(
     properties = [
         "eureka.client.enabled=false",
+        "application.registration.enabled=false",
         "management.endpoints.web.exposure.include=health,prometheus,info,env",
         "management.endpoint.health.show-components=always",
         "management.health.redis.enabled=false",
@@ -55,6 +58,42 @@ class SecurityConfigTests {
     }
 
     @Test
+    fun `비활성 등록 네 경로는 참가자 쿠키와 인증 주장으로 공개되지 않는다`() {
+        registrationPaths().forEach { path ->
+            mockMvc
+                .perform(
+                    post(path)
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "unverified-session"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registrationBody),
+                ).andExpect(status().isUnauthorized)
+        }
+    }
+
+    @Test
+    fun `비활성 등록 네 경로는 일반 인증 사용자에게도 저장을 허용하지 않는다`() {
+        registrationPaths().forEach { path ->
+            mockMvc
+                .perform(
+                    post(path)
+                        .with(csrf())
+                        .with(user("representative"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registrationBody),
+                ).andExpect(status().isServiceUnavailable)
+        }
+    }
+
+    private fun registrationPaths() =
+        listOf(
+            "/application/$EXPO_ID",
+            "/application/pre-standard/$EXPO_ID",
+            "/application/field/$EXPO_ID",
+            "/application/field/standard/$EXPO_ID",
+        )
+
+    @Test
     fun `잔여석 GET은 공개지만 원장 조회 구현이 준비되지 않으면 503을 반환한다`() {
         val path = "/application/expos/0199c000-0000-7000-8000-000000000001/preregister-sessions/7/capacity"
         mockMvc.perform(get(path)).andExpect(status().isServiceUnavailable)
@@ -64,6 +103,10 @@ class SecurityConfigTests {
     }
 
     companion object {
+        private const val EXPO_ID = "0199c000-0000-7000-8000-000000000001"
+        private val registrationBody =
+            """{"name":"대표자","phoneNumber":"01012345678","informationJson":"{}","personalInformationStatus":true,"trainingId":"training-1","sessionId":7,"verified":true}"""
+
         @Container
         @ServiceConnection
         @JvmStatic
