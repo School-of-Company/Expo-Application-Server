@@ -39,7 +39,10 @@ class ReportApplicationSnapshotRepository(
             try {
                 val parts = String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8).split(":")
                 require(parts.size == 2)
-                UUID.fromString(parts[0]) to parts[1].toInt().also { require(it > 0) }
+                val id = UUID.fromString(parts[0])
+                val offset = parts[1].toInt().also { require(it > 0) }
+                require(cursor == encodeCursor(id, offset))
+                id to offset
             } catch (exception: IllegalArgumentException) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid report cursor", exception)
             }
@@ -77,10 +80,15 @@ class ReportApplicationSnapshotRepository(
                         mapper.typeFactory.constructCollectionType(List::class.java, ReportApplicationTarget::class.java),
                     ),
                     if (offset + limit < total) {
-                        Base64.getUrlEncoder().withoutPadding().encodeToString("$id:${offset + limit}".toByteArray(StandardCharsets.UTF_8))
+                        encodeCursor(id, offset + limit)
                     } else {
                         null
                     },
                 )
             }.singleOrNull() ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Report snapshot not found")
+
+    private fun encodeCursor(
+        id: UUID,
+        offset: Int,
+    ): String = Base64.getUrlEncoder().withoutPadding().encodeToString("$id:$offset".toByteArray(StandardCharsets.UTF_8))
 }

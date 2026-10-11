@@ -268,11 +268,14 @@ class ReportApplicationTargetHttpTests {
         error(400, next("x".repeat(129)))
         error(400, next(" "))
         error(400, mvc.perform(get(base()).header("X-Internal-Token", "test-token")).andReturn().response)
-        error(400, next(Base64.getUrlEncoder().encodeToString("${page["snapshotId"].asString()}:2147483647".toByteArray())))
-        error(400, next(Base64.getUrlEncoder().encodeToString("${page["snapshotId"].asString()}:0".toByteArray())))
+        error(
+            400,
+            next(Base64.getUrlEncoder().withoutPadding().encodeToString("${page["snapshotId"].asString()}:2147483647".toByteArray())),
+        )
+        error(400, next(Base64.getUrlEncoder().withoutPadding().encodeToString("${page["snapshotId"].asString()}:0".toByteArray())))
         val unaligned = json(create("{\"limit\":2}"))
-        error(400, next(Base64.getUrlEncoder().encodeToString("${unaligned["snapshotId"].asString()}:1".toByteArray())))
-        error(404, next(Base64.getUrlEncoder().encodeToString("${UUID.randomUUID()}:1".toByteArray())))
+        error(400, next(Base64.getUrlEncoder().withoutPadding().encodeToString("${unaligned["snapshotId"].asString()}:1".toByteArray())))
+        error(404, next(Base64.getUrlEncoder().withoutPadding().encodeToString("${UUID.randomUUID()}:1".toByteArray())))
         error(
             400,
             mvc
@@ -292,6 +295,38 @@ class ReportApplicationTargetHttpTests {
         json(create())
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_report_application_snapshot", Int::class.java))
         error(404, next(cursor))
+    }
+
+    @Test
+    fun `커서는 반환된 정규 UUID와 위치 인코딩만 허용한다`() {
+        val page = json(create("{\"limit\":1}"))
+        val id = page["snapshotId"].asString()
+        listOf("$id:01", "$id:+1", "$id: 1", "1-1-1-1-1:1").forEach {
+            error(400, next(Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray())))
+        }
+        error(400, next(page["nextCursor"].asString() + "="))
+        assertEquals(3, json(next(page["nextCursor"].asString()))["totalElements"].asInt())
+    }
+
+    @Test
+    fun `저장된 스냅샷을 읽을 수 없으면 원천 장애로 거절한다`() {
+        val page = json(create("{\"limit\":1}"))
+        jdbc.update("UPDATE tb_report_application_snapshot SET items = jsonb_set(items, '{1}', '{}'::jsonb)")
+        val response = next(page["nextCursor"].asString())
+        error(503, response)
+        assertFalse(response.contentAsString.contains("Jackson"))
+        assertFalse(response.contentAsString.contains("participantId"))
+        assertEquals(3, json(create())["totalElements"].asInt())
+    }
+
+    @Test
+    fun `단일 회차 필터는 같은 숫자의 다른 프로그램 유형을 포함하지 않는다`() {
+        jdbc.update("UPDATE tb_program_session_application SET program_id = 7 WHERE id = ?", third)
+        val standard = json(create("{\"filter\":{\"programType\":\"STANDARD\",\"programId\":7}}"))
+        assertEquals(listOf(second, first).map(UUID::toString), ids(standard))
+        val training = json(create("{\"filter\":{\"programType\":\"TRAINING\",\"programId\":7,\"status\":\"CANCELLED\"}}"))
+        assertEquals(listOf(third.toString()), ids(training))
+        assertEquals(1, training["totalElements"].asInt())
     }
 
     @Test

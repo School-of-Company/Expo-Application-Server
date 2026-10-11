@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.server.ResponseStatusException
+import tools.jackson.core.JacksonException
 
 @RestControllerAdvice(assignableTypes = [ReportApplicationTargetController::class])
 class ReportApplicationTargetExceptionHandler {
@@ -25,7 +26,7 @@ class ReportApplicationTargetExceptionHandler {
     )
     fun invalid(): ResponseEntity<ProblemDetail> = error(400, "Invalid report target request")
 
-    @ExceptionHandler(DataAccessException::class)
+    @ExceptionHandler(DataAccessException::class, JacksonException::class)
     fun unavailable(): ResponseEntity<ProblemDetail> = error(503, "Application source unavailable; retry the request")
 
     private fun error(
