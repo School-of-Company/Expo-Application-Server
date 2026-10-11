@@ -1045,6 +1045,54 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `scheduler retries failed FIFO head and retains undelivered events after promotion and cancellation`() {
+        waitingCapacity = 2
+        addParticipant(3)
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        val tail = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+        linkFailure = true
+        cancel(confirmed.applicationId)
+        val scheduler = context.getBean(ProgramWaitlistScheduler::class.java)
+        repeat(2) { scheduler.reconcile() }
+        assertEquals(0L, count("tb_training_program_application"))
+        assertEquals(4L, count("tb_program_session_event"))
+        linkFailure = false
+        repeat(2) { scheduler.reconcile() }
+        assertEquals("CONFIRMED", context.getBean(ProgramWaitlistRepository::class.java).entry(head.applicationId)?.status)
+        assertEquals("WAITING", context.getBean(ProgramWaitlistRepository::class.java).entry(tail.applicationId)?.status)
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(5L, count("tb_program_session_event"))
+        cancel(head.applicationId)
+        repeat(2) { scheduler.reconcile() }
+        assertEquals(7L, count("tb_program_session_event"))
+        assertEquals(
+            0L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_event WHERE delivered_at IS NOT NULL", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `persisted policy marshalling preserves scheduler cutoff and pending events`() {
+        waitingCapacity = 1
+        promotionEnd = Instant.parse("2026-10-12T10:00:00.123456Z")
+        service.execute(command())
+        service.execute(command(participant = 2))
+        val stored = requireNotNull(jdbc.queryForObject("SELECT definition::text FROM tb_program_session_state", String::class.java))
+        val decoded =
+            mapper.readValue(
+                stored,
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(promotionEnd, decoded.policy?.promotionEndedAt)
+        assertEquals(mapper.readTree(stored), mapper.readTree(mapper.writeValueAsString(decoded)))
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        assertEquals(1, repository.keys(promotionEnd.minusNanos(1000)).size)
+        assertTrue(repository.keys(promotionEnd).isEmpty())
+        assertEquals(2L, count("tb_program_session_event"))
+    }
+
+    @Test
     fun `expired waiting stops polling but pending policy extension still reconciles`() {
         waitingCapacity = 1
         promotionEnd = Instant.parse("2026-10-12T10:00:00Z")
