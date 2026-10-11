@@ -11,6 +11,8 @@ spring:
 
 application:
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  program-sessions:
+    enabled: ${APPLICATION_PROGRAM_SESSIONS_ENABLED:false}
   attendance:
     enabled: ${APPLICATION_ATTENDANCE_ENABLED:false}
     url: ${APPLICATION_ATTENDANCE_URL:}

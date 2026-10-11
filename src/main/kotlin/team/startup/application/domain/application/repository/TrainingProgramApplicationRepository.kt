@@ -7,6 +7,11 @@ import org.springframework.data.repository.query.Param
 import team.startup.application.domain.application.entity.TrainingProgramApplication
 
 interface TrainingProgramApplicationRepository : JpaRepository<TrainingProgramApplication, Long> {
+    @Query(value = "SELECT pg_try_advisory_xact_lock(:traineeId * -1)", nativeQuery = true)
+    fun tryLockTrainee(
+        @Param("traineeId") traineeId: Long,
+    ): Boolean
+
     @Query(value = "SELECT CAST(pg_advisory_xact_lock(:programId) AS text)", nativeQuery = true)
     fun lockTrainingProgram(
         @Param("programId") programId: Long,

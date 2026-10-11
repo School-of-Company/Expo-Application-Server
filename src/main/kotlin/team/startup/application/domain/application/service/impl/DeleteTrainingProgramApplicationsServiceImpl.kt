@@ -2,6 +2,8 @@ package team.startup.application.domain.application.service.impl
 
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.DeleteTrainingProgramApplicationsService
@@ -10,6 +12,7 @@ import team.startup.application.domain.application.service.DeleteTrainingProgram
 class DeleteTrainingProgramApplicationsServiceImpl(
     private val applications: TrainingProgramApplicationRepository,
     private val operations: TrainingOperationRepository,
+    private val ledger: ProgramSessionApplicationRepository,
 ) : DeleteTrainingProgramApplicationsService {
     // 신청과 같은 프로그램 잠금 안에서 삭제 표시를 먼저 남겨, 잠금을 기다리던 신청이 삭제 뒤에 행을 남기지 못하게 한다.
     @Transactional
@@ -18,5 +21,6 @@ class DeleteTrainingProgramApplicationsServiceImpl(
         applications.markDeleted(programId)
         operations.incrementVersionsForProgram(programId)
         applications.deleteAllByTrainingProgramId(programId)
+        ledger.removeProgram(ProgramSessionType.TRAINING, programId)
     }
 }
