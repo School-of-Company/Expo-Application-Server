@@ -35,7 +35,7 @@ import tools.jackson.databind.ObjectMapper
 )
 @AutoConfigureMockMvc
 @Testcontainers
-class SwaggerEnabledTests {
+open class SwaggerEnabledTests {
     @Autowired
     private lateinit var mockMvc: MockMvc
 
@@ -47,6 +47,7 @@ class SwaggerEnabledTests {
         mockMvc
             .perform(get("/application/v3/api-docs"))
             .andExpect(status().isOk)
+            .andExpect(jsonPath("$.paths['/internal/standard-program-applications']").doesNotExist())
             .andExpect(jsonPath("$.info.title").value("Expo Application Server API"))
             .andExpect(jsonPath("$.info.version").value("0.1.0"))
             .andExpect(jsonPath("$.servers[0].url").value("/"))
