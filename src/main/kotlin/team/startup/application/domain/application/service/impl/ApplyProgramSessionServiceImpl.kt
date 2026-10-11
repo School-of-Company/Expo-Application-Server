@@ -31,7 +31,7 @@ class ApplyProgramSessionServiceImpl(
     private val waitlist: ProgramWaitlist,
     private val repository: ProgramWaitlistRepository,
 ) : ApplyProgramSessionService {
-    @Transactional
+    @Transactional(noRollbackFor = [ProgramSessionAdmissionDeadlineException::class])
     override fun execute(request: ApplyProgramSessionCommand): ProgramSessionReceipt {
         val expoId =
             try {
@@ -116,9 +116,11 @@ class ApplyProgramSessionServiceImpl(
             }
         val acceptedAt = waitlist.now()
         if (!acceptedAt.isBefore(policy.applicationEndedAt) || !acceptedAt.isBefore(form.endedAt)) {
-            conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
+            throw ProgramSessionAdmissionDeadlineException("프로그램 또는 폼 신청 기간이 아닙니다.")
         }
-        if (waiting && !acceptedAt.isBefore(policy.promotionEndedAt)) conflict("프로그램 대기 접수 기간이 끝났습니다.")
+        if (waiting && !acceptedAt.isBefore(policy.promotionEndedAt)) {
+            throw ProgramSessionAdmissionDeadlineException("프로그램 대기 접수 기간이 끝났습니다.")
+        }
         val receipt =
             ProgramSessionReceipt(
                 UUID.randomUUID(),
@@ -158,3 +160,7 @@ class ApplyProgramSessionServiceImpl(
         if (definitions.any { it.groupId == groupId }) conflict("같은 프로그램 묶음에 기존 신청이 있습니다.")
     }
 }
+
+private class ProgramSessionAdmissionDeadlineException(
+    message: String,
+) : ProgramApplicationConflictException(message)

@@ -125,9 +125,11 @@ class ProgramSessionApplicationTests {
         applicationEnd = Instant.parse("2100-01-01T00:00:00Z")
         promotionEnd = applicationEnd
         cancelEnd = applicationEnd
+        formEnd = applicationEnd
         testClock.current = Instant.parse("2026-10-11T10:00:00Z")
         linkFailure = false
         linkCompletedAt = null
+        delayedLinkParticipant = null
         title = "Session"
         unavailableLookup = null
     }
@@ -1511,6 +1513,80 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `late applicant rejection commits already due FIFO promotions across application and form deadlines`() {
+        val boundary = Instant.parse("2026-10-12T10:00:00Z")
+        for (deadline in listOf("application", "form")) {
+            reset()
+            waitingCapacity = 2
+            addParticipant(3)
+            addParticipant(4)
+            if (deadline == "application") applicationEnd = boundary else formEnd = boundary
+            service.execute(command(type = ProgramSessionType.TRAINING))
+            val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+            val tail = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+            change(ProgramSessionType.TRAINING) { it.put("capacity", 4) }
+            delayedLinkParticipant = 4
+            linkCompletedAt = boundary
+            mvc
+                .perform(
+                    post("/application/expos/$EXPO/program-sessions/TRAINING/1/applications")
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                        .header("Idempotency-Key", "late-applicant")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"participantId":4,"formVersion":1,"answers":{"101":"a"}}"""),
+                ).andExpect(status().isConflict)
+                .andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+            val repository = context.getBean(ProgramWaitlistRepository::class.java)
+            assertEquals("CONFIRMED", repository.entry(head.applicationId)?.status)
+            assertEquals("CONFIRMED", repository.entry(tail.applicationId)?.status)
+            assertEquals(502L, repository.entry(head.applicationId)?.traineeId)
+            assertEquals(503L, repository.entry(tail.applicationId)?.traineeId)
+            assertEquals(listOf(1L, 2L, 3L, 4L), linkRequests.map { mapper.readTree(it).path("participantId").asLong() })
+            repeat(2) { reconcile(ProgramSessionType.TRAINING) }
+            assertEquals(4, linkCalls.get())
+            assertEquals(3L, count("tb_training_program_application"))
+            assertEquals(3L, count("tb_program_session_application"))
+            assertEquals(3L, count("tb_program_session_receipt"))
+            assertEquals(5L, count("tb_program_session_history"))
+            assertEquals(5L, count("tb_program_session_event"))
+            assertEquals(
+                0L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_training_application_version WHERE trainee_id = 504", Long::class.java),
+            )
+            assertEquals(head, service.execute(command(participant = 2, type = ProgramSessionType.TRAINING)))
+            mvc
+                .perform(get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"))
+                .andExpect(jsonPath("$.applied").value(true))
+        }
+    }
+
+    @Test
+    fun `legacy applicant conflict rolls back earlier FIFO promotions`() {
+        waitingCapacity = 2
+        addParticipant(3)
+        addParticipant(4)
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        val tail = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+        change(ProgramSessionType.TRAINING) { it.put("capacity", 4) }
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (504, 2)")
+
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            service.execute(command(participant = 4, type = ProgramSessionType.TRAINING))
+        }
+
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        assertEquals("WAITING", repository.entry(head.applicationId)?.status)
+        assertEquals("WAITING", repository.entry(tail.applicationId)?.status)
+        assertEquals(2L, count("tb_training_program_application"))
+        assertEquals(3L, count("tb_program_session_application"))
+        assertEquals(3L, count("tb_program_session_receipt"))
+        assertEquals(3L, count("tb_program_session_history"))
+        assertEquals(3L, count("tb_program_session_event"))
+    }
+
+    @Test
     fun `concurrent cancellation promotion and policy approval converge with FIFO and one transition each`() {
         for (type in ProgramSessionType.entries) {
             reset()
@@ -1694,7 +1770,7 @@ class ProgramSessionApplicationTests {
                         if (formMode == "purpose") "REGISTRATION" else "PROGRAM",
                         if (formMode == "version") version + 1 else version,
                         Instant.parse("2020-01-01T00:00:00Z"),
-                        Instant.parse(if (formMode == "period") "2021-01-01T00:00:00Z" else "2100-01-01T00:00:00Z"),
+                        if (formMode == "period") Instant.parse("2021-01-01T00:00:00Z") else formEnd,
                         mapper.readTree(formQuestions),
                     )
                 }
@@ -1738,9 +1814,13 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var cancelEnd = applicationEnd
 
+        @Volatile private var formEnd = applicationEnd
+
         @Volatile private var linkFailure = false
 
         @Volatile private var linkCompletedAt: Instant? = null
+
+        @Volatile private var delayedLinkParticipant: Long? = null
 
         @Volatile private var title = "Session"
 
@@ -1819,8 +1899,11 @@ class ProgramSessionApplicationTests {
                                 linkCalls.incrementAndGet()
                                 linkRequests.add(body)
                                 if (linkFailure) status = 503
-                                linkCompletedAt?.let { testClock.current = it }
-                                val id = ObjectMapper().readTree(body).path("participantId").asLong() + 500
+                                val participantId = ObjectMapper().readTree(body).path("participantId").asLong()
+                                if (delayedLinkParticipant == null || delayedLinkParticipant == participantId) {
+                                    linkCompletedAt?.let { testClock.current = it }
+                                }
+                                val id = participantId + 500
                                 """{"traineeId":$id,"created":true}"""
                             }
 
