@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation.dto
 
+import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.constraints.AssertTrue
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
@@ -25,6 +26,7 @@ enum class AdminOccupation {
     PRE_SERVICE_TEACHER,
 }
 
+@Schema(description = "관리 원장 검색·페이지 조건")
 data class AdminApplicationQuery(
     val programType: ProgramSessionType? = null,
     @field:Positive val programId: Long? = null,
@@ -50,6 +52,7 @@ data class AdminApplicationQuery(
     val isProgramTypeValid: Boolean get() = programId == null || programType != null
 }
 
+@Schema(description = "접수 시점의 정의·폼·답변과 상태 이력")
 data class AdminApplicationRow(
     val applicationId: UUID,
     val participantId: Long,
@@ -120,12 +123,14 @@ data class AdminCurrentSessionPage(
     val definitionVersion: String,
 )
 
+@Schema(description = "접수 상태 변경 이력")
 data class AdminApplicationHistory(
     val id: Long,
     val status: AdminApplicationStatus,
     val createdAt: Instant,
 )
 
+@Schema(description = "관리 원장 페이지와 동일 필터 집계")
 data class AdminApplicationPage(
     val items: List<AdminApplicationRow>,
     val totalElements: Long,
@@ -134,6 +139,7 @@ data class AdminApplicationPage(
     val size: Int,
 )
 
+@Schema(description = "접수와 출석 집계")
 data class AdminApplicationSummary(
     val totalElements: Long,
     val uniqueParticipants: Long,
@@ -144,6 +150,7 @@ data class AdminApplicationSummary(
     val size: Int,
 )
 
+@Schema(description = "프로그램 회차별 접수 집계")
 data class AdminApplicationSessionSummary(
     val programType: ProgramSessionType,
     val programId: Long,
@@ -154,6 +161,7 @@ data class AdminApplicationSessionSummary(
     val attendance: AdminProgramAttendanceSummary? = null,
 )
 
+@Schema(description = "Attendance 원천의 실제 출석 인원과 HH:mm 입실 범위")
 data class AdminProgramAttendanceSummary(
     val programType: ProgramSessionType,
     val programId: Long,

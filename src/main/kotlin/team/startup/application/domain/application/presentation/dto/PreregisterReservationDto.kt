@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation.dto
 
+import io.swagger.v3.oas.annotations.media.Schema
 import java.util.UUID
 
 data class PreregisterReservationKey(
@@ -7,6 +8,7 @@ data class PreregisterReservationKey(
     val requestId: String,
 )
 
+@Schema(description = "민감한 폼·전화번호를 제외한 예약 복구 상태")
 data class PreregisterReservationStatus(
     val requestId: String,
     val sessionId: Long,

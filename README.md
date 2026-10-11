@@ -1,5 +1,19 @@
 # Application-Service
 
+## API 문서
+
+기본값은 문서 비활성화입니다. 개발 환경에서 `SWAGGER_ENABLED=true`로 켜면
+`GET /application/v3/api-docs`와 `/application/swagger-ui.html`을 사용할 수 있습니다.
+`SWAGGER_INCLUDE_INTERNAL=true`를 추가한 경우에만 `/internal/**` 계약과
+`X-Internal-Token` 헤더 요구 사항이 문서에 포함됩니다. 실제 토큰 값은 노출하지 않습니다.
+두 환경 변수는 선택이며 모두 기본 `false`입니다. 비활성화하면 문서 핸들러와
+문서 경로의 익명 허용 규칙이 등록되지 않습니다. 문서 경로는 GET만 공개합니다.
+내부 문서를 포함해도 실제 `/internal/**` API의 토큰 인증은 그대로 필요합니다.
+문서 예시는 가상 값입니다. 토큰, 비밀번호, 실제 전화번호·code를 예시에 넣지 않습니다.
+Gateway 통합 문서는 Config의 `gateway-dev.yml`에 `docs.services`와
+`publicPaths`의 `GET /application/v3/api-docs`가 적용된 뒤 사용할 수 있습니다.
+운영 프로필에는 문서 공개 라우팅을 등록하지 않습니다.
+
 `APPLICATION_PROGRAM_SESSIONS_ENABLED`는 기본 `false`입니다. `true`이면 기존
 내부 apply/replace도 Expo #71의 실제 회차 정의를 조회하고 정책이 설정된 신규
 신청을 폼 없는 구형 경로로 추가하지 못하게 합니다. 공급자 계약이 준비된 환경에서만

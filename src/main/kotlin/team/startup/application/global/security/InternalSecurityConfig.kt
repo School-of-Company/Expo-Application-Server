@@ -21,6 +21,7 @@ import java.security.MessageDigest
 class InternalSecurityConfig(
     private val internalTokenVerifier: InternalTokenVerifier,
     @Value("\${application.registration.enabled:false}") private val registrationEnabled: Boolean,
+    @Value("\${swagger.enabled:false}") private val swaggerEnabled: Boolean,
 ) {
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
@@ -56,13 +57,28 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(adminGroupMessages)
                     .permitAll()
-                    .requestMatchers(internal)
-                    .access {
-                        _,
-                        context,
-                        ->
-                        AuthorizationDecision(internalTokenVerifier.matches(context.request.getHeader("X-Internal-Token")))
-                    }
+                if (swaggerEnabled) {
+                    requests
+                        .requestMatchers(
+                            HttpMethod.GET,
+                            "/application/v3/api-docs",
+                            "/application/v3/api-docs/**",
+                            "/application/swagger-ui.html",
+                            "/application/swagger-ui/**",
+                        ).permitAll()
+                        .requestMatchers(
+                            "/application/v3/api-docs",
+                            "/application/v3/api-docs/**",
+                            "/application/swagger-ui.html",
+                            "/application/swagger-ui/**",
+                        ).denyAll()
+                }
+                requests.requestMatchers(internal).access {
+                    _,
+                    context,
+                    ->
+                    AuthorizationDecision(internalTokenVerifier.matches(context.request.getHeader("X-Internal-Token")))
+                }
                 if (registrationEnabled) requests.requestMatchers(*registration.toTypedArray()).permitAll()
                 requests
                     .anyRequest()
