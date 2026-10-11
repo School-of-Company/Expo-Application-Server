@@ -8,9 +8,11 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
@@ -19,6 +21,8 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 @SpringBootTest(properties = ["eureka.client.enabled=false", "application.internal-token=test-token"])
 @AutoConfigureMockMvc
@@ -72,6 +76,127 @@ class AdminApplicationHttpTests {
     }
 
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
+
+    private fun summary(query: String = "") = read("/summary$query")
+
+    @Test
+    fun `회차 집계는 목록과 Report 전체 대상과 같은 필터를 적용한다`() {
+        val filter = "?programType=STANDARD&programId=7&groupId=$groupId&search=KOTLIN&sort=CREATED_ASC"
+        val list = mapper.readTree(read(filter).contentAsString)
+        val response = summary(filter)
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(list["totalElements"], body["totalElements"])
+        assertEquals(list["statusCounts"], body["statusCounts"])
+        assertEquals(1, body["totalSessions"].asInt())
+        assertEquals(2, body["uniqueParticipants"].asInt())
+        assertEquals(7, body["sessions"][0]["programId"].asInt())
+        assertEquals(body["statusCounts"], body["sessions"][0]["statusCounts"])
+        val report =
+            mvc
+                .perform(
+                    post("$base/report-targets")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                            """{"filter":{"programType":"STANDARD","programId":7,"groupId":"$groupId","search":"KOTLIN","sort":"CREATED_ASC"}}""",
+                        ),
+                ).andReturn()
+                .response
+        assertEquals(200, report.status)
+        assertEquals(body["totalElements"].asLong(), mapper.readTree(report.contentAsString)["totalElements"].asLong())
+    }
+
+    @Test
+    fun `고유 참가자는 회차 신청 건수와 다르며 집계 페이지는 전체 건수를 바꾸지 않는다`() {
+        val extra = UUID.randomUUID()
+        insert(extra, expoId, "CANCELLED", "STANDARD", 9)
+        jdbc.update(
+            "UPDATE tb_program_session_application SET participant_id = (SELECT participant_id FROM tb_program_session_application WHERE id = ?) WHERE id = ?",
+            first,
+            extra,
+        )
+        val body = mapper.readTree(summary("?size=1&sort=CREATED_ASC").contentAsString)
+        assertEquals(4, body["totalElements"].asInt())
+        assertEquals(3, body["uniqueParticipants"].asInt())
+        assertEquals(3, body["totalSessions"].asInt())
+        assertEquals(1, body["sessions"].size())
+        assertEquals("STANDARD", body["sessions"][0]["programType"].asString())
+        assertEquals(7, body["sessions"][0]["programId"].asInt())
+        val next = mapper.readTree(summary("?size=1&page=1&sort=CREATED_ASC").contentAsString)
+        assertEquals(9, next["sessions"][0]["programId"].asInt())
+        assertEquals(body["totalElements"], next["totalElements"])
+        val empty = mapper.readTree(summary("?page=99").contentAsString)
+        assertEquals(0, empty["sessions"].size())
+        assertEquals(body["totalElements"], empty["totalElements"])
+        val cancelled = mapper.readTree(summary("?status=CANCELLED").contentAsString)
+        assertEquals(2, cancelled["totalElements"].asInt())
+        assertEquals(0, cancelled["statusCounts"]["CONFIRMED"].asInt())
+    }
+
+    @Test
+    fun `회차 집계는 행사 격리와 필터 검증 및 내부 인증을 유지한다`() {
+        assertEquals(
+            401,
+            mvc
+                .perform(get("$base/summary"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            401,
+            mvc
+                .perform(get("$base/summary").header("X-User-Role", "ROLE_ADMIN"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            401,
+            mvc
+                .perform(get("$base/summary").header("X-Internal-Token", "wrong"))
+                .andReturn()
+                .response.status,
+        )
+        listOf(
+            "role=ADMIN",
+            "search=",
+            "status=WAITING&status=CANCELLED",
+            "size=101",
+            "programId=7",
+            "from=2026-10-12T00:00:00Z&until=2026-10-11T00:00:00Z",
+        ).forEach { assertEquals(400, summary("?$it").status, it) }
+        val empty = mapper.readTree(summary("?applicationId=${UUID.randomUUID()}").contentAsString)
+        assertEquals(0, empty["totalElements"].asInt())
+        assertEquals(0, empty["uniqueParticipants"].asInt())
+        assertEquals(0, empty["totalSessions"].asInt())
+        assertEquals(0, empty["sessions"].size())
+        val response =
+            mvc
+                .perform(
+                    get("/internal/expos/${UUID.randomUUID()}/program-session-applications/summary?applicationId=$first")
+                        .header("X-Internal-Token", "test-token"),
+                ).andReturn()
+                .response
+        assertEquals(200, response.status)
+        assertEquals(0, mapper.readTree(response.contentAsString)["totalElements"].asInt())
+    }
+
+    @Test
+    fun `집계는 동시 취소 이후에도 같은 DB 스냅샷을 유지한다`() {
+        val transaction = TransactionTemplate(transactionManager)
+        transaction.isReadOnly = true
+        transaction.isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+        transaction.executeWithoutResult {
+            val before = mapper.readTree(summary("?status=CONFIRMED").contentAsString)
+            CompletableFuture
+                .runAsync {
+                    jdbc.update("UPDATE tb_program_session_application SET status = 'CANCELLED' WHERE id = ?", first)
+                }.get(10, TimeUnit.SECONDS)
+            assertEquals(before, mapper.readTree(summary("?status=CONFIRMED").contentAsString))
+        }
+        assertEquals(0, mapper.readTree(summary("?status=CONFIRMED").contentAsString)["totalElements"].asInt())
+    }
 
     @Test
     fun `필터 건수 상태 집계와 안정된 페이지는 같은 원장을 조회한다`() {
