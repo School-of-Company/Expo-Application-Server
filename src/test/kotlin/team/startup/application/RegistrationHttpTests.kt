@@ -27,6 +27,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.service.impl.ExpoPeriod
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
+import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.RegistrationField
 import team.startup.application.domain.application.service.impl.RegistrationForm
@@ -89,6 +90,59 @@ class RegistrationHttpTests {
                 ),
                 org.mockito.ArgumentMatchers.anyInt(),
             )
+    }
+
+    @Test
+    fun `인증 행사 재시도는 세션을 먼저 확인하고 인증 전화번호로 기존 예약을 조회한다`() {
+        val today = LocalDate.now().toString()
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today, today, true, 1))
+        `when`(gateway.participantSessionPhone(EXPO_1, "valid-session")).thenReturn("01099998888")
+        val command =
+            team.startup.application.domain.application.service.RegistrationCommand(
+                EXPO_1,
+                team.startup.application.domain.application.presentation
+                    .RegistrationRequest("홍길동", "01099998888", "{}", true, sessionId = 1),
+                "retry-auth",
+                "valid-session",
+            )
+        `when`(preregistration.resume(command)).thenReturn(true)
+        mockMvc
+            .perform(
+                post("/application/pre-standard/$EXPO_1")
+                    .header("Idempotency-Key", "retry-auth")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "valid-session"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isCreated)
+        val order = org.mockito.Mockito.inOrder(gateway, preregistration)
+        order.verify(gateway).expoPeriod(EXPO_1)
+        order.verify(gateway).participantSessionPhone(EXPO_1, "valid-session")
+        order.verify(preregistration).resume(command)
+        order.verifyNoMoreInteractions()
+        val fingerprint = mapper.writeValueAsString(command)
+        assertEquals(fingerprint, mapper.writeValueAsString(command.copy(participantSession = "rotated-session")))
+        kotlin.test.assertFalse(fingerprint.contains("participantSession"))
+
+        org.mockito.Mockito.clearInvocations(gateway, preregistration)
+        `when`(gateway.participantSessionPhone(EXPO_1, "valid-session"))
+            .thenThrow(ParticipantSessionException("SESSION_EXPIRED"))
+        mockMvc
+            .perform(
+                post("/application/pre-standard/$EXPO_1")
+                    .header("Idempotency-Key", "retry-auth")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "valid-session"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isUnauthorized)
+        org.mockito.Mockito.verifyNoInteractions(preregistration)
+        mockMvc
+            .perform(
+                post("/application/pre-standard/$EXPO_1")
+                    .header("Idempotency-Key", "retry-auth")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isUnauthorized)
+        org.mockito.Mockito.verifyNoInteractions(preregistration)
     }
 
     @Test
@@ -656,7 +710,9 @@ class RegistrationHttpTests {
         val tokens = mutableMapOf<String, String?>()
         server.createContext("/internal/expo/") { exchange ->
             tokens["expo"] = exchange.requestHeaders.getFirst("X-Internal-Token")
-            val response = "{\"startedDay\":\"2026-10-01\",\"finishedDay\":\"2026-10-31\"}".toByteArray()
+            val response =
+                """{"startedDay":"2026-10-01","finishedDay":"2026-10-31","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                    .toByteArray()
             exchange.sendResponseHeaders(200, response.size.toLong())
             exchange.responseBody.use { it.write(response) }
         }
