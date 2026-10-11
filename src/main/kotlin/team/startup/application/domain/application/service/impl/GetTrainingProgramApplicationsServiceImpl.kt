@@ -5,7 +5,6 @@ import org.springframework.transaction.annotation.Transactional
 import team.startup.application.domain.application.presentation.dto.TrainingApplicationResponse
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.GetTrainingProgramApplicationsService
-import java.time.format.DateTimeFormatter
 
 @Service
 class GetTrainingProgramApplicationsServiceImpl(
@@ -17,13 +16,6 @@ class GetTrainingProgramApplicationsServiceImpl(
             TrainingApplicationResponse(
                 applicationId = requireNotNull(application.id),
                 traineeId = application.traineeId,
-                status = application.status,
-                entryTime = application.entryTime?.format(TIME_FORMAT),
-                leaveTime = application.leaveTime?.format(TIME_FORMAT),
             )
         }
-
-    private companion object {
-        val TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm")
-    }
 }

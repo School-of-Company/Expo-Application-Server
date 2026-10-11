@@ -18,7 +18,4 @@ data class ApplyStandardProgramsCommand(
 data class StandardApplicationResponse(
     val applicationId: Long,
     val participantId: Long,
-    val status: Boolean,
-    val entryTime: String?,
-    val leaveTime: String?,
 )
