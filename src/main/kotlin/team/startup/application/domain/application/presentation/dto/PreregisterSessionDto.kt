@@ -4,11 +4,11 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
-import jakarta.validation.constraints.PositiveOrZero
 import org.hibernate.validator.constraints.CodePointLength
 import java.time.Instant
 import java.util.UUID
 
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties("waitingCapacity")
 data class PreregisterSessionDefinition(
     @field:Positive val id: Long,
     val expoId: UUID,
@@ -17,7 +17,6 @@ data class PreregisterSessionDefinition(
     val endedAt: Instant,
     @field:NotBlank val place: String,
     @field:Positive val capacity: Int,
-    @field:PositiveOrZero @param:JsonProperty(required = true) val waitingCapacity: Int,
     @param:JsonProperty(required = true) val closed: Boolean,
     @field:Positive val revision: Long,
 )
@@ -66,6 +65,6 @@ data class PreregisterSessionKey(
 )
 
 internal fun PreregisterSessionDefinition.isValidDefinition(): Boolean =
-    id > 0 && revision > 0 && capacity > 0 && waitingCapacity >= 0 &&
+    id > 0 && revision > 0 && capacity > 0 &&
         title.isNotBlank() && title.codePointCount(0, title.length) <= 50 && place.isNotBlank() &&
         startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0

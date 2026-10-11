@@ -267,12 +267,13 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
-    fun `waiting cancelled and absent preregistrations are not eligible`() {
-        for (registrationStatus in listOf("WAITING", "CANCELLED")) {
-            jdbc.update("UPDATE tb_preregister_application SET status = ? WHERE participant_id = 1", registrationStatus)
-            val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
-            assertEquals(403, error.statusCode.value())
+    fun `waiting preregistrations are forbidden by schema and cancelled or absent are not eligible`() {
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update("UPDATE tb_preregister_application SET status = 'WAITING' WHERE participant_id = 1")
         }
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 1")
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
+        assertEquals(403, error.statusCode.value())
         jdbc.update("DELETE FROM tb_preregister_application WHERE participant_id = 1")
         assertEquals(403, assertThrows(ResponseStatusException::class.java) { service.execute(command()) }.statusCode.value())
         assertEquals(0, linkCalls.get())

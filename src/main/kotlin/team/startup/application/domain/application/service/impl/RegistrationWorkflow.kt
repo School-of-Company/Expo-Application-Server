@@ -16,6 +16,7 @@ import java.util.UUID
 class RegistrationWorkflow(
     private val gateway: RegistrationGateway,
     private val mapper: ObjectMapper,
+    private val preregistration: PreregisterRegistrationWorkflow,
 ) {
     fun register(
         command: RegistrationCommand,
@@ -37,6 +38,11 @@ class RegistrationWorkflow(
         if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
+        val sessionRegistration = participantType == "STANDARD" && applicationType == "PRE"
+        if (sessionRegistration) {
+            if (request.sessionId == null || request.sessionId <= 0) badRequest("사전등록 회차 ID가 필요합니다.")
+            if (preregistration.resume(command)) return
+        }
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         val expo = gateway.expoPeriod(expoId)
         val (started, finished) =
@@ -45,7 +51,9 @@ class RegistrationWorkflow(
             } catch (ex: DateTimeParseException) {
                 throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 날짜 응답이 올바르지 않습니다.", ex)
             }
-        if (today.isBefore(started) || today.isAfter(finished)) badRequest("박람회 등록 기간이 아닙니다.")
+        if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
+            badRequest("박람회 등록 기간이 아닙니다.")
+        }
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {
@@ -83,6 +91,7 @@ class RegistrationWorkflow(
             badRequest("직업에 해당하는 학교를 입력해야 합니다.")
         }
         var companionCount = 0
+        val companionKeys = mutableSetOf<List<String?>>()
         form?.dynamicForm?.filter { it.formType == "COMPANION" }?.forEach { field ->
             val companions = answers.get(field.title) ?: return@forEach
             val limit = field.otherJson?.get("maxSelection")
@@ -94,31 +103,46 @@ class RegistrationWorkflow(
             if (companions.size() > maxCount) badRequest("동행자는 최대 ${maxCount}명까지 입력할 수 있습니다.")
             companionCount += companions.size()
             if (companionCount > 4) badRequest("대표자를 포함해 최대 5명까지 신청할 수 있습니다.")
-            companions.forEach(::validateCompanion)
+            companions.forEach {
+                validateCompanion(it)
+                companionKeys.add(
+                    listOf(
+                        it.path("name").asString().trim(),
+                        it.path("occupation").asString(),
+                        it
+                            .path("school")
+                            .asString()
+                            .trim()
+                            .takeIf(String::isNotEmpty),
+                    ),
+                )
+            }
         }
         val requestId = command.idempotencyKey ?: UUID.randomUUID().toString()
         val questions =
             form?.dynamicForm?.mapIndexed { order, field ->
                 RegistrationQuestion(field.id, field.title, order, field.formType, field.jsonData, field.otherJson, field.dynamicFormType)
             }
-        val participant =
-            gateway.participant(
-                participantType,
-                ParticipantRegistration(
-                    expoId,
-                    request.name,
-                    request.phoneNumber,
-                    request.informationJson,
-                    request.personalInformationStatus,
-                    applicationType,
-                    request.trainingId,
-                    occupation,
-                    school,
-                    requestId,
-                    form?.id,
-                    questions,
-                ),
+        val registration =
+            ParticipantRegistration(
+                expoId,
+                request.name,
+                request.phoneNumber,
+                request.informationJson,
+                request.personalInformationStatus,
+                applicationType,
+                request.trainingId,
+                occupation,
+                school,
+                requestId,
+                form?.id,
+                questions,
             )
+        if (sessionRegistration) {
+            preregistration.register(command, registration, 1 + companionKeys.size)
+            return
+        }
+        val participant = gateway.participant(participantType, registration)
         if (participantType == "STANDARD") participant.participantIds.forEach { gateway.countStandard(expoId, it) }
     }
 

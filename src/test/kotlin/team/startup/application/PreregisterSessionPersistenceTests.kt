@@ -38,11 +38,8 @@ import team.startup.application.domain.application.repository.PreregisterSession
 import team.startup.application.domain.application.service.ApplyPreregisterSessionService
 import team.startup.application.domain.application.service.CancelPreregisterSessionService
 import team.startup.application.domain.application.service.PreparePreregisterSessionChangeService
-import team.startup.application.domain.application.service.PromotePreregisterSessionService
 import team.startup.application.domain.application.service.PurgePreregisterSessionsService
 import team.startup.application.domain.application.service.ReconcilePreregisterSessionService
-import team.startup.application.domain.application.service.SetPreregisterAutoPromotionCommand
-import team.startup.application.domain.application.service.SetPreregisterAutoPromotionService
 import team.startup.application.domain.application.service.impl.PreregisterSessionGateway
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
@@ -64,10 +61,6 @@ class PreregisterSessionPersistenceTests {
     @Autowired private lateinit var prepare: PreparePreregisterSessionChangeService
 
     @Autowired private lateinit var reconcile: ReconcilePreregisterSessionService
-
-    @Autowired private lateinit var promote: PromotePreregisterSessionService
-
-    @Autowired private lateinit var autoPromotion: SetPreregisterAutoPromotionService
 
     @Autowired private lateinit var purge: PurgePreregisterSessionsService
 
@@ -102,7 +95,6 @@ class PreregisterSessionPersistenceTests {
                 Instant.now().plusSeconds(7200).truncatedTo(java.time.temporal.ChronoUnit.MICROS),
                 "Place",
                 2,
-                3,
                 false,
                 1,
             )
@@ -135,9 +127,11 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `five people split between confirmed and waiting and rejection is atomic`() {
+    fun `five people are all confirmed and rejection is atomic`() {
+        definition = definition.copy(capacity = 5)
+        publish(definition)
         val receipt = apply.execute(command(1, 2, 3, 4, 5))
-        assertEquals(listOf("CONFIRMED", "CONFIRMED", "WAITING", "WAITING", "WAITING"), receipt.map { it.status })
+        assertEquals(List(5) { "CONFIRMED" }, receipt.map { it.status })
         assertConflict { apply.execute(command(6, 7)) }
         assertEquals(5, repository.applications(expoId, 1).size)
         assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_transition", Int::class.java))
@@ -154,17 +148,19 @@ class PreregisterSessionPersistenceTests {
 
     @Test
     fun `overlapping ids only allocate new participants and reject another owner`() {
+        definition = definition.copy(capacity = 3)
+        publish(definition)
         val first = apply.execute(command(1, 2))
         val second = apply.execute(command(2, 3))
         assertEquals(first[1], second[0])
-        assertEquals("WAITING", second[1].status)
+        assertEquals("CONFIRMED", second[1].status)
         assertConflict { apply.execute(command(2).copy(representativeId = 9)) }
         assertEquals(3, repository.applications(expoId, 1).size)
     }
 
     @Test
     fun `last seat concurrent applications serialize`() {
-        definition = definition.copy(capacity = 1, waitingCapacity = 0)
+        definition = definition.copy(capacity = 1)
         publish(definition)
         val pool = Executors.newFixedThreadPool(2)
         val start = CountDownLatch(1)
@@ -191,17 +187,17 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `cancellation promotes fifo and repeat cannot cancel new application`() {
-        val receipt = apply.execute(command(1, 2, 3, 4))
+    fun `cancellation only frees seats and repeat cannot cancel new application`() {
+        val receipt = apply.execute(command(1, 2))
         val cancellation = CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[0].id))
         val changed = cancel.execute(cancellation)
-        assertEquals(listOf(1L, 3L), changed.map { it.participantId })
-        assertEquals(listOf("CANCELLED", "CONFIRMED"), changed.map { it.status })
+        assertEquals(listOf(1L), changed.map { it.participantId })
+        assertEquals(listOf("CANCELLED"), changed.map { it.status })
         val new = apply.execute(command(1)).single()
-        assertEquals("WAITING", new.status)
+        assertEquals("CONFIRMED", new.status)
         assertTrue(new.id > receipt.last().id)
         assertTrue(cancel.execute(cancellation).isEmpty())
-        assertEquals("WAITING", repository.active(expoId, 1)?.status)
+        assertEquals("CONFIRMED", repository.active(expoId, 1)?.status)
     }
 
     @Test
@@ -223,23 +219,13 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `auto off keeps queue manual promotion works and enabling is blocked`() {
-        val receipt = apply.execute(command(1, 2, 3))
-        autoPromotion.execute(SetPreregisterAutoPromotionCommand(PreregisterSessionKey(expoId, 1), false))
-        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, listOf(receipt[0].id)))
-        assertEquals("WAITING", repository.active(expoId, 3)?.status)
-        assertConflict { autoPromotion.execute(SetPreregisterAutoPromotionCommand(PreregisterSessionKey(expoId, 1), true)) }
-        assertEquals(3L, promote.execute(PreregisterSessionKey(expoId, 1)).single().participantId)
-    }
-
-    @Test
-    fun `after start cancellation does not auto promote`() {
+    fun `after start cancellation frees seats without promotion`() {
         definition = definition.copy(startedAt = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
         publish(definition)
-        val receipt = apply.execute(command(1, 2, 3))
+        val receipt = apply.execute(command(1, 2))
         assertEquals(1, cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, listOf(receipt[0].id))).size)
-        assertEquals("WAITING", repository.active(expoId, 3)?.status)
-        assertEquals(3L, promote.execute(PreregisterSessionKey(expoId, 1)).single().participantId)
+        assertEquals(1L, repository.occupied(expoId, 1))
+        assertEquals("CONFIRMED", apply.execute(command(3)).single().status)
     }
 
     @Test
@@ -288,20 +274,20 @@ class PreregisterSessionPersistenceTests {
 
     @Test
     fun `closed only changes allow history and reconciliation retains closed admission guard`() {
-        apply.execute(command(1, 2, 3))
+        apply.execute(command(1, 2))
         val closed = definition.copy(closed = true, revision = 2)
         prepare.execute(change(closed, false))
         publish(closed)
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
         assertConflict { apply.execute(command(4)) }
         val confirmed = repository.active(expoId, 1)!!
-        assertConflict { cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(confirmed.id))) }
-        assertEquals("CONFIRMED", repository.active(expoId, 1)?.status)
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(confirmed.id)))
+        assertTrue(repository.active(expoId, 1) == null)
         val opened = closed.copy(closed = false, revision = 3)
         prepare.execute(change(opened, false))
         publish(opened)
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
-        assertEquals("WAITING", apply.execute(command(4)).single().status)
+        assertEquals("CONFIRMED", apply.execute(command(4)).single().status)
     }
 
     @Test
@@ -334,8 +320,8 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `purge deletes receipts and queue and prevents late resurrection`() {
-        apply.execute(command(1, 2, 3))
+    fun `purge deletes receipts and prevents late resurrection`() {
+        apply.execute(command(1, 2))
         purge.execute(expoId)
         purge.execute(expoId)
         assertEquals(0, repository.applications(expoId, 1).size)
@@ -595,19 +581,16 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `counts and queue ignore cancelled history while preserving fifo`() {
-        val receipt = apply.execute(command(1, 2, 3, 4))
+    fun `occupied seats ignore cancelled history`() {
+        val receipt = apply.execute(command(1, 2))
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
                 "SELECT ?, 1, 1, 1000 + n, 'CANCELLED' FROM generate_series(1, 1000) AS n",
             expoId,
         )
-        assertEquals(2L to 2L, repository.counts(expoId, 1))
-        assertEquals(listOf(receipt[2]), repository.waiting(expoId, 1, 1))
-        val changes = cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[0].id)))
-        assertEquals(listOf(1L, 3L), changes.map { it.participantId })
-        assertEquals(2L to 1L, repository.counts(expoId, 1))
-        assertEquals(listOf(receipt[3]), repository.waiting(expoId, 1, 1))
+        assertEquals(2L, repository.occupied(expoId, 1))
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[0].id)))
+        assertEquals(1L, repository.occupied(expoId, 1))
     }
 
     companion object {

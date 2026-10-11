@@ -10,6 +10,5 @@ data class PreregisterSessionCapacityQuery(
 data class PreregisterSessionCapacityResponse(
     val sessionId: Long,
     val remaining: Int,
-    val waitingRemaining: Int,
     val maxApplicants: Int,
 )

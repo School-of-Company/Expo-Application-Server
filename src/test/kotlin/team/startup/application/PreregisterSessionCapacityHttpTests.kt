@@ -43,12 +43,12 @@ class PreregisterSessionCapacityHttpTests {
 
     @Test
     fun `등록 비활성화 상태에서도 로그인 없이 서비스 응답을 그대로 조회하고 캐시하지 않는다`() {
-        `when`(service.execute(query)).thenReturn(PreregisterSessionCapacityResponse(7, 1, 2, 3))
+        `when`(service.execute(query)).thenReturn(PreregisterSessionCapacityResponse(7, 1, 1))
 
         mvc
             .perform(get(path))
             .andExpect(status().isOk)
-            .andExpect(content().json("""{"sessionId":7,"remaining":1,"waitingRemaining":2,"maxApplicants":3}"""))
+            .andExpect(content().json("""{"sessionId":7,"remaining":1,"maxApplicants":1}"""))
             .andExpect(header().string("Cache-Control", "no-store"))
         verify(service).execute(query)
     }

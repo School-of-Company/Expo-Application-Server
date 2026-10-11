@@ -3,6 +3,8 @@ package team.startup.application.domain.application.service.impl
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
@@ -71,6 +73,10 @@ data class TraineeRegistrationResult(
     val traineeId: Long,
     val phoneNumber: String,
 )
+
+class ParticipantSaveRejectedException(
+    status: HttpStatus,
+) : ResponseStatusException(status, "User 참가자 저장이 거절되었습니다.")
 
 @Component
 class RegistrationGateway(
@@ -262,6 +268,7 @@ class RegistrationGateway(
         return if (response.statusCode() == 404) null else decode(response.body(), RegistrationForm::class.java)
     }
 
+    @Transactional(propagation = Propagation.NEVER)
     fun participant(
         type: String,
         registration: ParticipantRegistration,
@@ -281,8 +288,7 @@ class RegistrationGateway(
                         }
                     ParticipantRegistrationResult(ids.first(), registration.phoneNumber, ids)
                 } else {
-                    val participant = decode(response.body(), ParticipantRegistrationResult::class.java)
-                    participant.copy(participantIds = listOf(participant.participantId))
+                    decode(response.body(), ParticipantRegistrationResult::class.java)
                 }
             if (result.participantIds.size > 5 || result.participantIds.any { it <= 0 } ||
                 result.participantIds.distinct().size != result.participantIds.size
@@ -359,11 +365,29 @@ class RegistrationGateway(
             }
 
             404 -> {
-                if (allowNotFound) return response else throw ResponseStatusException(HttpStatus.NOT_FOUND, "등록 대상을 찾을 수 없습니다.")
+                if (allowNotFound) {
+                    return response
+                } else if (path == "/internal/standard-participants") {
+                    throw ParticipantSaveRejectedException(HttpStatus.NOT_FOUND)
+                } else {
+                    throw ResponseStatusException(HttpStatus.NOT_FOUND, "등록 대상을 찾을 수 없습니다.")
+                }
             }
 
             409 -> {
-                throw ResponseStatusException(HttpStatus.CONFLICT, conflictReason)
+                if (path == "/internal/standard-participants") {
+                    throw ParticipantSaveRejectedException(HttpStatus.CONFLICT)
+                } else {
+                    throw ResponseStatusException(HttpStatus.CONFLICT, conflictReason)
+                }
+            }
+
+            400, 422 -> {
+                if (path == "/internal/standard-participants") {
+                    throw ParticipantSaveRejectedException(HttpStatus.BAD_GATEWAY)
+                } else {
+                    throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 응답이 올바르지 않습니다.")
+                }
             }
 
             in 500..599 -> {
