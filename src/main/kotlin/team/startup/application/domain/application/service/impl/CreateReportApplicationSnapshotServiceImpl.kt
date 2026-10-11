@@ -39,7 +39,10 @@ class CreateReportApplicationSnapshotServiceImpl(
             writes.execute {
                 val rows = applications.targets(expoId, request.filter.query, 10001, participantIds = participantIds)
                 if (rows.size > 10000) {
-                    throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Report target limit is 10000 applications; narrow the filter")
+                    throw ResponseStatusException(
+                        HttpStatus.UNPROCESSABLE_ENTITY,
+                        "Report target limit is 10000 applications; narrow the filter",
+                    )
                 }
                 snapshots.create(
                     expoId,
