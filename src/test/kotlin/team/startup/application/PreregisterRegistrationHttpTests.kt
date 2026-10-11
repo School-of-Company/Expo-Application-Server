@@ -435,6 +435,14 @@ class PreregisterRegistrationHttpTests {
         assertEquals(1, userRequests.size)
         assertEquals(0, capacity().get("remaining").intValue())
         assertEquals(2, count("tb_preregister_application"))
+        assertEquals(
+            2L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                    "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id WHERE r.request_id = 'request'",
+                Long::class.java,
+            ),
+        )
         assertEquals(2, count("tb_session_attendance_outbox"))
         attendance.dispatch()
         assertEquals(listOf("PUT:42", "PUT:43"), attendanceRequests.toList())

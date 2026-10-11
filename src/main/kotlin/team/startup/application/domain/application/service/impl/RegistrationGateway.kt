@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ManagedOwnerParticipant
+import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.JsonNode
@@ -188,6 +190,94 @@ class RegistrationGateway(
         sessionId: String,
         participantId: Long,
     ): String? {
+        val phoneNumber = participantSessionPhone(expoId, sessionId)
+        val participants =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/standard-participants/managed/select",
+                    "POST",
+                    mapper.writeValueAsString(
+                        mapOf("expoId" to expoId, "phoneNumber" to phoneNumber, "participantIds" to listOf(participantId)),
+                    ),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        if (!participants.isArray || participants.size() != 1 || !participants.get(0).path("participantId").isIntegralNumber ||
+            participants.get(0).path("participantId").asLong() != participantId
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
+        }
+        val occupation = participants.get(0).get("occupation")
+        if (occupation == null || (!occupation.isNull && !occupation.isString)) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 역할 응답이 올바르지 않습니다.")
+        }
+        return if (occupation.isNull) null else occupation.stringValue()
+    }
+
+    fun managedParty(
+        expoId: UUID,
+        sessionId: String,
+    ): OwnerApplicationParty {
+        if (sessionId.isBlank()) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
+        val phoneNumber = participantSessionPhone(expoId.toString(), sessionId)
+        val response =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/standard-participants/managed",
+                    "POST",
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "phoneNumber" to phoneNumber)),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        val registered = response.get("registered")
+        val participants = response.get("participants")
+        if (registered == null || !registered.isBoolean || participants == null || !participants.isArray || participants.size() > 5) {
+            invalidManagedResponse()
+        }
+        val party =
+            OwnerApplicationParty(
+                (0 until participants.size()).map { index ->
+                    val node = participants.get(index)
+                    val id = node.get("participantId")
+                    val name = node.get("name")
+                    val occupation = node.get("occupation")
+                    val representative = node.get("representative")
+                    if (id == null || !id.isIntegralNumber || !id.canConvertToLong() || id.asLong() <= 0 ||
+                        name == null || !name.isString || occupation == null || (!occupation.isNull && !occupation.isString) ||
+                        representative == null || !representative.isBoolean
+                    ) {
+                        invalidManagedResponse()
+                    }
+                    ManagedOwnerParticipant(
+                        id.asLong(),
+                        name.stringValue(),
+                        if (occupation.isNull) null else occupation.stringValue(),
+                        representative.asBoolean(),
+                    )
+                },
+            )
+        if (party.participants
+                .map { it.participantId }
+                .distinct()
+                .size != party.participants.size ||
+            (registered.asBoolean() && (party.participants.isEmpty() || party.representativeId == null)) ||
+            (!registered.asBoolean() && party.participants.isNotEmpty())
+        ) {
+            invalidManagedResponse()
+        }
+        return party
+    }
+
+    private fun invalidManagedResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
+
+    private fun participantSessionPhone(
+        expoId: String,
+        sessionId: String,
+    ): String {
         val session =
             decode(
                 call(
@@ -205,33 +295,7 @@ class RegistrationGateway(
         ) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "참가자 세션 응답이 올바르지 않습니다.")
         }
-        val participants =
-            decode(
-                call(
-                    userUrl,
-                    "/internal/standard-participants/managed/select",
-                    "POST",
-                    mapper.writeValueAsString(
-                        mapOf(
-                            "expoId" to expoId,
-                            "phoneNumber" to session.path("phoneNumber").stringValue(),
-                            "participantIds" to listOf(participantId),
-                        ),
-                    ),
-                    token = userInternalToken,
-                ).body(),
-                JsonNode::class.java,
-            )
-        if (!participants.isArray || participants.size() != 1 || !participants.get(0).path("participantId").isIntegralNumber ||
-            participants.get(0).path("participantId").asLong() != participantId
-        ) {
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
-        }
-        val occupation = participants.get(0).get("occupation")
-        if (occupation == null || (!occupation.isNull && !occupation.isString)) {
-            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 역할 응답이 올바르지 않습니다.")
-        }
-        return if (occupation.isNull) null else occupation.stringValue()
+        return session.path("phoneNumber").stringValue()
     }
 
     fun resolveTrainee(
