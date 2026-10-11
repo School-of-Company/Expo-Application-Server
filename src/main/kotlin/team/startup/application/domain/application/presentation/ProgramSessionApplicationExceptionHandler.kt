@@ -14,7 +14,7 @@ data class ProgramSessionError(
     @field:Schema(description = "클라이언트가 처리할 오류 종류") val code: String,
 )
 
-@RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class])
+@RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class, ManagedParticipantController::class])
 class ProgramSessionApplicationExceptionHandler {
     @ExceptionHandler(ResponseStatusException::class)
     fun upstream(ex: ResponseStatusException): ResponseEntity<ProgramSessionError> {

@@ -22,6 +22,14 @@ class ProgramSessionSecurityConfig {
                 OrRequestMatcher(
                     PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/application/program-session-csrf"),
                     PathPatternRequestMatcher.withDefaults().matcher(
+                        HttpMethod.GET,
+                        "/application/expos/{expoId}/participants/{participantId}/qr",
+                    ),
+                    PathPatternRequestMatcher.withDefaults().matcher(
+                        HttpMethod.GET,
+                        "/application/expos/{expoId}/program-sessions/{programType}/{programId}/participants",
+                    ),
+                    PathPatternRequestMatcher.withDefaults().matcher(
                         HttpMethod.POST,
                         "/application/expos/{expoId}/program-sessions/{programType}/{programId}/applications",
                     ),

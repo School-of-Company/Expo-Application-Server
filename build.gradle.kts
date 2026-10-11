@@ -25,9 +25,11 @@ repositories {
 extra["springCloudVersion"] = "2025.1.3"
 
 dependencies {
+    implementation("org.apache.kafka:kafka-clients")
     runtimeOnly("org.postgresql:postgresql")
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
     testImplementation("org.testcontainers:testcontainers-postgresql")
+    testImplementation("org.testcontainers:testcontainers-kafka")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     implementation("com.querydsl:querydsl-jpa:5.1.0:jakarta")

@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ManagedOwnerParticipant
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
+import team.startup.application.domain.application.presentation.dto.ParticipantQrResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.JsonNode
@@ -105,6 +106,8 @@ class RegistrationGateway(
     @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String = internalToken,
     @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String = internalToken,
     @Value("\${application.program-sessions.enabled:false}") private val programSessionsEnabled: Boolean = false,
+    @Value("\${application.attendance.url:}") private val attendanceUrl: String = "",
+    @Value("\${application.attendance.internal-token:}") private val attendanceToken: String = "",
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -218,6 +221,7 @@ class RegistrationGateway(
                 JsonNode::class.java,
             )
         if (!participants.isArray || participants.size() != 1 || !participants.get(0).path("participantId").isIntegralNumber ||
+            !participants.get(0).path("participantId").canConvertToLong() ||
             participants.get(0).path("participantId").asLong() != participantId
         ) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
@@ -324,6 +328,7 @@ class RegistrationGateway(
     fun resolveTrainee(
         expoId: String,
         participantId: Long,
+        trainingId: String? = null,
     ): Long {
         val response =
             decode(
@@ -331,7 +336,7 @@ class RegistrationGateway(
                     userUrl,
                     "/internal/trainees/resolve-or-create-by-participant",
                     "POST",
-                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId)),
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId, "trainingId" to trainingId)),
                     token = userInternalToken,
                 ).body(),
                 JsonNode::class.java,
@@ -341,6 +346,36 @@ class RegistrationGateway(
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "연수자 연결 응답이 올바르지 않습니다.")
         }
         return id.asLong()
+    }
+
+    fun participantQr(
+        expoId: UUID,
+        participantId: Long,
+        representativeId: Long,
+    ): ParticipantQrResponse {
+        if (attendanceToken.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
+        val response =
+            call(
+                attendanceUrl,
+                "/internal/expos/$expoId/participants/$participantId/qr",
+                "POST",
+                mapper.writeValueAsString(mapOf("representativeId" to representativeId)),
+                token = attendanceToken,
+            ).body()
+        val node =
+            try {
+                requireNotNull(mapper.readTree(response))
+            } catch (_: Exception) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "QR 공급자 응답이 올바르지 않습니다.")
+            }
+        val id = node.path("participantId")
+        val code = node.path("code")
+        if (!id.isIntegralNumber || !id.canConvertToLong() || id.asLong() != participantId || !code.isString ||
+            code.stringValue().isBlank()
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "QR 공급자 응답이 올바르지 않습니다.")
+        }
+        return ParticipantQrResponse(participantId, code.stringValue())
     }
 
     private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
