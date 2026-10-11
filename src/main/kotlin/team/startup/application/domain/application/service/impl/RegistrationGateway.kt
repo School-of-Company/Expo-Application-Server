@@ -33,6 +33,7 @@ data class RegistrationField(
     val jsonData: JsonNode,
     val otherJson: JsonNode?,
     val dynamicFormType: String,
+    val requiredStatus: Boolean = false,
 )
 
 data class RegistrationQuestion(
@@ -58,6 +59,7 @@ data class ParticipantRegistration(
     val requestId: String,
     val formId: String?,
     val questions: List<RegistrationQuestion>?,
+    val region: String? = null,
 )
 
 data class ParticipantRegistrationResult(
@@ -74,6 +76,8 @@ data class TraineeRegistrationResult(
 class ParticipantSaveRejectedException(
     status: HttpStatus,
 ) : ResponseStatusException(status, "User 참가자 저장이 거절되었습니다.")
+
+class ParticipantIdsMismatchException : ResponseStatusException(HttpStatus.BAD_GATEWAY, "User 참가자 ID 응답 확인이 필요합니다.")
 
 @Component
 class RegistrationGateway(
@@ -113,7 +117,7 @@ class RegistrationGateway(
             val body = decode(response.body(), JsonNode::class.java)
             val result =
                 if (body.isArray) {
-                    if (body.size() !in 1..5) invalidParticipantResponse()
+                    if (body.size() !in 1..5) throw ParticipantIdsMismatchException()
                     val ids =
                         (0 until body.size()).map { index ->
                             val id = body.get(index).get("id")
@@ -124,14 +128,16 @@ class RegistrationGateway(
                 } else {
                     decode(response.body(), ParticipantRegistrationResult::class.java)
                 }
-            if (result.participantIds.size > 5 || result.participantIds.any { it <= 0 } ||
+            if (result.participantIds.size !in 1..5 || result.participantId <= 0 ||
+                result.participantIds.any { it <= 0 } ||
                 result.participantIds.distinct().size != result.participantIds.size
             ) {
-                invalidParticipantResponse()
+                throw ParticipantIdsMismatchException()
             }
             result
         } else {
             val trainee = decode(response.body(), TraineeRegistrationResult::class.java)
+            if (trainee.traineeId <= 0) invalidParticipantResponse()
             ParticipantRegistrationResult(trainee.traineeId, trainee.phoneNumber)
         }
     }
@@ -154,7 +160,7 @@ class RegistrationGateway(
         type: Class<T>,
     ): T =
         try {
-            mapper.readValue(body, type)
+            requireNotNull(mapper.readValue(body, type))
         } catch (ex: Exception) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 응답이 올바르지 않습니다.", ex)
         }

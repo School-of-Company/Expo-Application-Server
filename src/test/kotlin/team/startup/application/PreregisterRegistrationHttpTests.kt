@@ -81,6 +81,7 @@ class PreregisterRegistrationHttpTests {
         stored.clear()
         userStatus.set(201)
         responseIds.set(0)
+        responseBody.set(null)
         capacity.set(5)
         countStatus.set(204)
         upstreamAvailable = true
@@ -158,6 +159,98 @@ class PreregisterRegistrationHttpTests {
         assertEquals(400, submit())
         assertTrue(userRequests.isEmpty())
         assertEquals(0, count("tb_preregister_reservation"))
+    }
+
+    @Test
+    fun `invalid decoded User IDs stop automatic recovery and retain seats until operator repair`() {
+        val invalid =
+            listOf(
+                """{"participantId":42,"phoneNumber":"01012345678","participantIds":[]}""",
+                """{"participantId":42,"phoneNumber":"01012345678","participantIds":[0]}""",
+                """{"participantId":42,"phoneNumber":"01012345678","participantIds":[-1]}""",
+                """{"participantId":42,"phoneNumber":"01012345678","participantIds":[42,42]}""",
+                """{"participantId":0,"phoneNumber":"01012345678","participantIds":[43]}""",
+            )
+        for ((index, response) in invalid.withIndex()) {
+            responseBody.set(response)
+            assertEquals(502, submit("invalid-$index", phone = "0100000000$index"))
+            val status =
+                mvc
+                    .perform(get("/internal/expos/$EXPO/preregister-reservations/invalid-$index").header("X-Internal-Token", "test-token"))
+                    .andReturn()
+                    .response
+            assertEquals(502, mapper.readTree(status.contentAsString).get("errorStatus").intValue())
+            assertEquals(4 - index, capacity().get("remaining").intValue())
+        }
+        assertEquals(5, userRequests.size)
+        assertTrue(reservations.due().isEmpty())
+        repeat(2) { recovery.recover() }
+        assertEquals(5, userRequests.size)
+        assertEquals(0, count("tb_preregister_application"))
+        assertEquals(0, count("tb_preregister_count_outbox"))
+        assertEquals(0, count("tb_session_attendance_outbox"))
+        val original = userRequests.last()
+        responseBody.set(null)
+        stored.remove(original.get("requestId").stringValue())
+        assertEquals(
+            204,
+            mvc
+                .perform(post("/internal/expos/$EXPO/preregister-reservations/invalid-4/retry").header("X-Internal-Token", "test-token"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(original, userRequests.last())
+        assertEquals(1, count("tb_preregister_application"))
+        assertEquals(0, capacity().get("remaining").intValue())
+    }
+
+    @Test
+    fun `late delivery failure does not reschedule a reservation already held for operator review`() {
+        responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[]}""")
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        userGate.set(entered to release)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val first = executor.submit<Int> { submit() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertEquals(502, submit())
+            userStatus.set(503)
+            release.countDown()
+            assertEquals(503, first.get(10, TimeUnit.SECONDS))
+            assertTrue(reservations.due().isEmpty())
+            assertEquals(
+                "infinity",
+                jdbc.queryForObject("SELECT next_attempt_at::text FROM tb_preregister_reservation", String::class.java),
+            )
+            assertEquals(4, capacity().get("remaining").intValue())
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `null User success stays retryable with original request and reserved seats`() {
+        responseBody.set("null")
+        assertEquals(502, submit())
+        val original = userRequests.single()
+        assertEquals(4, capacity().get("remaining").intValue())
+        val status =
+            mvc
+                .perform(get("/internal/expos/$EXPO/preregister-reservations/request").header("X-Internal-Token", "test-token"))
+                .andReturn()
+                .response
+        assertTrue(mapper.readTree(status.contentAsString).get("errorStatus").isNull)
+        jdbc.update("UPDATE tb_preregister_reservation SET next_attempt_at = CURRENT_TIMESTAMP")
+        recovery.recover()
+        assertEquals(2, userRequests.size)
+        assertEquals(original, userRequests.last())
+        responseBody.set(null)
+        stored.remove(original.get("requestId").stringValue())
+        assertEquals(201, submit())
+        assertEquals(original, userRequests.last())
+        assertEquals(1, count("tb_preregister_application"))
     }
 
     @Test
@@ -606,6 +699,9 @@ class PreregisterRegistrationHttpTests {
         private val capacity = AtomicInteger(5)
         private val userStatus = AtomicInteger(201)
         private val responseIds = AtomicInteger(0)
+        private val responseBody =
+            java.util.concurrent.atomic
+                .AtomicReference<String?>()
         private val countStatus = AtomicInteger(204)
         private val expoDayOffset = AtomicInteger(0)
         private val formDayOffset = AtomicInteger(0)
@@ -652,7 +748,9 @@ class PreregisterRegistrationHttpTests {
                                     responseIds.get().takeIf { it > 0 }
                                         ?: (1 + json.readTree(request.get("informationJson").stringValue()).get("companions").size())
                                 val ids = (42L until 42L + count).joinToString(",")
-                                val response = """{"participantId":42,"phoneNumber":"01012345678","created":true,"participantIds":[$ids]}"""
+                                val response =
+                                    responseBody.get()
+                                        ?: """{"participantId":42,"phoneNumber":"01012345678","created":true,"participantIds":[$ids]}"""
                                 if (userStatus.get() == 0 ||
                                     userStatus.get() in 200..299
                                 ) {
