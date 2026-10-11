@@ -198,6 +198,92 @@ class RegistrationHttpTests {
     }
 
     @Test
+    fun `대표자의 잘못된 직업 값은 User 호출 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(1, "직업", "OCCUPATION"))),
+        )
+        val invalid = listOf("\"MIDDLE_HIGH_SCHOOL_STUDENT\"", "\"UNKNOWN\"", "\" GENERAL \"", "123", "[]", "{}")
+        for (occupation in invalid) {
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("{\"직업\":$occupation}")),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(invalid.size)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(invalid.size)).form(EXPO_1, "STANDARD", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `선택 직업과 지역의 미응답은 null로 전달하고 원문과 스냅샷을 유지한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "지역", "DEFAULT").copy(formType = "REGION"))
+        val questions =
+            fields.mapIndexed { order, it ->
+                RegistrationQuestion(it.id, it.title, order, it.formType, it.jsonData, it.otherJson, it.dynamicFormType)
+            }
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", fields),
+        )
+        for ((index, answers) in listOf(
+            "{}",
+            "{\"직업\":null,\"지역\":null}",
+            "{\"직업\":\"\",\"지역\":\"\"}",
+            "{\"직업\":\"  \",\"지역\":\"  \"}",
+        ).withIndex()) {
+            val registration =
+                ParticipantRegistration(
+                    EXPO_1,
+                    "홍길동",
+                    "01012345678",
+                    answers,
+                    true,
+                    "FIELD",
+                    null,
+                    null,
+                    null,
+                    "optional-$index",
+                    FORM_ID,
+                    questions,
+                )
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .header("Idempotency-Key", "optional-$index")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(answers)),
+                ).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration)
+        }
+    }
+
+    @Test
+    fun `필수 직업과 지역의 미응답은 User 호출 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "지역", "DEFAULT").copy(formType = "REGION"))
+        for (field in fields) {
+            `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+                registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field.copy(requiredStatus = true))),
+            )
+            for (answers in listOf("{}", "{\"${field.title}\":null}", "{\"${field.title}\":\"\"}", "{\"${field.title}\":\"  \"}")) {
+                mockMvc
+                    .perform(post("/application/field/standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body(answers)))
+                    .andExpect(status().isBadRequest)
+            }
+        }
+        verify(gateway, org.mockito.Mockito.times(8)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(8)).form(EXPO_1, "STANDARD", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
     fun `학교가 필요한 직업에 학교 답변이 없으면 참가자를 만들지 않는다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))

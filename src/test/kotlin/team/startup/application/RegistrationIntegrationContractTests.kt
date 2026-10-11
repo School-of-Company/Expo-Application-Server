@@ -38,6 +38,8 @@ class RegistrationIntegrationContractTests {
         var countAvailable = true
         var failedParticipantId: Long? = null
         var standardResponse: String? = null
+        var traineeResponse: String? = null
+        var userStatus: Int? = null
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/internal/") { exchange ->
             val path = exchange.requestURI.path
@@ -65,7 +67,7 @@ class RegistrationIntegrationContractTests {
                         } else {
                             val fields =
                                 if (exchange.requestURI.query.contains("type=STANDARD")) {
-                                    """[{"id":9,"title":"동반자","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":5},"dynamicFormType":"DEFAULT"}]"""
+                                    """[{"id":9,"title":"동반자","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":5},"dynamicFormType":"DEFAULT"},{"id":10,"title":"거주 지역","formType":"REGION","requiredStatus":true,"jsonData":{},"otherJson":null,"dynamicFormType":"DEFAULT"}]"""
                                 } else {
                                     "[]"
                                 }
@@ -79,8 +81,8 @@ class RegistrationIntegrationContractTests {
                         val sent = mapper.readTree(exchange.requestBody.bufferedReader().readText())
                         requests.add(path to sent)
                         val idField = if (path == "/internal/trainees") "traineeId" else "participantId"
-                        val payload = if (path == "/internal/standard-participants") standardResponse else null
-                        (if (requests.count { it.second.get("requestId") == sent.get("requestId") } > 1) 200 else 201) to
+                        val payload = if (path == "/internal/standard-participants") standardResponse else traineeResponse
+                        (userStatus ?: if (requests.count { it.second.get("requestId") == sent.get("requestId") } > 1) 200 else 201) to
                             (payload ?: """{"$idField":42,"phoneNumber":"01012345678"}""")
                     }
                 }
@@ -132,7 +134,7 @@ class RegistrationIntegrationContractTests {
                     true,
                 )
             val mvc = MockMvcBuilders.standaloneSetup(controller).build()
-            val answers = """{"동반자":[{"name":"동반자","occupation":"TEACHER","region":"GWANGJU","school":"광주고"}]}"""
+            val answers = """{"거주 지역":"JEONNAM","동반자":[{"name":"동반자","occupation":"TEACHER","region":"GWANGJU","school":"광주고"}]}"""
             val body =
                 mapper.writeValueAsString(
                     mapOf(
@@ -159,6 +161,7 @@ class RegistrationIntegrationContractTests {
                 assertEquals(answers, sent.get("informationJson").stringValue())
                 assertEquals("type=${route.second}&applicationType=${if (index < 2) "PRE" else "FIELD"}", queries.last())
                 if (index == 1) {
+                    assertEquals("JEONNAM", sent.path("region").stringValue())
                     assertEquals(
                         "COMPANION",
                         sent
@@ -202,7 +205,7 @@ class RegistrationIntegrationContractTests {
             assertEquals(4, counts.size)
 
             standardResponse =
-                """[{"id":42,"code":"representative-code","representative":true},{"id":43,"code":"companion-code-1","representative":false},{"id":44,"code":"companion-code-2","representative":false}]"""
+                """{"participantId":42,"phoneNumber":"01012345678","participantIds":[42,43,44]}"""
             failedParticipantId = 43
             mvc
                 .perform(
@@ -231,8 +234,21 @@ class RegistrationIntegrationContractTests {
                 ).andExpect(status().isCreated)
             assertEquals((42L..46L).toList(), counts.takeLast(5).map { it.substringAfterLast('/').toLong() })
 
+            standardResponse = """{"participantId":42,"phoneNumber":"01012345678","participantIds":[43,44]}"""
+            mvc
+                .perform(
+                    post("/application/field/standard/$expoId")
+                        .header("Idempotency-Key", "new-companions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body),
+                ).andExpect(status().isCreated)
+            assertEquals(listOf(43L, 44L), counts.takeLast(2).map { it.substringAfterLast('/').toLong() })
+
             val countBeforeInvalidResponse = counts.size
             for (invalid in listOf(
+                "null",
+                "{\"participantId\":42,\"phoneNumber\":\"01012345678\",\"participantIds\":[]}",
+                "{\"participantId\":0,\"phoneNumber\":\"01012345678\",\"participantIds\":[43]}",
                 "[]",
                 "[{\"id\":0}]",
                 "[{\"id\":-1}]",
@@ -252,6 +268,56 @@ class RegistrationIntegrationContractTests {
                     ).andExpect(status().isBadGateway)
                 assertEquals(countBeforeInvalidResponse, counts.size)
             }
+            val requestsBeforeInvalidRegion = requests.size
+            for (region in listOf("\"SEOUL\"", "\" JEONNAM \"", "123", "null", "[]", "{}", "\"\"")) {
+                mvc
+                    .perform(
+                        post("/application/pre-standard/$expoId")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                mapper.writeValueAsString(
+                                    mapOf(
+                                        "name" to "홍길동",
+                                        "phoneNumber" to "01012345678",
+                                        "informationJson" to "{\"거주 지역\":$region}",
+                                        "personalInformationStatus" to true,
+                                        "sessionId" to 1,
+                                    ),
+                                ),
+                            ),
+                    ).andExpect(status().isBadRequest)
+            }
+            assertEquals(requestsBeforeInvalidRegion, requests.size)
+
+            for (invalid in listOf(
+                "null",
+                "{}",
+                """{"traineeId":0,"phoneNumber":"01012345678"}""",
+                """{"traineeId":-1,"phoneNumber":"01012345678"}""",
+            )) {
+                traineeResponse = invalid
+                mvc
+                    .perform(post("/application/field/$expoId").contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadGateway)
+            }
+            for ((upstream, expected) in listOf(
+                400 to 502,
+                422 to 502,
+                401 to 502,
+                403 to 502,
+                404 to 404,
+                409 to 409,
+                500 to 503,
+                503 to 503,
+            )) {
+                userStatus = upstream
+                for (route in listOf("/field/standard", "/field")) {
+                    mvc
+                        .perform(post("/application$route/$expoId").contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andExpect(status().`is`(expected))
+                }
+            }
+            assertEquals(countBeforeInvalidResponse, counts.size)
         } finally {
             server.stop(0)
         }

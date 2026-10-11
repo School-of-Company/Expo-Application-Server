@@ -18,6 +18,20 @@ class RegistrationWorkflow(
     private val mapper: ObjectMapper,
     private val preregistration: PreregisterRegistrationWorkflow,
 ) {
+    private val occupations =
+        setOf(
+            "KINDERGARTEN_STUDENT",
+            "ELEMENTARY_STUDENT",
+            "MIDDLE_SCHOOL_STUDENT",
+            "HIGH_SCHOOL_STUDENT",
+            "SCHOOL_STAFF",
+            "PARENT",
+            "GENERAL",
+            "TEACHER",
+            "PRE_SERVICE_TEACHER",
+        )
+    private val regions = setOf("GWANGJU", "JEONNAM", "OTHER")
+
     fun register(
         command: RegistrationCommand,
         participantType: String,
@@ -78,14 +92,29 @@ class RegistrationWorkflow(
 
         fun answer(type: String): String? {
             val title = form?.dynamicForm?.firstOrNull { it.dynamicFormType == type }?.title ?: return null
-            return answers
-                .get(title)
-                ?.takeIf { it.isString }
+            val value = answers.get(title) ?: return null
+            return value
+                .takeIf { it.isString }
                 ?.stringValue()
                 ?.takeIf { it.isNotBlank() }
         }
-        val occupation = answer("OCCUPATION")
+
+        fun choice(
+            field: RegistrationField?,
+            allowed: Set<String>,
+        ): String? {
+            if (field == null) return null
+            val value = answers.get(field.title)
+            if (value == null || value.isNull || (value.isString && value.stringValue().isBlank())) {
+                if (field.requiredStatus) badRequest("${field.title} 답변이 필요합니다.")
+                return null
+            }
+            if (!value.isString || value.stringValue() !in allowed) badRequest("${field.title} 답변이 올바르지 않습니다.")
+            return value.stringValue()
+        }
+        val occupation = choice(form?.dynamicForm?.firstOrNull { it.dynamicFormType == "OCCUPATION" }, occupations)
         val school = answer("SCHOOL")
+        val region = choice(form?.dynamicForm?.firstOrNull { it.formType == "REGION" }, regions)
         if (school != null && school.length > 100) badRequest("학교는 100자 이하여야 합니다.")
         if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER") && school == null) {
             badRequest("직업에 해당하는 학교를 입력해야 합니다.")
@@ -137,6 +166,7 @@ class RegistrationWorkflow(
                 requestId,
                 form?.id,
                 questions,
+                region,
             )
         if (sessionRegistration) {
             preregistration.register(command, registration, 1 + companionKeys.size)
@@ -153,22 +183,10 @@ class RegistrationWorkflow(
         val name = text("name")?.trim()
         if (name.isNullOrEmpty() || name.length > 10) badRequest("동행자 이름은 1~10자여야 합니다.")
         val occupation = text("occupation")
-        if (occupation !in
-            setOf(
-                "KINDERGARTEN_STUDENT",
-                "ELEMENTARY_STUDENT",
-                "MIDDLE_SCHOOL_STUDENT",
-                "HIGH_SCHOOL_STUDENT",
-                "SCHOOL_STAFF",
-                "PARENT",
-                "GENERAL",
-                "TEACHER",
-                "PRE_SERVICE_TEACHER",
-            )
-        ) {
+        if (occupation !in occupations) {
             badRequest("동행자 직업이 올바르지 않습니다.")
         }
-        if (text("region") !in setOf("GWANGJU", "JEONNAM", "OTHER")) badRequest("동행자 지역이 올바르지 않습니다.")
+        if (text("region") !in regions) badRequest("동행자 지역이 올바르지 않습니다.")
         if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER")) {
             val school = text("school")?.trim()
             if (school.isNullOrEmpty() || school.length > 100) badRequest("동행자 학교는 1~100자여야 합니다.")

@@ -142,9 +142,11 @@ class PreregisterRegistrationWorkflow(
                         repository.lock(expoId)
                         val current = reservations.find(expoId, requestId, "") ?: return@execute false
                         if (current.state == "COMPLETED") return@execute true
-                        if (current.state == "RESERVED") {
+                        if (current.state == "RESERVED" && current.errorStatus == null) {
                             if (ex is ParticipantSaveRejectedException) {
                                 reservations.finish(current, ex.statusCode.value())
+                            } else if (ex is ParticipantIdsMismatchException) {
+                                reservations.needsReview(current, ex.statusCode.value())
                             } else {
                                 reservations.retry(current)
                             }
