@@ -31,7 +31,8 @@ import java.util.UUID
 @ApiResponses(
     value = [
         ApiResponse(responseCode = "400", description = "잘못된 요청 또는 식별자"),
-        ApiResponse(responseCode = "401", description = "X-Internal-Token 인증 실패"),
+        ApiResponse(responseCode = "401", description = "내부 경로의 X-Internal-Token 또는 관리자 경로의 Bearer JWT 인증 실패"),
+        ApiResponse(responseCode = "403", description = "관리자의 행사 APPLICATION_READ 권한 거부"),
     ],
 )
 @RequestMapping("/internal/expos/{expoId}/program-session-applications", "/application/admin/expos/{expoId}/program-session-applications")
@@ -52,6 +53,7 @@ class AdminApplicationController(
     @ApiResponses(
         value = [
             ApiResponse(responseCode = "200", description = "조회 또는 처리 결과"),
+            ApiResponse(responseCode = "502", description = "User 참가자 누락 또는 공급자 응답 계약 오류"),
         ],
     )
     @GetMapping
