@@ -7,7 +7,10 @@ import tools.jackson.databind.JsonNode
 
 internal fun ProgramFormSnapshot.trainingId(answers: JsonNode): String? = programTrainingId(questions, answers)
 
-internal fun programTrainingId(questions: JsonNode, answers: JsonNode): String? {
+internal fun programTrainingId(
+    questions: JsonNode,
+    answers: JsonNode,
+): String? {
     val fields = questions.filter { it.path("dynamicFormType").isString && it.path("dynamicFormType").stringValue() == "TRAINING_ID" }
     if (fields.size > 1 || fields.any { !it.path("formType").isString || it.path("formType").stringValue() != "SENTENCE" }) {
         throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "연수원 ID 문항 정의가 올바르지 않습니다.")
