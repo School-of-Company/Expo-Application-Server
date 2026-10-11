@@ -20,6 +20,40 @@ class AdminApplicationQueryRepository(
         expoId: UUID,
         query: AdminApplicationQuery,
     ): Pair<List<AdminApplicationRow>, Map<AdminApplicationStatus, Long>> {
+        val (where, parameters) = predicate(expoId, query)
+        val counts =
+            jdbc
+                .query(
+                    "SELECT a.status, count(*) FROM tb_program_session_application a WHERE $where GROUP BY a.status",
+                    parameters,
+                ) { rs, _ ->
+                    AdminApplicationStatus.valueOf(rs.getString(1)) to rs.getLong(2)
+                }.toMap()
+        val rows = rows(where, parameters, query.sort, query.size, query.page.toLong() * query.size)
+        return rows to AdminApplicationStatus.entries.associateWith { counts[it] ?: 0L }
+    }
+
+    fun targets(
+        expoId: UUID,
+        query: AdminApplicationQuery,
+        limit: Int,
+        applicationIds: List<UUID>? = null,
+    ): List<AdminApplicationRow> {
+        val (where, parameters) = predicate(expoId, query)
+        if (applicationIds != null) parameters["ids"] = applicationIds
+        return rows(
+            where + if (applicationIds == null) "" else " AND a.id IN (:ids)",
+            parameters,
+            query.sort,
+            limit,
+            0,
+        )
+    }
+
+    private fun predicate(
+        expoId: UUID,
+        query: AdminApplicationQuery,
+    ): Pair<String, MutableMap<String, Any>> {
         val conditions = mutableListOf("a.expo_id = :expoId")
         val parameters = mutableMapOf<String, Any>("expoId" to expoId)
 
@@ -45,48 +79,47 @@ class AdminApplicationQueryRepository(
         )
         filter("from", query.from?.let(java.sql.Timestamp::from), "a.created_at >= :from")
         filter("until", query.until?.let(java.sql.Timestamp::from), "a.created_at < :until")
-        val where = conditions.joinToString(" AND ")
-        val counts =
-            jdbc
-                .query(
-                    "SELECT a.status, count(*) FROM tb_program_session_application a WHERE $where GROUP BY a.status",
-                    parameters,
-                ) { rs, _ ->
-                    AdminApplicationStatus.valueOf(rs.getString(1)) to rs.getLong(2)
-                }.toMap()
-        parameters["limit"] = query.size
-        parameters["offset"] = query.page.toLong() * query.size
-        val direction = if (query.sort == AdminApplicationSort.CREATED_ASC) "ASC" else "DESC"
-        val rows =
-            jdbc.query(
-                "SELECT a.*, COALESCE((SELECT jsonb_agg(" +
-                    "jsonb_build_object('id', h.id, 'status', h.status, 'createdAt', h.created_at) " +
-                    "ORDER BY h.created_at, h.id) FROM tb_program_session_history h " +
-                    "WHERE h.application_id = a.id), '[]'::jsonb) AS history " +
-                    "FROM tb_program_session_application a WHERE $where " +
-                    "ORDER BY a.created_at $direction, a.id $direction LIMIT :limit OFFSET :offset",
-                parameters,
-            ) { rs, _ ->
-                AdminApplicationRow(
-                    rs.getObject("id", UUID::class.java),
-                    rs.getLong("participant_id"),
-                    rs.getObject("trainee_id", Long::class.javaObjectType),
-                    ProgramSessionType.valueOf(rs.getString("program_type")),
-                    rs.getLong("program_id"),
-                    rs.getObject("group_id", UUID::class.java),
-                    AdminApplicationStatus.valueOf(rs.getString("status")),
-                    rs.getTimestamp("created_at").toInstant(),
-                    rs.getObject("form_id", UUID::class.java),
-                    rs.getLong("form_version"),
-                    mapper.readTree(rs.getString("definition_snapshot")),
-                    mapper.readTree(rs.getString("questions_snapshot")),
-                    mapper.readTree(rs.getString("answers_snapshot")),
-                    mapper.readValue(
-                        rs.getString("history"),
-                        mapper.typeFactory.constructCollectionType(List::class.java, AdminApplicationHistory::class.java),
-                    ),
-                )
-            }
-        return rows to AdminApplicationStatus.entries.associateWith { counts[it] ?: 0L }
+        return conditions.joinToString(" AND ") to parameters
+    }
+
+    private fun rows(
+        where: String,
+        parameters: MutableMap<String, Any>,
+        sort: AdminApplicationSort,
+        limit: Int,
+        offset: Long,
+    ): List<AdminApplicationRow> {
+        parameters["limit"] = limit
+        parameters["offset"] = offset
+        val direction = if (sort == AdminApplicationSort.CREATED_ASC) "ASC" else "DESC"
+        return jdbc.query(
+            "SELECT a.*, COALESCE((SELECT jsonb_agg(" +
+                "jsonb_build_object('id', h.id, 'status', h.status, 'createdAt', h.created_at) " +
+                "ORDER BY h.created_at, h.id) FROM tb_program_session_history h " +
+                "WHERE h.application_id = a.id), '[]'::jsonb) AS history " +
+                "FROM tb_program_session_application a WHERE $where " +
+                "ORDER BY a.created_at $direction, a.id $direction LIMIT :limit OFFSET :offset",
+            parameters,
+        ) { rs, _ ->
+            AdminApplicationRow(
+                rs.getObject("id", UUID::class.java),
+                rs.getLong("participant_id"),
+                rs.getObject("trainee_id", Long::class.javaObjectType),
+                ProgramSessionType.valueOf(rs.getString("program_type")),
+                rs.getLong("program_id"),
+                rs.getObject("group_id", UUID::class.java),
+                AdminApplicationStatus.valueOf(rs.getString("status")),
+                rs.getTimestamp("created_at").toInstant(),
+                rs.getObject("form_id", UUID::class.java),
+                rs.getLong("form_version"),
+                mapper.readTree(rs.getString("definition_snapshot")),
+                mapper.readTree(rs.getString("questions_snapshot")),
+                mapper.readTree(rs.getString("answers_snapshot")),
+                mapper.readValue(
+                    rs.getString("history"),
+                    mapper.typeFactory.constructCollectionType(List::class.java, AdminApplicationHistory::class.java),
+                ),
+            )
+        }
     }
 }
