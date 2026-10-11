@@ -12,7 +12,7 @@ data class ProgramSessionError(
     val code: String,
 )
 
-@RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class])
+@RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class, ManagedParticipantController::class])
 class ProgramSessionApplicationExceptionHandler {
     @ExceptionHandler(ResponseStatusException::class)
     fun upstream(ex: ResponseStatusException): ResponseEntity<ProgramSessionError> {
