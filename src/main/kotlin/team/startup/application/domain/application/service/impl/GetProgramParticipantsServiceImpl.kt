@@ -25,8 +25,9 @@ class GetProgramParticipantsServiceImpl(
     override fun execute(command: ProgramParticipantsCommand): ProgramParticipantsResponse {
         val party = gateway.managedParty(command.owner.expoId, command.owner.sessionId)
         val definition =
-            gateway.programDefinition(command.owner.expoId.toString(), command.type, command.programId)
-                ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
+            gateway
+                .programDefinitions(command.owner.expoId.toString(), command.type, listOf(command.programId), existing = true)
+                .singleOrNull() ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         val allowed = definition.policy?.allowedOccupations.orEmpty()
         return ProgramParticipantsResponse(
             party.representativeId != null,
@@ -39,7 +40,6 @@ class GetProgramParticipantsServiceImpl(
                                 repository.confirmed(
                                     command.owner.expoId,
                                     participant.participantId,
-                                    requireNotNull(party.representativeId),
                                 )
                             },
                         ),

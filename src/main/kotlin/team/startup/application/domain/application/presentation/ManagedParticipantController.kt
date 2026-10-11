@@ -24,7 +24,7 @@ import java.util.UUID
 class ManagedParticipantController(
     private val participants: GetProgramParticipantsService,
     private val qr: GetParticipantQrService,
-    @Value("\${APPLICATION_PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}") private val cookieName: String,
+    @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val cookieName: String,
 ) {
     @Operation(summary = "대표자 관리 참가자와 프로그램 역할 자격 조회")
     @GetMapping("/application/expos/{expoId}/program-sessions/{programType}/{programId}/participants")

@@ -43,6 +43,7 @@ class ManagedParticipantHttpTests {
 
     @BeforeEach
     fun setup() {
+        jdbc.execute("TRUNCATE tb_standard_program_application, tb_training_program_application, tb_program_session_application CASCADE")
         jdbc.execute("TRUNCATE tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE")
         jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expo)
         jdbc.update(
@@ -57,6 +58,74 @@ class ManagedParticipantHttpTests {
         registered = true
         duringQr = {}
         linkBodies.clear()
+        pendingPolicy = false
+        missingPolicy = false
+    }
+
+    @Test
+    fun `eligibility agrees with submission despite saved representative and cancellation delivery`() {
+        for (condition in listOf("representative", "ACQUIRING", "ABORT")) {
+            setup()
+            if (condition == "representative") {
+                jdbc.update("UPDATE tb_preregister_application SET representative_id = 9 WHERE participant_id = 1")
+            } else {
+                cancellationDelivery(1, condition)
+            }
+            mvc
+                .perform(get(participantsPath).cookie(cookie))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[0].eligible").value(true))
+            mvc
+                .perform(
+                    post("/application/expos/$expo/program-sessions/STANDARD/1/applications")
+                        .with(csrf())
+                        .cookie(cookie)
+                        .header("Idempotency-Key", "eligibility-$condition")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"participantId":1,"formVersion":1,"answers":{}}"""),
+                ).andExpect(status().isCreated)
+        }
+    }
+
+    @Test
+    fun `aborted cancellation preserves confirmed participant and QR access`() {
+        cancellationDelivery(1, "ABORT")
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.participants[0].eligible").value(true))
+        mvc
+            .perform(get(qrPath(1)).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.code").value("private-code"))
+        duringQr = { jdbc.update("UPDATE tb_owner_cancellation_delivery SET action = 'ACQUIRING'") }
+        mvc.perform(get(qrPath(1)).cookie(cookie)).andExpect(status().isNotFound)
+        assertEquals(2, qrCalls.get())
+        jdbc.update("UPDATE tb_owner_cancellation_delivery SET action = 'COMMIT', cancellation_revision = 1")
+        mvc.perform(get(qrPath(1)).cookie(cookie)).andExpect(status().isNotFound)
+        assertEquals(2, qrCalls.get())
+    }
+
+    @Test
+    fun `pending revision allows policy reads while submission remains blocked and missing program is not found`() {
+        pendingPolicy = true
+        for (type in listOf("STANDARD", "TRAINING")) {
+            mvc
+                .perform(get(participantsPath.replace("STANDARD", type)).cookie(cookie))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[0].eligible").value(true))
+            mvc
+                .perform(
+                    post("/application/expos/$expo/program-sessions/$type/1/applications")
+                        .with(csrf())
+                        .cookie(cookie)
+                        .header("Idempotency-Key", "pending-$type")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"participantId":1,"formVersion":1,"answers":{}}"""),
+                ).andExpect(status().isConflict)
+        }
+        missingPolicy = true
+        mvc.perform(get(participantsPath).cookie(cookie)).andExpect(status().isNotFound)
     }
 
     @Test
@@ -166,6 +235,21 @@ class ManagedParticipantHttpTests {
 
     private fun qrPath(id: Long) = "/application/expos/$expo/participants/$id/qr"
 
+    private fun cancellationDelivery(
+        participantId: Long,
+        action: String,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_owner_cancellation_delivery " +
+                "(expo_id, application_type, application_id, participant_id, operation_id, action, next_attempt_at) " +
+                "SELECT expo_id, 'PREREGISTER', id::text, participant_id, ?, ?, 'infinity' " +
+                "FROM tb_preregister_application WHERE participant_id = ?",
+            UUID.randomUUID(),
+            action,
+            participantId,
+        )
+    }
+
     private val participantsPath get() = "/application/expos/$expo/program-sessions/STANDARD/1/participants"
     private val cookie = Cookie("PARTICIPANT_SESSION", "verified")
 
@@ -179,6 +263,10 @@ class ManagedParticipantHttpTests {
         @Volatile private var registered = true
 
         @Volatile private var duringQr: () -> Unit = {}
+
+        @Volatile private var pendingPolicy = false
+
+        @Volatile private var missingPolicy = false
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
@@ -205,6 +293,7 @@ class ManagedParticipantHttpTests {
                             }
 
                             path.endsWith("standard-programs/1") -> {
+                                if (missingPolicy) responseStatus = 404
                                 """{"expoId":"$expo","programType":"STANDARD","id":1,"groupId":"$expo","revision":1,"policy":{"formId":"$expo","allowedOccupations":["TEACHER"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}}"""
                             }
 
@@ -246,7 +335,17 @@ class ManagedParticipantHttpTests {
                                 "{}"
                             }
                         }
-                    val bytes = response.toByteArray()
+                    val bytes =
+                        (
+                            if (pendingPolicy) {
+                                response.replace(
+                                    "\"revision\":1",
+                                    "\"revision\":1,\"pendingRevision\":2",
+                                )
+                            } else {
+                                response
+                            }
+                        ).toByteArray()
                     exchange.sendResponseHeaders(responseStatus, bytes.size.toLong())
                     exchange.responseBody.use { it.write(bytes) }
                 }

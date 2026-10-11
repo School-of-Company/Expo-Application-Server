@@ -27,13 +27,13 @@ class GetParticipantQrServiceImpl(
         val party = gateway.managedParty(command.owner.expoId, command.owner.sessionId)
         val representative = party.representativeId
         if (representative == null || party.participants.none { it.participantId == command.participantId } ||
-            !requireNotNull(reads.execute { repository.confirmed(command.owner.expoId, command.participantId, representative) })
+            !requireNotNull(reads.execute { repository.qrAvailable(command.owner.expoId, command.participantId, representative) })
         ) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND)
         }
         if (!attendanceEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val response = gateway.participantQr(command.owner.expoId, command.participantId, representative)
-        if (!requireNotNull(reads.execute { repository.confirmed(command.owner.expoId, command.participantId, representative) })) {
+        if (!requireNotNull(reads.execute { repository.qrAvailable(command.owner.expoId, command.participantId, representative) })) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND)
         }
         return response
