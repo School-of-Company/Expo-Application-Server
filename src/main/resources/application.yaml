@@ -9,6 +9,18 @@ spring:
     hibernate:
       ddl-auto: validate
 
+springdoc:
+  api-docs:
+    path: /application/v3/api-docs
+    enabled: ${swagger.enabled}
+  swagger-ui:
+    path: /application/swagger-ui.html
+    enabled: ${swagger.enabled}
+
+swagger:
+  enabled: ${SWAGGER_ENABLED:false}
+  include-internal: ${SWAGGER_INCLUDE_INTERNAL:false}
+
 application:
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
   admin-group-messaging:

@@ -1,6 +1,8 @@
 package team.startup.application.domain.application.presentation
 
 import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.responses.ApiResponse
+import io.swagger.v3.oas.annotations.responses.ApiResponses
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.http.CacheControl
@@ -26,6 +28,12 @@ import team.startup.application.domain.application.service.GetAdminCurrentSessio
 import java.util.UUID
 
 @RestController
+@ApiResponses(
+    value = [
+        ApiResponse(responseCode = "400", description = "잘못된 요청 또는 식별자"),
+        ApiResponse(responseCode = "401", description = "X-Internal-Token 인증 실패"),
+    ],
+)
 @RequestMapping("/internal/expos/{expoId}/program-session-applications", "/application/admin/expos/{expoId}/program-session-applications")
 class AdminApplicationController(
     private val service: GetAdminApplicationsService,
@@ -40,6 +48,11 @@ class AdminApplicationController(
                 "search는 제출 당시 제목, q는 User 이름/번호, occupation은 원본 직업 코드입니다. from 포함/until 제외. " +
                 "동일 필터의 목록/전체 건수/상태 집계 및 applicationId 상세/이력을 반환합니다. participant.information은 User 현재 등록 답변입니다. " +
                 "관리자 목록은 User 참가자가 하나라도 누락되면 전체 502로 실패하며 원장 스냅샷은 보존합니다. participant=null 성공으로 대체하지 않습니다.",
+    )
+    @ApiResponses(
+        value = [
+            ApiResponse(responseCode = "200", description = "조회 또는 처리 결과"),
+        ],
     )
     @GetMapping
     fun list(
@@ -61,6 +74,13 @@ class AdminApplicationController(
             "목록과 같은 인증 및 필터의 신청 건수/고유 참가자/회차별 집계. " +
                 "attendance는 표시된 회차 전체의 실제 출석 인원과 HH:mm 입실 범위이며 접수 필터를 적용하지 않습니다. " +
                 "행사 입장·사전등록·현재 정원은 포함하지 않으며 출석 원천 장애는 오류로 반환합니다.",
+    )
+    @ApiResponses(
+        value = [
+            ApiResponse(responseCode = "200", description = "조회 또는 처리 결과"),
+            ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
+            ApiResponse(responseCode = "503", description = "원천 조회 또는 공급자 연동 불가"),
+        ],
     )
     @GetMapping("/summary")
     fun summary(

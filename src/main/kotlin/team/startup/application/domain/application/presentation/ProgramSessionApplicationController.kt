@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation
 
 import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.beans.factory.annotation.Value
@@ -30,10 +31,23 @@ class ProgramSessionApplicationController(
     @Value("\${APPLICATION_PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}") private val cookieName: String,
 ) {
     @GetMapping("/application/program-session-csrf")
+    @Operation(summary = "프로그램 신청 CSRF 토큰 조회", responses = [ApiResponse(responseCode = "200", description = "CSRF 토큰과 헤더 이름")])
     fun csrf(token: CsrfToken): ResponseEntity<Map<String, String>> =
         ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(mapOf("token" to token.token, "headerName" to token.headerName))
 
-    @Operation(summary = "인증된 사전등록 참가자의 프로그램 회차 신청")
+    @Operation(
+        summary = "인증된 사전등록 참가자의 프로그램 회차 신청",
+        responses = [
+            ApiResponse(responseCode = "201", description = "신청 접수"),
+            ApiResponse(responseCode = "400", description = "잘못된 요청 또는 폼 답변"),
+            ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
+            ApiResponse(responseCode = "403", description = "CSRF 검증 실패 또는 신청 자격 없음"),
+            ApiResponse(responseCode = "404", description = "프로그램 또는 공급자 조회 대상 없음"),
+            ApiResponse(responseCode = "409", description = "중복 신청, 정원 또는 폼 버전 충돌"),
+            ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
+            ApiResponse(responseCode = "503", description = "정책·폼 공급자 계약 또는 연동 불가"),
+        ],
+    )
     @PostMapping("/application/expos/{expoId}/program-sessions/{programType}/{programId}/applications")
     fun apply(
         @PathVariable expoId: UUID,

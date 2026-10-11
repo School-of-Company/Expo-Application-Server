@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation
 
+import io.swagger.v3.oas.annotations.media.Schema
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -7,9 +8,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 
+@Schema(description = "프로그램 신청 오류")
 data class ProgramSessionError(
-    val status: Int,
-    val code: String,
+    @field:Schema(description = "HTTP 오류 상태", example = "400") val status: Int,
+    @field:Schema(description = "클라이언트가 처리할 오류 종류") val code: String,
 )
 
 @RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class])

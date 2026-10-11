@@ -1,8 +1,10 @@
 package team.startup.application
 
 import jakarta.servlet.http.Cookie
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
@@ -14,6 +16,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
@@ -34,6 +37,31 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 class SecurityConfigTests {
     @Autowired
     private lateinit var mockMvc: MockMvc
+
+    @Autowired
+    @Qualifier("requestMappingHandlerMapping")
+    private lateinit var mappings: RequestMappingHandlerMapping
+
+    @Test
+    fun `disabled docs have no handlers or anonymous permissions`() {
+        listOf(
+            "/application/v3/api-docs",
+            "/application/v3/api-docs/swagger-config",
+            "/application/swagger-ui.html",
+            "/application/swagger-ui/index.html",
+        ).forEach { path ->
+            mockMvc.perform(get(path)).andExpect(status().isUnauthorized)
+            val expectedStatus = if (path == "/application/swagger-ui.html") 405 else 404
+            mockMvc.perform(get(path).with(user("user"))).andExpect(status().`is`(expectedStatus))
+        }
+        assertFalse(
+            mappings.handlerMethods.keys.any {
+                it.patternValues.any { path ->
+                    path.contains("api-docs") || path.contains("swagger")
+                }
+            },
+        )
+    }
 
     @Test
     fun `program public entry stays disabled by default`() {
@@ -61,6 +89,8 @@ class SecurityConfigTests {
             .forEach { mockMvc.perform(get(it)).andExpect(status().isUnauthorized) }
         mockMvc.perform(post("/actuator/prometheus").with(csrf())).andExpect(status().isUnauthorized)
         mockMvc.perform(head("/actuator/prometheus")).andExpect(status().isUnauthorized)
+        mockMvc.perform(get("/application/v3/api-docs")).andExpect(status().isUnauthorized)
+        mockMvc.perform(get("/application/swagger-ui.html")).andExpect(status().isUnauthorized)
     }
 
     @Test

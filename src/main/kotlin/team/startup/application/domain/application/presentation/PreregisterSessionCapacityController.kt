@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation
 
 import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.validation.constraints.Positive
 import org.springframework.http.CacheControl
 import org.springframework.http.ResponseEntity
@@ -19,6 +20,14 @@ class PreregisterSessionCapacityController(
     @Operation(
         summary = "사전등록 회차 잔여석 조회",
         description = "로그인 없이 조회하는 화면 안내용 값입니다. 제출 시 현재 정원을 다시 판정하며 부족하면 일행 전체를 거절합니다.",
+        responses = [
+            ApiResponse(responseCode = "200", description = "현재 잔여석"),
+            ApiResponse(responseCode = "400", description = "잘못된 박람회 또는 회차 ID"),
+            ApiResponse(responseCode = "404", description = "회차 없음"),
+            ApiResponse(responseCode = "409", description = "삭제 또는 회차 정의 변경 중"),
+            ApiResponse(responseCode = "502", description = "Expo 응답 계약 오류"),
+            ApiResponse(responseCode = "503", description = "Expo 연동 불가"),
+        ],
     )
     @GetMapping("/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity")
     fun capacity(
