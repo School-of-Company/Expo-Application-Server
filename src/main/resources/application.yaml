@@ -10,6 +10,10 @@ spring:
       ddl-auto: validate
 
 application:
+  promotions:
+    enabled: ${APPLICATION_PROMOTIONS_ENABLED:false}
+    bootstrap-servers: ${APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS:}
+    publish-from: ${APPLICATION_PROMOTIONS_PUBLISH_FROM:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
   owner:
     session-cookie-name: ${PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}
