@@ -25,6 +25,7 @@ class InternalSecurityConfig(
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
         val internal = PathPatternRequestMatcher.withDefaults().matcher("/internal/**")
+        val adminGroupMessages = PathPatternRequestMatcher.withDefaults().matcher("/application/expos/{expoId}/admin-group-messages/**")
         val registration =
             listOf(
                 "/application/{expoId}",
@@ -35,6 +36,7 @@ class InternalSecurityConfig(
         return http
             .csrf { csrf ->
                 csrf.ignoringRequestMatchers(internal)
+                csrf.ignoringRequestMatchers(adminGroupMessages)
                 if (registrationEnabled) csrf.ignoringRequestMatchers(*registration.toTypedArray())
             }.authorizeHttpRequests { requests ->
                 requests
@@ -51,6 +53,8 @@ class InternalSecurityConfig(
                     .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications")
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/{type}/{applicationId}/cancellation")
+                    .permitAll()
+                    .requestMatchers(adminGroupMessages)
                     .permitAll()
                     .requestMatchers(internal)
                     .access {
