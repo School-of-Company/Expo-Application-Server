@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.Test
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.content
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import team.startup.application.domain.application.presentation.RegistrationController
@@ -154,6 +155,7 @@ class RegistrationIntegrationContractTests {
                             "/application${route.first}/$expoId",
                         ).header("Idempotency-Key", "request-$index").contentType(MediaType.APPLICATION_JSON).content(body),
                     ).andExpect(status().isCreated)
+                    .andExpect(content().string(""))
                 val (path, sent) = requests.last()
                 assertEquals(if (route.second == "STANDARD") "/internal/standard-participants" else "/internal/trainees", path)
                 assertEquals(if (index < 2) "PRE" else "FIELD", sent.get("applicationType").stringValue())
@@ -221,6 +223,7 @@ class RegistrationIntegrationContractTests {
                         "/application/field/standard/$expoId",
                     ).header("Idempotency-Key", "group-retry").contentType(MediaType.APPLICATION_JSON).content(body),
                 ).andExpect(status().isCreated)
+                .andExpect(content().string(""))
             assertEquals(listOf(42L, 43L, 42L, 43L, 44L), counts.drop(4).map { it.substringAfterLast('/').toLong() })
             assertEquals(requests[6], requests[7])
 
@@ -232,6 +235,7 @@ class RegistrationIntegrationContractTests {
                         "/application/field/standard/$expoId",
                     ).header("Idempotency-Key", "group-five").contentType(MediaType.APPLICATION_JSON).content(body),
                 ).andExpect(status().isCreated)
+                .andExpect(content().string(""))
             assertEquals((42L..46L).toList(), counts.takeLast(5).map { it.substringAfterLast('/').toLong() })
 
             standardResponse = """{"participantId":42,"phoneNumber":"01012345678","participantIds":[43,44]}"""
