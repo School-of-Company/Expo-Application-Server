@@ -47,7 +47,7 @@ class AdminGroupMessageGateway(
         val bearer =
             authorization?.takeIf { it.startsWith("Bearer ") && it.length > 7 }
                 ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.")
-        val response = call(expoUrl, "/internal/expo/$expoId/admin-access", token = expoToken, authorization = bearer)
+        val response = call(Provider.EXPO, expoUrl, "/internal/expo/$expoId/admin-access", token = expoToken, authorization = bearer)
         val body = node(response)
         val adminId = body.path("adminId")
         if (body.get("expoId")?.takeIf { it.isString }?.stringValue() != expoId.toString() ||
@@ -69,6 +69,7 @@ class AdminGroupMessageGateway(
         val ids = participantIds.distinct()
         val response =
             call(
+                Provider.USER,
                 userUrl,
                 "/internal/standard-participants/details",
                 method = "POST",
@@ -111,7 +112,7 @@ class AdminGroupMessageGateway(
 
     fun config(): AdminGroupMessageConfig =
         decode(
-            call(notificationUrl, CONFIG_PATH, token = notificationToken),
+            call(Provider.NOTIFICATION, notificationUrl, CONFIG_PATH, token = notificationToken),
             AdminGroupMessageConfig::class.java,
         )
 
@@ -126,6 +127,7 @@ class AdminGroupMessageGateway(
     ): AdminGroupMessagePreview =
         decode(
             call(
+                Provider.NOTIFICATION,
                 notificationUrl,
                 "$BASE_PATH/previews",
                 "POST",
@@ -170,6 +172,7 @@ class AdminGroupMessageGateway(
     ): AdminGroupMessageJob =
         decode(
             call(
+                Provider.NOTIFICATION,
                 notificationUrl,
                 "$BASE_PATH/jobs/$jobId?requesterUserId=$requesterId&expoId=$expoId",
                 token = notificationToken,
@@ -199,7 +202,7 @@ class AdminGroupMessageGateway(
         body: Map<String, Any>,
     ): AdminGroupMessageJob =
         decode(
-            call(notificationUrl, path, "POST", mapper.writeValueAsString(body), notificationToken),
+            call(Provider.NOTIFICATION, notificationUrl, path, "POST", mapper.writeValueAsString(body), notificationToken),
             AdminGroupMessageJob::class.java,
         )
 
@@ -216,6 +219,7 @@ class AdminGroupMessageGateway(
         }
 
     private fun call(
+        provider: Provider,
         base: String,
         path: String,
         method: String = "GET",
@@ -261,7 +265,14 @@ class AdminGroupMessageGateway(
                 )
             }
         if (response.statusCode() !in 200..299) {
-            val status = HttpStatus.resolve(response.statusCode())?.takeIf { it.is4xxClientError } ?: HttpStatus.SERVICE_UNAVAILABLE
+            val supplierStatus = HttpStatus.resolve(response.statusCode())
+            val status =
+                when {
+                    supplierStatus?.is4xxClientError != true -> HttpStatus.SERVICE_UNAVAILABLE
+                    provider == Provider.USER -> HttpStatus.BAD_GATEWAY
+                    provider == Provider.NOTIFICATION && response.statusCode() in setOf(401, 403) -> HttpStatus.BAD_GATEWAY
+                    else -> supplierStatus
+                }
             throw ResponseStatusException(status, "관리자 그룹 발송 공급자가 요청을 거절했습니다.")
         }
         return response
@@ -269,6 +280,8 @@ class AdminGroupMessageGateway(
 
     private fun invalidProviderResponse(provider: String): Nothing =
         throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "$provider 공급자 응답이 올바르지 않습니다.")
+
+    private enum class Provider { EXPO, USER, NOTIFICATION }
 
     private companion object {
         const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L

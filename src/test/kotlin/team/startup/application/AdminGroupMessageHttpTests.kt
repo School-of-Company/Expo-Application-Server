@@ -100,6 +100,38 @@ class AdminGroupMessageHttpTests {
     }
 
     @Test
+    fun `expo admin authentication errors pass through without calling downstream providers`() {
+        listOf(401, 403).forEach { status ->
+            expoStatus.set(status)
+            val response = preview(selected(standard), "공통")
+            assertEquals(status, response.status, response.contentAsString)
+        }
+        assertFalse(calls.contains("user"))
+        assertFalse(calls.contains("notification-preview"))
+    }
+
+    @Test
+    fun `user internal authentication and missing participant errors become bad gateway`() {
+        listOf(401, 403, 404).forEach { status ->
+            userStatus.set(status)
+            val response = preview(selected(standard), "공통")
+            assertEquals(502, response.status, "User $status: ${response.contentAsString}")
+            assertEquals("no-store", response.getHeader("Cache-Control"))
+        }
+        assertFalse(calls.contains("notification-preview"))
+    }
+
+    @Test
+    fun `notification internal authentication errors become bad gateway and contract errors pass through`() {
+        listOf(401 to 502, 403 to 502, 409 to 409, 410 to 410, 422 to 422).forEach { (supplier, expected) ->
+            notificationStatus.set(supplier)
+            val response = mvc.perform(get("$base/config").header("Authorization", "Bearer admin")).andReturn().response
+            assertEquals(expected, response.status, "Notification $supplier: ${response.contentAsString}")
+            assertEquals("no-store", response.getHeader("Cache-Control"))
+        }
+    }
+
+    @Test
     fun `personalized selected preview preserves every standard and training application on one representative phone`() {
         val response = preview(selected(standard, companion, training), "{이름}|{프로그램}|{일시}|{상태}")
         assertEquals(201, response.status, response.contentAsString)
@@ -347,6 +379,10 @@ class AdminGroupMessageHttpTests {
                 }
                 createContext("/internal/standard-participants/details") { exchange ->
                     calls.add("user")
+                    if (userStatus.get() in 400..599) {
+                        respond(exchange, userStatus.get(), "{}")
+                        return@createContext
+                    }
                     val body = mapper.readTree(exchange.requestBody.readAllBytes())
                     val idNodes = body["participantIds"]
                     val ids = (0 until idNodes.size()).map { idNodes[it].asLong() }
