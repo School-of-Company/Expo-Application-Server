@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
@@ -20,12 +22,15 @@ import org.springframework.transaction.support.TransactionTemplate
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.repository.SessionAttendanceOutboxRepository
 import team.startup.application.domain.application.service.PurgePreregisterSessionsService
 import team.startup.application.domain.application.service.impl.SessionAttendanceDispatcher
+import team.startup.application.domain.application.service.impl.SessionAttendanceGateway
 import team.startup.application.domain.application.service.impl.SessionAttendanceOutbox
 import team.startup.application.domain.application.service.impl.SessionAttendanceScheduler
 import java.net.InetSocketAddress
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -61,6 +66,8 @@ class SessionAttendanceOutboxTests {
         jdbc.execute("TRUNCATE TABLE tb_session_attendance_outbox RESTART IDENTITY")
         jdbc.execute("TRUNCATE TABLE tb_preregister_deleted_expo")
         requests.clear()
+        remoteState.clear()
+        lateDelivery = CountDownLatch(1)
         responseStatus.set(204)
         deliveryGate.set(null)
     }
@@ -68,6 +75,9 @@ class SessionAttendanceOutboxTests {
     @AfterEach
     fun releaseDelivery() {
         deliveryGate.get()?.second?.countDown()
+        requests.groupBy { it.path.substringBefore('?') to it.revision }.values.forEach { deliveries ->
+            assertEquals(1, deliveries.map { it.method to it.body }.toSet().size)
+        }
     }
 
     @Test
@@ -82,13 +92,14 @@ class SessionAttendanceOutboxTests {
         val path = "/internal/expos/$EXPO/participants/42/preregister-session"
         assertEquals(
             listOf(
-                Request("PUT", path, "{\"sessionId\":1}", TOKEN, "application/json"),
-                Request("DELETE", path, "", TOKEN, null),
-                Request("PUT", path, "{\"sessionId\":2}", TOKEN, "application/json"),
+                Request("PUT", path, "{\"sessionId\":1,\"revision\":2}", TOKEN, "application/json"),
+                Request("DELETE", "$path?revision=5", "", TOKEN, null),
+                Request("PUT", path, "{\"sessionId\":2,\"revision\":6}", TOKEN, "application/json"),
             ),
             requests.toList(),
         )
         assertEquals(0, count())
+        assertEquals(6L to 2L, remoteState[path])
     }
 
     @Test
@@ -197,6 +208,45 @@ class SessionAttendanceOutboxTests {
         assertTrue(dispatcher.dispatchNext())
         assertTrue(dispatcher.dispatchNext())
         assertEquals("DELETE", requests.last().method)
+        assertEquals(setOf(2L), requests.filter { it.method == "PUT" }.map { it.revision }.toSet())
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `타임아웃된 요청이 재시작 뒤 재신청보다 늦게 완료돼도 최신 회차를 유지한다`(cancelled: Boolean) {
+        inTransaction {
+            if (cancelled) outbox.cancelled(EXPO, 42) else outbox.confirmed(EXPO, 42, 1)
+            outbox.cancelled(EXPO, 42)
+            outbox.confirmed(EXPO, 42, 2)
+        }
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        deliveryGate.set(entered to release)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val timedOut = executor.submit<Boolean> { dispatcher.dispatchNext() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertFalse(timedOut.get(12, TimeUnit.SECONDS))
+            assertEquals(3, count())
+            makeDue()
+            val restarted =
+                SessionAttendanceDispatcher(
+                    SessionAttendanceOutboxRepository(jdbc),
+                    SessionAttendanceGateway("http://127.0.0.1:${server.address.port}", TOKEN),
+                )
+            repeat(3) { assertTrue(restarted.dispatchNext()) }
+            val originalRevision = if (cancelled) 3L else 2L
+            assertEquals(listOf(originalRevision, originalRevision, 5L, 6L), requests.map { it.revision })
+            val path = "/internal/expos/$EXPO/participants/42/preregister-session"
+            assertEquals(6L to 2L, remoteState[path])
+            release.countDown()
+            assertTrue(lateDelivery.await(5, TimeUnit.SECONDS))
+            assertEquals(6L to 2L, remoteState[path])
+            assertEquals(0, count())
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -255,6 +305,7 @@ class SessionAttendanceOutboxTests {
             assertTrue(first.get(5, TimeUnit.SECONDS))
             assertTrue(dispatcher.dispatchNext())
             assertEquals("DELETE", requests.last().method)
+            assertEquals(listOf(2L, 6L, 5L), requests.map { it.revision })
         } finally {
             release.countDown()
             executor.shutdownNow()
@@ -301,6 +352,7 @@ class SessionAttendanceOutboxTests {
         assertTrue(dispatcher.dispatchNext())
         assertTrue(dispatcher.dispatchNext())
         assertEquals(listOf("DELETE", "DELETE", "PUT"), requests.map { it.method })
+        assertEquals(listOf(3L, 3L, 4L), requests.map { it.revision })
     }
 
     @Test
@@ -344,6 +396,30 @@ class SessionAttendanceOutboxTests {
         assertTrue(dispatcher.dispatchNext())
         assertTrue(dispatcher.dispatchNext())
         assertEquals(listOf("DELETE", "DELETE"), requests.map { it.method })
+        assertEquals(listOf(3L, 5L), requests.map { it.revision })
+    }
+
+    @Test
+    fun `응답 유실 뒤 정리는 PUT과 다른 revision의 DELETE를 재시작 뒤에도 재사용한다`() {
+        inTransaction { outbox.confirmed(EXPO, 42, 1) }
+        responseStatus.set(0)
+        assertFalse(dispatcher.dispatchNext())
+        purge.execute(EXPO)
+        responseStatus.set(503)
+        makeDue()
+        assertFalse(dispatcher.dispatchNext())
+        responseStatus.set(204)
+        makeDue()
+        val restarted =
+            SessionAttendanceDispatcher(
+                SessionAttendanceOutboxRepository(jdbc),
+                SessionAttendanceGateway("http://127.0.0.1:${server.address.port}", TOKEN),
+            )
+        assertTrue(restarted.dispatchNext())
+        assertEquals(listOf("PUT", "DELETE"), requests.map { it.method }.distinct())
+        assertEquals(listOf(2L, 3L), requests.map { it.revision }.distinct())
+        assertEquals(listOf(3L, 3L), requests.takeLast(2).map { it.revision })
+        assertEquals(0, count())
     }
 
     @Test
@@ -372,6 +448,7 @@ class SessionAttendanceOutboxTests {
             purging.get(5, TimeUnit.SECONDS)
             assertTrue(dispatcher.dispatchNext())
             assertEquals(listOf("PUT", "DELETE", "DELETE"), requests.map { it.method })
+            assertEquals(listOf(2L, 3L, 5L), requests.map { it.revision })
         } finally {
             release.countDown()
             executor.shutdownNow()
@@ -390,31 +467,63 @@ class SessionAttendanceOutboxTests {
         val body: String,
         val token: String?,
         val contentType: String?,
-    )
+    ) {
+        val revision: Long
+            get() =
+                if (method == "DELETE") {
+                    path.substringAfter("?revision=").toLong()
+                } else {
+                    body.substringAfter("\"revision\":").substringBefore('}').toLong()
+                }
+    }
 
     companion object {
         private val EXPO = UUID.fromString("b5079e18-1ca0-4b1e-91fc-17faed571af8")
         private const val TOKEN = "attendance-test-internal-token-32-characters"
         private val requests = CopyOnWriteArrayList<Request>()
+        private val remoteState = ConcurrentHashMap<String, Pair<Long, Long?>>()
+        private var lateDelivery = CountDownLatch(1)
         private val responseStatus = AtomicInteger(204)
         private val deliveryGate = AtomicReference<Pair<CountDownLatch, CountDownLatch>?>()
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 executor = Executors.newCachedThreadPool { runnable -> Thread(runnable).apply { isDaemon = true } }
                 createContext("/internal/expos/") { exchange ->
-                    requests.add(
+                    val request =
                         Request(
                             exchange.requestMethod,
-                            exchange.requestURI.path,
+                            exchange.requestURI.toString(),
                             exchange.requestBody.bufferedReader().readText(),
                             exchange.requestHeaders.getFirst("X-Internal-Token"),
                             exchange.requestHeaders.getFirst("Content-Type"),
-                        ),
-                    )
+                        )
+                    requests.add(request)
                     val gate = deliveryGate.getAndSet(null)
                     gate?.first?.countDown()
-                    gate?.second?.await(10, TimeUnit.SECONDS)
-                    if (responseStatus.get() != 0) exchange.sendResponseHeaders(responseStatus.get(), -1)
+                    gate?.second?.await(30, TimeUnit.SECONDS)
+                    val sessionId =
+                        if (request.method == "DELETE") {
+                            null
+                        } else {
+                            request.body
+                                .substringAfter("\"sessionId\":")
+                                .substringBefore(',')
+                                .toLong()
+                        }
+                    val key = exchange.requestURI.path
+                    var status = responseStatus.get()
+                    if (status == 204 || status == 0) {
+                        remoteState.compute(key) { _, previous ->
+                            if (previous == null || previous.first < request.revision) {
+                                request.revision to sessionId
+                            } else {
+                                if (previous.first == request.revision && previous.second != sessionId) status = 409
+                                previous
+                            }
+                        }
+                    }
+                    if (gate != null) lateDelivery.countDown()
+                    if (status != 0) exchange.sendResponseHeaders(status, -1)
                     exchange.close()
                 }
                 start()

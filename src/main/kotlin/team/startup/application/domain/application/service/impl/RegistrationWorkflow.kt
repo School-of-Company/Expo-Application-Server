@@ -37,7 +37,7 @@ class RegistrationWorkflow(
         participantType: String,
         applicationType: String,
     ) {
-        val request = command.request
+        var request = command.request
         val expoId =
             try {
                 UUID.fromString(command.expoId).toString()
@@ -53,12 +53,22 @@ class RegistrationWorkflow(
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
         val sessionRegistration = participantType == "STANDARD" && applicationType == "PRE"
+        if (sessionRegistration && (request.sessionId == null || request.sessionId <= 0)) {
+            badRequest("사전등록 회차 ID가 필요합니다.")
+        }
+        val expo = gateway.expoPeriod(expoId)
+        if (expo.participantPhoneVerificationRequired) {
+            val session =
+                command.participantSession?.takeIf { it.isNotBlank() }
+                    ?: throw ParticipantSessionException("SESSION_REQUIRED")
+            val phone = gateway.participantSessionPhone(expoId, session)
+            request = request.copy(phoneNumber = phone)
+        }
+        val authenticatedCommand = command.copy(expoId = expoId, request = request)
         if (sessionRegistration) {
-            if (request.sessionId == null || request.sessionId <= 0) badRequest("사전등록 회차 ID가 필요합니다.")
-            if (preregistration.resume(command)) return
+            if (preregistration.resume(authenticatedCommand)) return
         }
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        val expo = gateway.expoPeriod(expoId)
         val (started, finished) =
             try {
                 LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)
@@ -169,7 +179,7 @@ class RegistrationWorkflow(
                 region,
             )
         if (sessionRegistration) {
-            preregistration.register(command, registration, 1 + companionKeys.size)
+            preregistration.register(authenticatedCommand, registration, 1 + companionKeys.size)
             return
         }
         val participant = gateway.participant(participantType, registration)
