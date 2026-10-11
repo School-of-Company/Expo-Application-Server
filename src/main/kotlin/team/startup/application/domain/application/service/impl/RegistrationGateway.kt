@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ManagedOwnerParticipant
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
+import team.startup.application.domain.application.presentation.dto.ParticipantQrResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.JsonNode
@@ -17,11 +18,16 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeParseException
 import java.util.UUID
 
 data class ExpoPeriod(
     val startedDay: String,
     val finishedDay: String,
+    val participantPhoneVerificationRequired: Boolean = false,
+    val participantPhoneVerificationRevision: Long = 0,
 )
 
 data class RegistrationForm(
@@ -71,6 +77,7 @@ data class ParticipantRegistrationResult(
     val participantId: Long,
     val phoneNumber: String,
     val participantIds: List<Long> = listOf(participantId),
+    val groupParticipantIds: List<Long> = participantIds,
 )
 
 data class TraineeRegistrationResult(
@@ -84,6 +91,10 @@ class ParticipantSaveRejectedException(
 
 class ParticipantIdsMismatchException : ResponseStatusException(HttpStatus.BAD_GATEWAY, "User 참가자 ID 응답 확인이 필요합니다.")
 
+class ParticipantSessionException(
+    val code: String,
+) : ResponseStatusException(HttpStatus.UNAUTHORIZED, code)
+
 @Component
 class RegistrationGateway(
     private val mapper: ObjectMapper,
@@ -95,8 +106,13 @@ class RegistrationGateway(
     @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String = internalToken,
     @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String = internalToken,
     @Value("\${application.program-sessions.enabled:false}") private val programSessionsEnabled: Boolean = false,
+    @Value("\${application.attendance.url:}") private val attendanceUrl: String = "",
+    @Value("\${application.attendance.internal-token:}") private val attendanceToken: String = "",
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+
+    fun programForm(formId: UUID): JsonNode =
+        decode(call(formUrl, "/internal/forms/by-id/$formId", token = formInternalToken).body(), JsonNode::class.java)
 
     fun programDefinition(
         expoId: String,
@@ -205,6 +221,7 @@ class RegistrationGateway(
                 JsonNode::class.java,
             )
         if (!participants.isArray || participants.size() != 1 || !participants.get(0).path("participantId").isIntegralNumber ||
+            !participants.get(0).path("participantId").canConvertToLong() ||
             participants.get(0).path("participantId").asLong() != participantId
         ) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
@@ -274,10 +291,11 @@ class RegistrationGateway(
 
     private fun invalidManagedResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
 
-    private fun participantSessionPhone(
+    fun participantSessionPhone(
         expoId: String,
         sessionId: String,
     ): String {
+        if (sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
         val session =
             decode(
                 call(
@@ -291,9 +309,18 @@ class RegistrationGateway(
                 JsonNode::class.java,
             )
         if (!session.path("expoId").isString || session.path("expoId").stringValue() != expoId || !session.path("phoneNumber").isString ||
-            session.path("phoneNumber").stringValue().isBlank()
+            !session.path("phoneNumber").stringValue().matches(Regex("01[0-9]{8,9}")) || !session.path("expiresAt").isString
         ) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "참가자 세션 응답이 올바르지 않습니다.")
+        }
+        val expiresAt =
+            try {
+                LocalDateTime.parse(session.path("expiresAt").stringValue())
+            } catch (ex: DateTimeParseException) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "참가자 세션 응답이 올바르지 않습니다.", ex)
+            }
+        if (!expiresAt.isAfter(LocalDateTime.now(ZoneOffset.UTC))) {
+            throw ParticipantSessionException("SESSION_EXPIRED")
         }
         return session.path("phoneNumber").stringValue()
     }
@@ -301,6 +328,7 @@ class RegistrationGateway(
     fun resolveTrainee(
         expoId: String,
         participantId: Long,
+        trainingId: String? = null,
     ): Long {
         val response =
             decode(
@@ -308,7 +336,7 @@ class RegistrationGateway(
                     userUrl,
                     "/internal/trainees/resolve-or-create-by-participant",
                     "POST",
-                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId)),
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId, "trainingId" to trainingId)),
                     token = userInternalToken,
                 ).body(),
                 JsonNode::class.java,
@@ -320,10 +348,50 @@ class RegistrationGateway(
         return id.asLong()
     }
 
+    fun participantQr(
+        expoId: UUID,
+        participantId: Long,
+        representativeId: Long,
+    ): ParticipantQrResponse {
+        if (attendanceToken.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
+        val response =
+            call(
+                attendanceUrl,
+                "/internal/expos/$expoId/participants/$participantId/qr",
+                "POST",
+                mapper.writeValueAsString(mapOf("representativeId" to representativeId)),
+                token = attendanceToken,
+            ).body()
+        val node =
+            try {
+                requireNotNull(mapper.readTree(response))
+            } catch (_: Exception) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "QR 공급자 응답이 올바르지 않습니다.")
+            }
+        val id = node.path("participantId")
+        val code = node.path("code")
+        if (!id.isIntegralNumber || !id.canConvertToLong() || id.asLong() != participantId || !code.isString ||
+            code.stringValue().isBlank()
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "QR 공급자 응답이 올바르지 않습니다.")
+        }
+        return ParticipantQrResponse(participantId, code.stringValue())
+    }
+
     private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
 
-    fun expoPeriod(expoId: String): ExpoPeriod =
-        decode(call(expoUrl, "/internal/expo/$expoId", token = expoInternalToken).body(), ExpoPeriod::class.java)
+    fun expoPeriod(expoId: String): ExpoPeriod {
+        val response = call(expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
+        val node = decode(response.body(), JsonNode::class.java)
+        val required = node.path("participantPhoneVerificationRequired")
+        val revision = node.path("participantPhoneVerificationRevision")
+        if (response.statusCode() != 200 || !required.isBoolean || !revision.isIntegralNumber ||
+            !revision.canConvertToLong() || revision.longValue() < 0
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 전화번호 인증 설정 응답이 올바르지 않습니다.")
+        }
+        return decode(response.body(), ExpoPeriod::class.java)
+    }
 
     fun form(
         expoId: String,
@@ -345,6 +413,11 @@ class RegistrationGateway(
         val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
         return if (type == "STANDARD") {
             val body = decode(response.body(), JsonNode::class.java)
+            body.get("groupParticipantIds")?.let { ids ->
+                if (!ids.isArray || ids.any { !it.isIntegralNumber || !it.canConvertToLong() }) {
+                    throw ParticipantIdsMismatchException()
+                }
+            }
             val result =
                 if (body.isArray) {
                     if (body.size() !in 1..5) throw ParticipantIdsMismatchException()
@@ -360,7 +433,17 @@ class RegistrationGateway(
                 }
             if (result.participantIds.size !in 1..5 || result.participantId <= 0 ||
                 result.participantIds.any { it <= 0 } ||
-                result.participantIds.distinct().size != result.participantIds.size
+                result.participantIds.distinct().size != result.participantIds.size ||
+                result.groupParticipantIds.size !in 1..5 ||
+                result.groupParticipantIds.any { it <= 0 } ||
+                result.groupParticipantIds.distinct().size != result.groupParticipantIds.size ||
+                (
+                    body.has("groupParticipantIds") &&
+                        (
+                            result.groupParticipantIds.first() != result.participantId ||
+                                !result.groupParticipantIds.containsAll(result.participantIds)
+                        )
+                )
             ) {
                 throw ParticipantIdsMismatchException()
             }
@@ -428,7 +511,15 @@ class RegistrationGateway(
 
             401 -> {
                 if (participantSession) {
-                    throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요하거나 만료되었습니다.")
+                    val code =
+                        try {
+                            mapper.readTree(response.body()).path("code").stringValue()
+                        } catch (_: Exception) {
+                            null
+                        }
+                    throw ParticipantSessionException(
+                        if (code == "SESSION_EXPIRED") code else "SESSION_REQUIRED",
+                    )
                 } else {
                     throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "공급자 내부 인증에 실패했습니다.")
                 }

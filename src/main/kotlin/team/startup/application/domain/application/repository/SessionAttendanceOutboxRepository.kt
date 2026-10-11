@@ -10,7 +10,11 @@ data class SessionAttendanceMessage(
     val participantId: Long,
     val sessionId: Long?,
     val attempts: Int,
-)
+) {
+    // Reserve the next revision for purge DELETE compensation of this immutable PUT.
+    val revision: Long
+        get() = Math.addExact(Math.multiplyExact(id, 2L), if (sessionId == null) 1L else 0L)
+}
 
 @Repository
 class SessionAttendanceOutboxRepository(
@@ -65,18 +69,21 @@ class SessionAttendanceOutboxRepository(
         expoId: UUID,
         participantId: Long,
         sessionId: Long?,
-    ) {
+    ): Long {
         // Keep identity order equal to commit order for this participant, including concurrent reapplications.
         jdbc.queryForObject(
             "SELECT CAST(pg_advisory_xact_lock(36, hashtext(?)) AS text)",
             String::class.java,
             "$expoId:$participantId",
         )
-        jdbc.update(
-            "INSERT INTO tb_session_attendance_outbox (expo_id, participant_id, session_id) VALUES (?, ?, ?)",
-            expoId,
-            participantId,
-            sessionId,
+        return requireNotNull(
+            jdbc.queryForObject(
+                "INSERT INTO tb_session_attendance_outbox (expo_id, participant_id, session_id) VALUES (?, ?, ?) RETURNING id",
+                Long::class.java,
+                expoId,
+                participantId,
+                sessionId,
+            ),
         )
     }
 

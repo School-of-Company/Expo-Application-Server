@@ -9,8 +9,34 @@ spring:
     hibernate:
       ddl-auto: validate
 
+springdoc:
+  api-docs:
+    path: /application/v3/api-docs
+    enabled: ${swagger.enabled}
+  swagger-ui:
+    path: /application/swagger-ui.html
+    enabled: ${swagger.enabled}
+
+swagger:
+  enabled: ${SWAGGER_ENABLED:false}
+  include-internal: ${SWAGGER_INCLUDE_INTERNAL:false}
+
 application:
+  promotions:
+    enabled: ${APPLICATION_PROMOTIONS_ENABLED:false}
+    bootstrap-servers: ${APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS:}
+    publish-from: ${APPLICATION_PROMOTIONS_PUBLISH_FROM:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  admin-group-messaging:
+    expo-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_EXPO_URL:}
+    user-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_USER_URL:}
+    notification-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_NOTIFICATION_URL:}
+    expo-internal-token: ${APPLICATION_ADMIN_GROUP_MESSAGE_EXPO_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}
+    user-internal-token: ${APPLICATION_ADMIN_GROUP_MESSAGE_USER_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}
+    notification-internal-token: ${APPLICATION_ADMIN_GROUP_MESSAGE_NOTIFICATION_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}
+  owner:
+    session-cookie-name: ${PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}
+    cancellation-recovery-delay-ms: ${APPLICATION_OWNER_CANCELLATION_RECOVERY_DELAY_MS:60000}
   program-sessions:
     enabled: ${APPLICATION_PROGRAM_SESSIONS_ENABLED:false}
   attendance:

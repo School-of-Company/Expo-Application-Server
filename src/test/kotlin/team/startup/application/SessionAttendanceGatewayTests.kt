@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import team.startup.application.domain.application.repository.SessionAttendanceMessage
@@ -10,6 +11,38 @@ import java.net.InetSocketAddress
 import java.util.UUID
 
 class SessionAttendanceGatewayTests {
+    @Test
+    fun `PUT 본문과 DELETE 쿼리는 같은 기록의 서로 다른 안정적인 revision을 전송한다`() {
+        val requests = mutableListOf<Triple<String, String, String>>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            requests.add(Triple(exchange.requestMethod, exchange.requestURI.toString(), exchange.requestBody.bufferedReader().readText()))
+            exchange.sendResponseHeaders(204, -1)
+            exchange.close()
+        }
+        server.start()
+        try {
+            val message = message()
+            val gateway = SessionAttendanceGateway("http://127.0.0.1:${server.address.port}", "token")
+            gateway.send(message)
+            gateway.send(message.copy(sessionId = null))
+            SessionAttendanceGateway("http://127.0.0.1:${server.address.port}", "token").send(message.copy(sessionId = null))
+            val path = "/internal/expos/${message.expoId}/participants/42/preregister-session"
+            assertEquals(
+                listOf(
+                    Triple("PUT", path, "{\"sessionId\":1,\"revision\":2}"),
+                    Triple("DELETE", "$path?revision=3", ""),
+                    Triple("DELETE", "$path?revision=3", ""),
+                ),
+                requests,
+            )
+            assertEquals(4L, message.copy(id = 2).revision)
+            assertThrows(ArithmeticException::class.java) { message.copy(id = Long.MAX_VALUE).revision }
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun `주소와 토큰이 없으면 발송 설정을 거부한다`() {
         for (url in listOf("", "file:///tmp/attendance", "http://localhost?token=secret", "http://localhost#fragment")) {

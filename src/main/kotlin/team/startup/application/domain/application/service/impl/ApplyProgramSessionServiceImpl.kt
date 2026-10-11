@@ -31,7 +31,7 @@ class ApplyProgramSessionServiceImpl(
     private val waitlist: ProgramWaitlist,
     private val repository: ProgramWaitlistRepository,
 ) : ApplyProgramSessionService {
-    @Transactional
+    @Transactional(noRollbackFor = [ProgramSessionAdmissionDeadlineException::class])
     override fun execute(request: ApplyProgramSessionCommand): ProgramSessionReceipt {
         val expoId =
             try {
@@ -66,6 +66,7 @@ class ApplyProgramSessionServiceImpl(
         if (form.expoId != command.expoId || form.id != policy.formId || form.purpose != "PROGRAM" || form.version != command.formVersion) {
             conflict("프로그램 폼 또는 버전이 변경되었습니다.")
         }
+        val trainingId = if (command.programType == ProgramSessionType.TRAINING) form.trainingId(command.answers) else null
         waitlist.lock(definition)
         repository.observe(definition)
         val now = waitlist.now()
@@ -92,11 +93,10 @@ class ApplyProgramSessionServiceImpl(
         val waiting =
             ledger.confirmedCount(command.programType, command.programId) >= policy.capacity ||
                 waitingCount > 0
-        if (waiting && !now.isBefore(policy.promotionEndedAt)) conflict("프로그램 대기 접수 기간이 끝났습니다.")
         if (waiting && waitingCount >= policy.waitingCapacity) conflict("프로그램 대기 정원이 찼습니다.")
         val traineeId =
             if (command.programType == ProgramSessionType.TRAINING && !waiting) {
-                val id = gateway.resolveTrainee(command.expoId, command.participantId)
+                val id = gateway.resolveTrainee(command.expoId, command.participantId, trainingId)
                 // The ID is known only after acceptance; never wait behind a legacy replace holding the trainee lock.
                 if (!trainings.tryLockTrainee(id)) conflict("연수 신청 변경 중입니다. 같은 멱등 키로 재시도해 주세요.")
                 if (trainings.existsByTraineeIdAndTrainingProgramId(id, command.programId)) conflict("이미 신청한 연수 프로그램입니다.")
@@ -114,6 +114,13 @@ class ApplyProgramSessionServiceImpl(
             } else {
                 null
             }
+        val acceptedAt = waitlist.now()
+        if (!acceptedAt.isBefore(policy.applicationEndedAt) || !acceptedAt.isBefore(form.endedAt)) {
+            throw ProgramSessionAdmissionDeadlineException("프로그램 또는 폼 신청 기간이 아닙니다.")
+        }
+        if (waiting && !acceptedAt.isBefore(policy.promotionEndedAt)) {
+            throw ProgramSessionAdmissionDeadlineException("프로그램 대기 접수 기간이 끝났습니다.")
+        }
         val receipt =
             ProgramSessionReceipt(
                 UUID.randomUUID(),
@@ -153,3 +160,7 @@ class ApplyProgramSessionServiceImpl(
         if (definitions.any { it.groupId == groupId }) conflict("같은 프로그램 묶음에 기존 신청이 있습니다.")
     }
 }
+
+private class ProgramSessionAdmissionDeadlineException(
+    message: String,
+) : ProgramApplicationConflictException(message)

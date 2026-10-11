@@ -7,6 +7,7 @@ import team.startup.application.domain.application.exception.ProgramApplicationC
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.sql.Timestamp
 import java.time.Instant
@@ -23,6 +24,8 @@ class ProgramWaitlistRepository(
         val traineeId: Long?,
         val status: String,
         val key: ProgramSessionKey,
+        val questions: JsonNode,
+        val answers: JsonNode,
     )
 
     private val entryMapper =
@@ -37,13 +40,16 @@ class ProgramWaitlistRepository(
                     ProgramSessionType.valueOf(rs.getString("program_type")),
                     rs.getLong("program_id"),
                 ),
+                mapper.readTree(rs.getString("questions_snapshot")),
+                mapper.readTree(rs.getString("answers_snapshot")),
             )
         }
 
     fun entry(id: UUID): Entry? =
         jdbc
             .query(
-                "SELECT id, participant_id, trainee_id, status, expo_id, program_type, program_id FROM tb_program_session_application WHERE id = ?",
+                "SELECT id, participant_id, trainee_id, status, expo_id, program_type, program_id, questions_snapshot, answers_snapshot " +
+                    "FROM tb_program_session_application WHERE id = ?",
                 entryMapper,
                 id,
             ).singleOrNull()
@@ -53,7 +59,8 @@ class ProgramWaitlistRepository(
         limit: Int,
     ): List<Entry> =
         jdbc.query(
-            "SELECT id, participant_id, trainee_id, status, expo_id, program_type, program_id FROM tb_program_session_application " +
+            "SELECT id, participant_id, trainee_id, status, expo_id, program_type, program_id, questions_snapshot, answers_snapshot " +
+                "FROM tb_program_session_application " +
                 "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'WAITING' ORDER BY created_at, id LIMIT ?",
             entryMapper,
             UUID.fromString(definition.expoId),

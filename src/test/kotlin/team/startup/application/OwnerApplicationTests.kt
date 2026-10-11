@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -106,7 +107,7 @@ class OwnerApplicationTests {
                 "tb_standard_program_application, tb_training_program_application, tb_training_application_version, " +
                 "tb_training_operation_receipt, tb_preregister_application, tb_preregister_transition, tb_preregister_request, " +
                 "tb_preregister_reservation, tb_preregister_session_state, tb_preregister_session_change, " +
-                "tb_preregister_deleted_expo, tb_session_attendance_outbox RESTART IDENTITY CASCADE",
+                "tb_preregister_deleted_expo, tb_session_attendance_outbox, tb_owner_cancellation_delivery RESTART IDENTITY CASCADE",
         )
         transactions.executeWithoutResult {
             preregister.saveDefinition(session)
@@ -442,12 +443,47 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `owner public paths remain unavailable including internal token and unrelated authenticated user`() {
+    fun `public owner paths require participant cookie and cancellation requires CSRF`() {
         val path = "/application/expos/$EXPO/my-applications"
         mvc.perform(get(path)).andExpect(status().isUnauthorized)
         mvc.perform(get(path).header("X-Internal-Token", "test-token")).andExpect(status().isUnauthorized)
-        mvc.perform(post("$path/2/cancellation").with(csrf())).andExpect(status().isUnauthorized)
-        mvc.perform(get(path).with(user("admin"))).andExpect(status().isNotFound)
+        mvc.perform(get(path).with(user("admin"))).andExpect(status().isUnauthorized)
+        mvc.perform(get(path).param("sessionId", "session")).andExpect(status().isUnauthorized)
+        mvc
+            .perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session"), Cookie("PARTICIPANT_SESSION", "other")))
+            .andExpect(status().isUnauthorized)
+        val result =
+            mvc
+                .perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+                .andExpect(status().isOk)
+                .andReturn()
+        assertEquals("no-store", result.response.getHeader("Cache-Control"))
+        val token = requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))
+        val webSession = requireNotNull(result.request.session)
+        assertFalse(result.response.contentAsString.contains("phoneNumber"))
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isForbidden)
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()))
+            .andExpect(status().isUnauthorized)
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "other")))
+            .andExpect(status().isNotFound)
+        mvc
+            .perform(
+                post("$path/PREREGISTER/2/cancellation")
+                    .session(webSession as org.springframework.mock.web.MockHttpSession)
+                    .header("X-CSRF-TOKEN", token)
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isNoContent)
+        assertEquals("CANCELLED", state(2))
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_session_attendance_outbox"))
+        sessionStatus = 401
+        mvc.perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session"))).andExpect(status().isUnauthorized)
     }
 
     private fun cancelCommand(
@@ -506,7 +542,8 @@ class OwnerApplicationTests {
         @Bean @Primary
         fun ownerClock(): Clock = TEST_CLOCK
 
-        @Bean fun ownerGuard(): OwnerCancellationGuard =
+        @Bean @Primary
+        fun ownerGuard(): OwnerCancellationGuard =
             object : OwnerCancellationGuard {
                 override fun acquire(
                     command: CancelOwnerApplicationCommand,

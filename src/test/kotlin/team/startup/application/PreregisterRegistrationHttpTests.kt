@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -89,6 +90,10 @@ class PreregisterRegistrationHttpTests {
         countGate.set(null)
         expoDayOffset.set(0)
         formDayOffset.set(0)
+        phoneVerificationRequired = false
+        sessionStatus.set(200)
+        sessionRequests.clear()
+        verifiedSessionPhone = "01012345678"
     }
 
     private fun submit(
@@ -96,6 +101,7 @@ class PreregisterRegistrationHttpTests {
         people: Int = 1,
         phone: String = "01012345678",
         session: Long = 1,
+        cookie: String? = null,
     ): Int {
         val companions = (2..people).map { mapOf("name" to "person$it", "occupation" to "GENERAL", "region" to "OTHER") }
         val body =
@@ -110,6 +116,7 @@ class PreregisterRegistrationHttpTests {
             )
         val request = post("/application/pre-standard/$EXPO").contentType(MediaType.APPLICATION_JSON).content(body)
         if (key != null) request.header("Idempotency-Key", key)
+        if (cookie != null) request.cookie(Cookie("PARTICIPANT_SESSION", cookie))
         return mvc
             .perform(request)
             .andReturn()
@@ -123,7 +130,88 @@ class PreregisterRegistrationHttpTests {
         return mapper.readTree(response.contentAsString)
     }
 
+    @Test
+    fun `authenticated reservation retries validate sessions and reuse the original verified snapshot`() {
+        phoneVerificationRequired = true
+        userStatus.set(503)
+        assertEquals(503, submit(phone = "01000000001", cookie = "first-session"))
+        val original = userRequests.single()
+        assertEquals("01012345678", original.path("phoneNumber").stringValue())
+        assertEquals(4, capacity().path("remaining").intValue())
+        assertFalse(reservations.find(EXPO, "request", "")!!.command.contains("first-session"))
+        userStatus.set(201)
+        assertEquals(401, submit(cookie = null))
+        sessionStatus.set(401)
+        assertEquals(401, submit(cookie = "expired-session"))
+        assertEquals(1, userRequests.size)
+        assertEquals(4, capacity().path("remaining").intValue())
+        sessionStatus.set(200)
+        assertEquals(201, submit(phone = "01000000002", cookie = "rotated-session"))
+        assertEquals(listOf(original, original), userRequests.toList())
+        assertEquals(listOf("first-session", "expired-session", "rotated-session"), sessionRequests.toList())
+        assertEquals(1, count("tb_preregister_application"))
+        assertEquals(1, count("tb_session_attendance_outbox"))
+        assertEquals(4, capacity().path("remaining").intValue())
+        verifiedSessionPhone = "01099998888"
+        assertEquals(409, submit(cookie = "another-owner-session"))
+        assertEquals(2, userRequests.size)
+        verifiedSessionPhone = "01012345678"
+        sessionStatus.set(401)
+        assertEquals(401, submit(cookie = "expired-session"))
+        assertEquals(2, userRequests.size)
+        assertEquals(1, count("tb_preregister_application"))
+    }
+
     private fun count(table: String): Int = jdbc.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
+
+    @Test
+    fun `added companion SMS IDs do not replace the full party ledger and recovery snapshot`() {
+        responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[44],"groupParticipantIds":[42,43,44]}""")
+        assertEquals(201, submit(people = 3))
+        assertEquals(3, count("tb_preregister_application"))
+        assertEquals(3, count("tb_preregister_count_outbox"))
+        assertEquals(3, count("tb_session_attendance_outbox"))
+        assertEquals(2, capacity().get("remaining").intValue())
+        val saved = reservations.find(EXPO, "request", "")!!
+        assertEquals(listOf(44L), saved.result!!.participantIds)
+        assertEquals(listOf(42L, 43L, 44L), saved.result.groupParticipantIds)
+        assertEquals("COMPLETED", saved.state)
+        assertEquals(null, saved.errorStatus)
+        val status =
+            mvc
+                .perform(get("/internal/expos/$EXPO/preregister-reservations/request").header("X-Internal-Token", "test-token"))
+                .andReturn()
+                .response
+        assertEquals(200, status.status)
+        assertEquals(
+            listOf(42L, 43L, 44L),
+            mapper
+                .readTree(status.contentAsString)
+                .get("participantIds")
+                .toList()
+                .map { it.asLong() },
+        )
+        assertEquals(201, submit(people = 3))
+        assertEquals(1, userRequests.size)
+        recovery.recover()
+        assertEquals(listOf(42L, 43L, 44L), counts.sorted())
+        attendance.dispatch()
+        assertEquals(listOf("PUT:42", "PUT:43", "PUT:44"), attendanceRequests.toList())
+    }
+
+    @Test
+    fun `invalid full party IDs retain reserved seats without count or Attendance delivery`() {
+        capacity.set(8)
+        for ((index, group) in listOf("[]", "[43,42]", "[42,42]", "[42,0]", "[42,45]", "[\"42\"]", "null", "[1.5]").withIndex()) {
+            responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[43],"groupParticipantIds":$group}""")
+            assertEquals(502, submit("group-$index", phone = "0100000000$index"))
+        }
+        assertEquals(0, capacity().get("remaining").intValue())
+        assertTrue(reservations.due().isEmpty())
+        assertEquals(0, count("tb_preregister_application"))
+        assertEquals(0, count("tb_preregister_count_outbox"))
+        assertEquals(0, count("tb_session_attendance_outbox"))
+    }
 
     @Test
     fun `PRE accepts before the event within the form period while FIELD still rejects`() {
@@ -460,8 +548,9 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
-    fun `lost User response keeps seats and recovers original snapshot and requestId without Expo or Form`() {
+    fun `lost User response keeps seats and recovers original snapshot after Expo lookup without Form`() {
         capacity.set(2)
+        responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[43],"groupParticipantIds":[42,43]}""")
         userStatus.set(0)
         assertEquals(503, submit(people = 2))
         assertEquals(0, capacity().get("remaining").intValue())
@@ -472,11 +561,17 @@ class PreregisterRegistrationHttpTests {
         assertEquals(1, stored.size)
         userStatus.set(201)
         upstreamAvailable = false
+        assertEquals(503, submit(people = 2))
+        assertEquals(1, userRequests.size)
+        upstreamAvailable = true
+        formDayOffset.set(10)
         assertEquals(201, submit(people = 2))
         assertTrue(userRequests.all { it == original })
         assertEquals(1, stored.size)
         assertEquals(2, count("tb_preregister_application"))
         assertEquals(2, count("tb_session_attendance_outbox"))
+        assertEquals(listOf(43L), reservations.find(EXPO, "request", "")!!.result!!.participantIds)
+        assertEquals(listOf(42L, 43L), reservations.find(EXPO, "request", "")!!.result!!.groupParticipantIds)
         val requests = userRequests.size
         assertEquals(201, submit(people = 2))
         assertEquals(requests, userRequests.size)
@@ -713,6 +808,12 @@ class PreregisterRegistrationHttpTests {
         private val countStatus = AtomicInteger(204)
         private val expoDayOffset = AtomicInteger(0)
         private val formDayOffset = AtomicInteger(0)
+
+        @Volatile private var phoneVerificationRequired = false
+
+        @Volatile private var verifiedSessionPhone = "01012345678"
+        private val sessionStatus = AtomicInteger(200)
+        private val sessionRequests = CopyOnWriteArrayList<String>()
         private val countGate =
             java.util.concurrent.atomic
                 .AtomicReference<Pair<CountDownLatch, CountDownLatch>?>()
@@ -735,6 +836,18 @@ class PreregisterRegistrationHttpTests {
                     assertEquals("supplier-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
                     val (status, body) =
                         when {
+                            path == "/internal/participant-sessions/resolve" -> {
+                                val request = json.readTree(exchange.requestBody.bufferedReader().use { it.readText() })
+                                assertEquals(EXPO.toString(), request.path("expoId").stringValue())
+                                sessionRequests.add(request.path("sessionId").stringValue())
+                                sessionStatus.get() to
+                                    if (sessionStatus.get() == 200) {
+                                        """{"expoId":"$EXPO","phoneNumber":"$verifiedSessionPhone","expiresAt":"2100-01-01T00:00:00"}"""
+                                    } else {
+                                        """{"code":"SESSION_EXPIRED"}"""
+                                    }
+                            }
+
                             path.endsWith("/preregister-session") -> {
                                 attendanceRequests.add(exchange.requestMethod + ":" + path.split("/")[5])
                                 204 to ""
@@ -758,7 +871,10 @@ class PreregisterRegistrationHttpTests {
                                 val ids = (42L until 42L + count).joinToString(",")
                                 val response =
                                     responseBody.get()
-                                        ?: """{"participantId":42,"phoneNumber":"01012345678","created":true,"participantIds":[$ids]}"""
+                                        ?: (
+                                            """{"participantId":42,"phoneNumber":"01012345678","participantIds":[$ids],""" +
+                                                """"groupParticipantIds":[$ids]}"""
+                                        )
                                 if (userStatus.get() == 0 ||
                                     userStatus.get() in 200..299
                                 ) {
@@ -793,7 +909,8 @@ class PreregisterRegistrationHttpTests {
 
                             else -> {
                                 val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(expoDayOffset.get().toLong())
-                                200 to """{"startedDay":"$today","finishedDay":"$today"}"""
+                                200 to
+                                    """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":$phoneVerificationRequired,"participantPhoneVerificationRevision":0}"""
                             }
                         }
                     if (status != 0) {

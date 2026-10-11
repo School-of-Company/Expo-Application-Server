@@ -1,12 +1,15 @@
 package team.startup.application.domain.application.repository
 
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.jdbc.support.SqlArrayValue
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.presentation.dto.AdminApplicationHistory
 import team.startup.application.domain.application.presentation.dto.AdminApplicationQuery
 import team.startup.application.domain.application.presentation.dto.AdminApplicationRow
+import team.startup.application.domain.application.presentation.dto.AdminApplicationSessionSummary
 import team.startup.application.domain.application.presentation.dto.AdminApplicationSort
 import team.startup.application.domain.application.presentation.dto.AdminApplicationStatus
+import team.startup.application.domain.application.presentation.dto.AdminApplicationSummary
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
@@ -16,11 +19,63 @@ class AdminApplicationQueryRepository(
     private val jdbc: NamedParameterJdbcTemplate,
     private val mapper: ObjectMapper,
 ) {
+    fun summary(
+        expoId: UUID,
+        query: AdminApplicationQuery,
+        participantIds: List<Long>? = null,
+    ): AdminApplicationSummary {
+        val (where, parameters) = predicate(expoId, query, participantIds)
+        val aggregates =
+            "count(*) AS total, count(DISTINCT a.participant_id) AS participants, " +
+                AdminApplicationStatus.entries.joinToString(", ") {
+                    "count(*) FILTER (WHERE a.status = '${it.name}') AS ${it.name.lowercase()}"
+                }
+        val totals =
+            jdbc.queryForObject(
+                "SELECT $aggregates, count(DISTINCT (a.program_type, a.program_id, a.group_id)) AS sessions " +
+                    "FROM tb_program_session_application a WHERE $where",
+                parameters,
+            ) { rs, _ ->
+                AdminApplicationSummary(
+                    rs.getLong("total"),
+                    rs.getLong("participants"),
+                    AdminApplicationStatus.entries.associateWith { rs.getLong(it.name.lowercase()) },
+                    rs.getLong("sessions"),
+                    emptyList(),
+                    query.page,
+                    query.size,
+                )
+            }
+        parameters["limit"] = query.size
+        parameters["offset"] = query.page.toLong() * query.size
+        val direction = if (query.sort == AdminApplicationSort.CREATED_ASC) "ASC" else "DESC"
+        val sessions =
+            jdbc.query(
+                "SELECT a.program_type, a.program_id, a.group_id, $aggregates " +
+                    "FROM tb_program_session_application a WHERE $where " +
+                    "GROUP BY a.program_type, a.program_id, a.group_id " +
+                    "ORDER BY min(a.created_at) $direction, a.program_type $direction, a.program_id $direction, a.group_id $direction " +
+                    "LIMIT :limit OFFSET :offset",
+                parameters,
+            ) { rs, _ ->
+                AdminApplicationSessionSummary(
+                    ProgramSessionType.valueOf(rs.getString("program_type")),
+                    rs.getLong("program_id"),
+                    rs.getObject("group_id", UUID::class.java),
+                    rs.getLong("total"),
+                    rs.getLong("participants"),
+                    AdminApplicationStatus.entries.associateWith { rs.getLong(it.name.lowercase()) },
+                )
+            }
+        return totals.copy(sessions = sessions)
+    }
+
     fun query(
         expoId: UUID,
         query: AdminApplicationQuery,
+        participantIds: List<Long>? = null,
     ): Pair<List<AdminApplicationRow>, Map<AdminApplicationStatus, Long>> {
-        val (where, parameters) = predicate(expoId, query)
+        val (where, parameters) = predicate(expoId, query, participantIds)
         val counts =
             jdbc
                 .query(
@@ -38,8 +93,10 @@ class AdminApplicationQueryRepository(
         query: AdminApplicationQuery,
         limit: Int,
         applicationIds: List<UUID>? = null,
+        participantIds: List<Long>? = null,
     ): List<AdminApplicationRow> {
-        val (where, parameters) = predicate(expoId, query)
+        val (where, parameters) = predicate(expoId, query, participantIds)
+        if (applicationIds?.isEmpty() == true) return emptyList()
         if (applicationIds != null) parameters["ids"] = applicationIds
         return rows(
             where + if (applicationIds == null) "" else " AND a.id IN (:ids)",
@@ -53,9 +110,18 @@ class AdminApplicationQueryRepository(
     private fun predicate(
         expoId: UUID,
         query: AdminApplicationQuery,
+        participantIds: List<Long>?,
     ): Pair<String, MutableMap<String, Any>> {
         val conditions = mutableListOf("a.expo_id = :expoId")
         val parameters = mutableMapOf<String, Any>("expoId" to expoId)
+        if (participantIds != null) {
+            if (participantIds.isEmpty()) {
+                conditions.add("FALSE")
+            } else {
+                conditions.add("a.participant_id = ANY(:participantIds)")
+                parameters["participantIds"] = SqlArrayValue("bigint", *participantIds.toTypedArray())
+            }
+        }
 
         fun filter(
             name: String,

@@ -28,6 +28,21 @@ class ProgramApplicationLookupHttpTests {
     }
 
     @Test
+    fun `신청 테이블에 출석 컬럼이 남지 않는다`() {
+        val columns =
+            jdbc.queryForList(
+                """
+                SELECT table_name || '.' || column_name
+                FROM information_schema.columns
+                WHERE table_name IN ('tb_standard_program_application', 'tb_training_program_application')
+                  AND column_name IN ('status', 'entry_time', 'leave_time', 'attendance_date')
+                """.trimIndent(),
+                String::class.java,
+            )
+        assertEquals(emptyList<String>(), columns)
+    }
+
+    @Test
     fun `일반과 연수 신청 여부는 저장된 신청 행만 기준으로 반환한다`() {
         jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (42, 7)")
         jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (8, 9)")
@@ -47,19 +62,17 @@ class ProgramApplicationLookupHttpTests {
     }
 
     @Test
-    fun `과거 출석 값이 있어도 applied는 신청 존재 여부이고 삭제 후 false다`() {
+    fun `applied는 신청 존재 여부이고 삭제 후 false다`() {
         jdbc.update(
             """
             INSERT INTO tb_standard_program_application
-            (participant_id, standard_program_id, status, entry_time, leave_time, attendance_date)
-            VALUES (42, 7, true, '09:00:30', '10:00', '2026-10-07')
+            (participant_id, standard_program_id) VALUES (42, 7)
             """.trimIndent(),
         )
         jdbc.update(
             """
             INSERT INTO tb_training_program_application
-            (trainee_id, training_program_id, status, entry_time, attendance_date)
-            VALUES (8, 9, false, '09:00', '2026-10-07')
+            (trainee_id, training_program_id) VALUES (8, 9)
             """.trimIndent(),
         )
         val paths = listOf("/standard/7/participants/42", "/training/9/trainees/8")

@@ -4,12 +4,9 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import java.time.Instant
 
-/**
- * No production adapter exists. A future provider must reject entered/attended participants and
- * hold ownership, QR entry and Attendance changes against cancellation until the permit closes
- * after the local commit. A boolean attendance lookup cannot implement this contract safely.
- */
 interface OwnerCancellationGuard {
+    fun recover(command: CancelOwnerApplicationCommand) {}
+
     fun acquire(
         command: CancelOwnerApplicationCommand,
         participantId: Long,
@@ -21,6 +18,9 @@ interface OwnerCancellationGuard {
 
         // Authoritative, separate cancellation deadline; never substitute the registration/session end.
         val cancelEndedAt: Instant
+
+        // Called inside the local transaction; remote delivery happens only after it completes.
+        fun committed(cancellationRevision: Long? = null) {}
 
         override fun close()
     }

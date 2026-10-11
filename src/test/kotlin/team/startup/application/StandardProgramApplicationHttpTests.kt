@@ -102,7 +102,7 @@ class StandardProgramApplicationHttpTests {
     }
 
     @Test
-    fun `목록은 출입 상태와 HH mm 형식의 시각을 반환하고 삭제는 재시도 가능하다`() {
+    fun `목록은 신청 정보만 반환하고 삭제는 재시도 가능하다`() {
         val program = 904L
         mvc.perform(apply(13, program)).andExpect(status().isCreated)
         mvc
@@ -110,18 +110,9 @@ class StandardProgramApplicationHttpTests {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$[0].applicationId").isNumber)
             .andExpect(jsonPath("$[0].participantId").value(13))
-            .andExpect(jsonPath("$[0].status").value(false))
-            .andExpect(jsonPath("$[0].entryTime").value(null))
-            .andExpect(jsonPath("$[0].leaveTime").value(null))
-
-        jdbc.update(
-            "UPDATE tb_standard_program_application SET status = true, entry_time = '09:03:00', leave_time = '10:04:00' WHERE standard_program_id = ?",
-            program,
-        )
-        mvc
-            .perform(get("$PATH/program/$program").header(TOKEN_HEADER, TOKEN))
-            .andExpect(jsonPath("$[0].entryTime").value("09:03"))
-            .andExpect(jsonPath("$[0].leaveTime").value("10:04"))
+            .andExpect(jsonPath("$[0].status").doesNotExist())
+            .andExpect(jsonPath("$[0].entryTime").doesNotExist())
+            .andExpect(jsonPath("$[0].leaveTime").doesNotExist())
 
         mvc.perform(delete("$PATH/program/$program").header(TOKEN_HEADER, TOKEN)).andExpect(status().isNoContent)
         mvc.perform(delete("$PATH/program/$program").header(TOKEN_HEADER, TOKEN)).andExpect(status().isNoContent)

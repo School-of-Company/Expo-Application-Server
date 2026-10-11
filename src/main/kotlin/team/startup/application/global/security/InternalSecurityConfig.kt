@@ -21,10 +21,12 @@ import java.security.MessageDigest
 class InternalSecurityConfig(
     private val internalTokenVerifier: InternalTokenVerifier,
     @Value("\${application.registration.enabled:false}") private val registrationEnabled: Boolean,
+    @Value("\${swagger.enabled:false}") private val swaggerEnabled: Boolean,
 ) {
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
         val internal = PathPatternRequestMatcher.withDefaults().matcher("/internal/**")
+        val adminGroupMessages = PathPatternRequestMatcher.withDefaults().matcher("/application/expos/{expoId}/admin-group-messages/**")
         val registration =
             listOf(
                 "/application/{expoId}",
@@ -35,6 +37,7 @@ class InternalSecurityConfig(
         return http
             .csrf { csrf ->
                 csrf.ignoringRequestMatchers(internal)
+                csrf.ignoringRequestMatchers(adminGroupMessages)
                 if (registrationEnabled) csrf.ignoringRequestMatchers(*registration.toTypedArray())
             }.authorizeHttpRequests { requests ->
                 requests
@@ -48,13 +51,34 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity")
                     .permitAll()
-                    .requestMatchers(internal)
-                    .access {
-                        _,
-                        context,
-                        ->
-                        AuthorizationDecision(internalTokenVerifier.matches(context.request.getHeader("X-Internal-Token")))
-                    }
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/{type}/{applicationId}/cancellation")
+                    .permitAll()
+                    .requestMatchers(adminGroupMessages)
+                    .permitAll()
+                if (swaggerEnabled) {
+                    requests
+                        .requestMatchers(
+                            HttpMethod.GET,
+                            "/application/v3/api-docs",
+                            "/application/v3/api-docs/**",
+                            "/application/swagger-ui.html",
+                            "/application/swagger-ui/**",
+                        ).permitAll()
+                        .requestMatchers(
+                            "/application/v3/api-docs",
+                            "/application/v3/api-docs/**",
+                            "/application/swagger-ui.html",
+                            "/application/swagger-ui/**",
+                        ).denyAll()
+                }
+                requests.requestMatchers(internal).access {
+                    _,
+                    context,
+                    ->
+                    AuthorizationDecision(internalTokenVerifier.matches(context.request.getHeader("X-Internal-Token")))
+                }
                 if (registrationEnabled) requests.requestMatchers(*registration.toTypedArray()).permitAll()
                 requests
                     .anyRequest()

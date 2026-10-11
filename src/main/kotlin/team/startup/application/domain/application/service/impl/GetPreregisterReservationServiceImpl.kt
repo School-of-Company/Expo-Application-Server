@@ -22,7 +22,7 @@ class GetPreregisterReservationServiceImpl(
             saved.state,
             saved.applicants,
             saved.userRequest.requestId,
-            saved.result?.participantIds.orEmpty(),
+            saved.result?.groupParticipantIds.orEmpty(),
             saved.errorStatus,
             saved.attempts,
         )

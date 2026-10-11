@@ -173,7 +173,7 @@ class PreregisterRegistrationWorkflow(
                     )
                 }
                 reservations.result(reserved, result)
-                val ids = result.participantIds
+                val ids = result.groupParticipantIds
                 if (repository.expoDeleted(expoId)) {
                     ids.forEach { attendance.cancelled(expoId, it) }
                     reservations.finish(reserved, 409)

@@ -68,10 +68,12 @@ class ProgramWaitlist(
                 if (definition.programType ==
                     ProgramSessionType.TRAINING
                 ) {
-                    promotionTrainee(definition, entry.participantId) ?: return
+                    promotionTrainee(definition, entry) ?: return
                 } else {
                     null
                 }
+            val promotionTime = now()
+            if (!promotionTime.isBefore(policy.applicationEndedAt) || !promotionTime.isBefore(policy.promotionEndedAt)) return
             if (traineeId != null) {
                 operations.lockVersion(traineeId)
                 trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
@@ -85,11 +87,11 @@ class ProgramWaitlist(
 
     private fun promotionTrainee(
         definition: ProgramSessionDefinition,
-        participantId: Long,
+        entry: ProgramWaitlistRepository.Entry,
     ): Long? {
         val traineeId =
             try {
-                gateway.resolveTrainee(definition.expoId, participantId)
+                gateway.resolveTrainee(definition.expoId, entry.participantId, programTrainingId(entry.questions, entry.answers))
             } catch (_: ResponseStatusException) {
                 return defer(definition, "USER_UNAVAILABLE")
             }

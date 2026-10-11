@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation.dto
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
@@ -9,6 +10,7 @@ import java.time.Instant
 import java.util.UUID
 
 @com.fasterxml.jackson.annotation.JsonIgnoreProperties("waitingCapacity")
+@Schema(description = "사전등록 회차 전체 정의")
 data class PreregisterSessionDefinition(
     @field:Positive val id: Long,
     val expoId: UUID,
@@ -19,10 +21,12 @@ data class PreregisterSessionDefinition(
     @field:Positive val capacity: Int,
     @param:JsonProperty(required = true) val closed: Boolean,
     @field:Positive val revision: Long,
+    val cancelEndedAt: Instant? = null,
 )
 
 enum class PreregisterChangeOperation { UPDATE, DELETE }
 
+@Schema(description = "회차 변경 승인 요청. 삭제 시 definition은 null")
 data class PreregisterSessionChangeRequest(
     val operation: PreregisterChangeOperation,
     @param:JsonProperty(required = true) val definitionChanged: Boolean,
@@ -45,6 +49,7 @@ data class ApplyPreregisterSessionCommand(
     val participantIds: List<Long>,
 )
 
+@Schema(description = "사전등록 신청 접수 결과", example = """{"id":123,"participantId":123,"sessionId":1,"status":"CONFIRMED"}""")
 data class PreregisterApplicationReceipt(
     val id: Long,
     val participantId: Long,
@@ -67,4 +72,5 @@ data class PreregisterSessionKey(
 internal fun PreregisterSessionDefinition.isValidDefinition(): Boolean =
     id > 0 && revision > 0 && capacity > 0 &&
         title.isNotBlank() && title.codePointCount(0, title.length) <= 50 && place.isNotBlank() &&
-        startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0
+        startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0 &&
+        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0)
