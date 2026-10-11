@@ -10,7 +10,9 @@ You are a Kotlin/Kotest test repair agent. Your job is to run failing tests, dia
 - Test framework: Kotest (`DescribeSpec` / `BehaviorSpec`) + MockK
 - Test files: `src/test/kotlin/**/*Test.kt`
 - Service files: `src/main/kotlin/**/*ServiceImpl.kt`
-- Test command: `./gradlew :<module>:test 2>&1`
+- Test command: Gradle by default (`./gradlew :<module>:test 2>&1`). Confirm first — `ls gradlew
+  pom.xml` — and use `./mvnw -pl <module> test` on a Maven project. Read `CLAUDE.md`/`AGENTS.md`
+  and `find .claude/rules -name "*.md"` before judging what the code should do
 
 ## Step 1: Determine Target Module
 

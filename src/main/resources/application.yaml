@@ -8,3 +8,20 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+
+application:
+  internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  program-sessions:
+    enabled: ${APPLICATION_PROGRAM_SESSIONS_ENABLED:false}
+  attendance:
+    enabled: ${APPLICATION_ATTENDANCE_ENABLED:false}
+    url: ${APPLICATION_ATTENDANCE_URL:}
+    internal-token: ${APPLICATION_ATTENDANCE_INTERNAL_TOKEN:}
+  registration:
+    enabled: ${APPLICATION_REGISTRATION_ENABLED:false}
+    expo-url: ${APPLICATION_REGISTRATION_EXPO_URL:}
+    form-url: ${APPLICATION_REGISTRATION_FORM_URL:}
+    user-url: ${APPLICATION_REGISTRATION_USER_URL:}
+    expo-internal-token: ${APPLICATION_REGISTRATION_EXPO_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}
+    form-internal-token: ${APPLICATION_REGISTRATION_FORM_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}
+    user-internal-token: ${APPLICATION_REGISTRATION_USER_INTERNAL_TOKEN:${APPLICATION_INTERNAL_TOKEN:}}

@@ -1,6 +1,6 @@
 ---
 name: docker
-description: Dockerfile and docker-compose authoring guide — multi-stage builds, layer caching, security best practices, and compose service wiring.
+description: Dockerfile and docker-compose authoring guide — multi-stage builds, layer caching, security best practices, and compose service wiring. Examples for JVM and Node; the same principles apply to any stack.
 ---
 
 # Docker Guide
@@ -8,6 +8,8 @@ description: Dockerfile and docker-compose authoring guide — multi-stage build
 ## Dockerfile
 
 ### Multi-stage build
+
+JVM example — the principle (build in one stage, ship the artifact in a slim runtime) is the same everywhere:
 
 ```dockerfile
 FROM eclipse-temurin:21-jdk AS builder
@@ -35,7 +37,37 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 - Run as non-root: `RUN adduser --disabled-password app && USER app`
 - Never `COPY . .` before installing dependencies
 
+### Node / TypeScript
+
+Same three rules, different manifests — install from the lockfile, then build, then ship only what runs:
+
+```dockerfile
+FROM node:22-slim AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:22-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY --from=builder /app/dist ./dist
+USER node
+CMD ["node", "dist/main.js"]
+```
+
+For Python, the same shape holds with `requirements.txt`/`pyproject.toml` copied before the source, and
+the venv or wheels carried into the runtime stage.
+
 ## docker-compose.yml
+
+The app's own config keys come from its framework (`SPRING_DATASOURCE_URL`, `DATABASE_URL`, …) — read
+them off the project rather than copying names from here. What's worth copying is the wiring:
+`depends_on` with a real healthcheck, so the app doesn't start against a database that isn't accepting
+connections yet.
 
 ```yaml
 services:
@@ -44,27 +76,41 @@ services:
     ports:
       - "8080:8080"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/mydb
+      DATABASE_URL: postgres://app:app@db:5432/app   # replace with this project's key
     depends_on:
       db:
         condition: service_healthy
 
   db:
-    image: mysql:8.0
+    image: postgres:16
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: mydb
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U app"]
       interval: 10s
       retries: 5
 ```
 
 ## .dockerignore
 
+Exclude version control, build output, dependencies, and local env files — the exact names depend on
+the stack:
+
 ```
 .git
+*.log
+.env*
+# JVM
 build/
 .gradle/
-*.log
+target/
+# Node
+node_modules/
+dist/
+.next/
+# Python
+__pycache__/
+.venv/
 ```

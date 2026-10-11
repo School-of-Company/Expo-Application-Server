@@ -27,10 +27,13 @@ Discover all rule files dynamically — do not rely on a hardcoded list:
 
 ```bash
 # Discover all rule files
+ls CLAUDE.md AGENTS.md CONTRIBUTING.md 2>/dev/null
+ls .gemini/styleguide.md .github/copilot-instructions.md 2>/dev/null
 find .claude/rules -name "*.md" 2>/dev/null
 ```
 
-Read each discovered file in full. Then read `CLAUDE.md` for any top-level rules not yet covered.
+Read each discovered file in full. The priority list below names four sources, so look for all of them —
+searching only `.claude/rules` skips the one ranked highest, and most repos don't have that directory.
 
 **Priority when rules conflict**: `CLAUDE.md` > `.claude/rules/**` > `.gemini/styleguide.md` > `CONTRIBUTING.md`
 

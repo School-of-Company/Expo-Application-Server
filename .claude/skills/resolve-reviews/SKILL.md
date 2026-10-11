@@ -11,12 +11,25 @@ allowed-tools: Bash(bash *get-pr-data.sh:*), Bash(gh api:*), Bash(gh pr view:*),
 bash "${CLAUDE_SKILL_DIR}/scripts/get-pr-data.sh"
 ```
 
+The script prints `PR_TMP_DIR=<path>` on its last line — every file below lives in that
+directory, which is outside the repo so it can never be swept into a commit.
+
 Output files:
 
-- `.pr-tmp/pr_comments.json` — inline review comments (id, path, line, body, user)
-- `.pr-tmp/pr_changed_files.txt` — changed files
-- `.pr-tmp/pr_commits.txt` — commits in this PR
-- `.pr-tmp/pr_diff.txt` — full diff
+- `$PR_TMP_DIR/pr_comments.json` — inline review comments (id, path, line, body, created_at, user).
+  Replies are filtered out (`in_reply_to_id == null`), so the replies this skill posted on an earlier
+  run don't come back as comments to assess.
+- `$PR_TMP_DIR/pr_reviews.json` — PR-level review bodies (id, state, body, submitted_at, user). Bot
+  reviewers post their findings here rather than inline, so a run that reads only `pr_comments.json`
+  sees nothing from them.
+- `$PR_TMP_DIR/last_push.txt` — timestamp of the last push; anything newer is this round's feedback
+- `$PR_TMP_DIR/pr_changed_files.txt` — changed files
+- `$PR_TMP_DIR/pr_commits.txt` — commits in this PR
+- `$PR_TMP_DIR/pr_diff.txt` — full diff
+
+Assess both `pr_comments.json` and `pr_reviews.json`. Compare each entry's `created_at` /
+`submitted_at` against `last_push.txt`: newer entries are this round's, older ones are from a previous
+round — label them in the Step 4 report instead of silently re-processing them.
 
 Also fetch repo and PR metadata:
 
@@ -27,23 +40,31 @@ gh pr view --json number,baseRefName -q '{number: .number, base: .baseRefName}'
 
 ## Step 2 — Load Rules and Assess Each Comment
 
-Before assessing any comment, discover and read all project convention files:
+Before assessing any comment, discover and read all project convention files. The priority list below
+starts with `CLAUDE.md`, so searching only `.claude/rules/` skips the highest-authority document — and
+this catalog never deploys `.claude/rules/`, so in most repos that directory doesn't exist at all:
 
 ```bash
+ls CLAUDE.md AGENTS.md CONTRIBUTING.md 2>/dev/null
+ls .gemini/styleguide.md .github/copilot-instructions.md 2>/dev/null
 find .claude/rules -name "*.md" 2>/dev/null
 ```
 
-Read each returned file in full. These are the authoritative rules for judging each review comment.
+Read every file these return, in full. They are the authoritative rules for judging each review comment.
 
 **Rule priority**: `CLAUDE.md` > `.claude/rules/**` > `.gemini/styleguide.md` > `CONTRIBUTING.md`
 
-For each comment in `pr_comments.json`, apply the following **layered judgment criteria**:
+**If none of them exist**, say so in the Step 4 report and judge on the secondary criterion alone. An
+empty rule set is a fact about the repo worth stating — staying quiet about it reads like the project's
+conventions were applied when nothing was found to apply.
+
+For each entry in `pr_comments.json` and `pr_reviews.json`, apply the following **layered judgment criteria**:
 
 ### Judgment criteria (priority order)
 
 1. **Project conventions** (primary): apply rules discovered above
    - DTO annotation rules, commit scope, logging style, exception message format, etc.
-2. **Language/framework best practices** (secondary): Kotlin official guide, Spring Boot recommendations
+2. **Language/framework best practices** (secondary): the official guide for the language and framework this project actually uses
    - Apply only when no matching project rule exists
 
 ### Verdicts
@@ -52,7 +73,7 @@ For each comment in `pr_comments.json`, apply the following **layered judgment c
 - **INVALID**: reviewer is wrong with a clear refutation → skip, post refutation reply
 - **PARTIAL**: intent is correct but application method or scope is ambiguous → confirm with AskUserQuestion
 
-Always cite a specific source in the rationale (e.g. `CLAUDE.md §Logging Style`, `Kotlin: prefer val over var`).
+Always cite a specific source in the rationale (e.g. `CLAUDE.md §Logging Style`, or the language guide's own wording).
 
 ## Step 3 — Act on Each Verdict
 
@@ -94,9 +115,9 @@ Accept? (y / n / s = skip for now)
 
 | # | Reviewer | File | Verdict | Rationale | Action |
 |---|----------|------|---------|-----------|--------|
-| 1 | alice | Foo.kt:12 | ✅ VALID | CLAUDE.md §Logging Style | Auto-fixed (abc1234) |
-| 2 | bob | Bar.kt:34 | ❌ INVALID | CLAUDE.md §Exception Message | Skipped |
-| 3 | alice | Baz.kt:56 | ⚠️ PARTIAL | - | PENDING |
+| 1 | alice | `<file>:12` | ✅ VALID | CLAUDE.md §Logging Style | Auto-fixed (abc1234) |
+| 2 | bob | `<file>:34` | ❌ INVALID | CLAUDE.md §Exception Message | Skipped |
+| 3 | alice | `<file>:56` | ⚠️ PARTIAL | - | PENDING |
 ```
 
 ## Step 5 — Push Commits
@@ -123,5 +144,5 @@ For reply body templates, read `${CLAUDE_SKILL_DIR}/references/reply-formats.md`
 ## Step 7 — Cleanup
 
 ```bash
-rm -rf .pr-tmp
+rm -rf "$PR_TMP_DIR"
 ```

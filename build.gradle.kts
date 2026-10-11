@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "team.startup"
-version = "0.0.1-SNAPSHOT"
+version = "0.1.0"
 
 java {
     toolchain {
@@ -80,6 +80,7 @@ allOpen {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    systemProperty("application.internal-token", "test-token")
 }
 
 noArg {

@@ -1,0 +1,954 @@
+package team.startup.application
+
+import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoMoreInteractions
+import org.mockito.Mockito.`when`
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
+import org.springframework.test.context.bean.override.mockito.MockitoBean
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.web.server.ResponseStatusException
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.service.impl.ExpoPeriod
+import team.startup.application.domain.application.service.impl.ParticipantRegistration
+import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
+import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
+import team.startup.application.domain.application.service.impl.RegistrationField
+import team.startup.application.domain.application.service.impl.RegistrationForm
+import team.startup.application.domain.application.service.impl.RegistrationGateway
+import team.startup.application.domain.application.service.impl.RegistrationQuestion
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
+import java.net.InetSocketAddress
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+@SpringBootTest(
+    properties = ["eureka.client.enabled=false", "application.registration.enabled=true", "management.health.redis.enabled=false"],
+)
+@AutoConfigureMockMvc
+@Testcontainers
+class RegistrationHttpTests {
+    @Autowired private lateinit var mockMvc: MockMvc
+
+    @Autowired private lateinit var mapper: ObjectMapper
+
+    @MockitoBean private lateinit var gateway: RegistrationGateway
+
+    @MockitoBean private lateinit var preregistration: PreregisterRegistrationWorkflow
+
+    @BeforeEach
+    fun isolatePreregistrationPersistence() {
+        // This class verifies form validation/serialization; PreregisterRegistrationHttpTests exercises the real reservation.
+        org.mockito.Mockito
+            .doAnswer { invocation ->
+                val registration = invocation.getArgument<ParticipantRegistration>(1)
+                val result = gateway.participant("STANDARD", registration)
+                result.participantIds.forEach { gateway.countStandard(registration.expoId, it) }
+                null
+            }.`when`(preregistration)
+            .register(
+                org.mockito.ArgumentMatchers.any() ?: team.startup.application.domain.application.service.RegistrationCommand(
+                    EXPO_1,
+                    team.startup.application.domain.application.presentation
+                        .RegistrationRequest("person", "010", "{}", true),
+                    null,
+                ),
+                org.mockito.ArgumentMatchers.any() ?: ParticipantRegistration(
+                    EXPO_1,
+                    "person",
+                    "010",
+                    "{}",
+                    true,
+                    "PRE",
+                    null,
+                    null,
+                    null,
+                    "key",
+                    null,
+                    null,
+                ),
+                org.mockito.ArgumentMatchers.anyInt(),
+            )
+    }
+
+    @Test
+    fun `사전 일반 등록은 폼 답변을 분리하고 인원을 집계하며 재시도 키를 전달한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.minusDays(1).toString(), today.plusDays(1).toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(
+                OffsetDateTime.now().minusDays(1).toString(),
+                OffsetDateTime.now().plusDays(1).toString(),
+                listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL")),
+            ),
+        )
+        val answers = mapper.writeValueAsString(mapOf("직업" to "TEACHER", "학교" to "광주고"))
+        val body = body(answers)
+        val questions =
+            listOf(
+                RegistrationQuestion(1, "직업", 0, "DROPDOWN", mapper.readTree("{\"TEACHER\":\"교사\"}"), null, "OCCUPATION"),
+                RegistrationQuestion(
+                    2,
+                    "학교",
+                    1,
+                    "SENTENCE",
+                    mapper.readTree("{}"),
+                    mapper.readTree("{\"conditional\":{\"parentIndex\":0}}"),
+                    "SCHOOL",
+                ),
+            )
+        val registration =
+            ParticipantRegistration(
+                EXPO_1,
+                "홍길동",
+                "01012345678",
+                answers,
+                true,
+                "PRE",
+                null,
+                "TEACHER",
+                "광주고",
+                "request-1",
+                FORM_ID,
+                questions,
+            )
+        `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/pre-standard/$EXPO_1")
+                    .header("Idempotency-Key", "request-1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("STANDARD", registration)
+        verify(gateway).countStandard(EXPO_1, 42)
+    }
+
+    @Test
+    fun `현장 연수자 등록은 폼 없이 FIELD로 저장하고 인원을 집계하지 않는다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_2, "TRAINEE", "FIELD", false)).thenReturn(null)
+        val registration =
+            ParticipantRegistration(EXPO_2, "홍길동", "01012345678", "{}", true, "FIELD", "training-1", null, null, "request-2", null, null)
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_2")
+                    .header("Idempotency-Key", "request-2")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}", "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+        verify(gateway).expoPeriod(EXPO_2)
+        verify(gateway).form(EXPO_2, "TRAINEE", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `개최 전 연수 사전등록은 폼 접수 기간으로 판정한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.plusDays(10).toString(), today.plusDays(11).toString()))
+        `when`(gateway.form(EXPO_2, "TRAINEE", "PRE", true)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString()),
+        )
+        val registration =
+            ParticipantRegistration(
+                EXPO_2,
+                "홍길동",
+                "01012345678",
+                "{}",
+                true,
+                "PRE",
+                "training-1",
+                null,
+                null,
+                "request-2",
+                FORM_ID,
+                emptyList(),
+            )
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/$EXPO_2")
+                    .header("Idempotency-Key", "request-2")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}", "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+        verify(gateway, org.mockito.Mockito.never()).countStandard(EXPO_2, 7)
+    }
+
+    @Test
+    fun `대표자의 잘못된 직업 값은 User 호출 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(1, "직업", "OCCUPATION"))),
+        )
+        val invalid = listOf("\"MIDDLE_HIGH_SCHOOL_STUDENT\"", "\"UNKNOWN\"", "\" GENERAL \"", "123", "[]", "{}")
+        for (occupation in invalid) {
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("{\"직업\":$occupation}")),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(invalid.size)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(invalid.size)).form(EXPO_1, "STANDARD", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `선택 직업과 지역의 미응답은 null로 전달하고 원문과 스냅샷을 유지한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "지역", "DEFAULT").copy(formType = "REGION"))
+        val questions =
+            fields.mapIndexed { order, it ->
+                RegistrationQuestion(it.id, it.title, order, it.formType, it.jsonData, it.otherJson, it.dynamicFormType)
+            }
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", fields),
+        )
+        for ((index, answers) in listOf(
+            "{}",
+            "{\"직업\":null,\"지역\":null}",
+            "{\"직업\":\"\",\"지역\":\"\"}",
+            "{\"직업\":\"  \",\"지역\":\"  \"}",
+        ).withIndex()) {
+            val registration =
+                ParticipantRegistration(
+                    EXPO_1,
+                    "홍길동",
+                    "01012345678",
+                    answers,
+                    true,
+                    "FIELD",
+                    null,
+                    null,
+                    null,
+                    "optional-$index",
+                    FORM_ID,
+                    questions,
+                )
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .header("Idempotency-Key", "optional-$index")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(answers)),
+                ).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration)
+        }
+    }
+
+    @Test
+    fun `필수 직업과 지역의 미응답은 User 호출 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "지역", "DEFAULT").copy(formType = "REGION"))
+        for (field in fields) {
+            `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(
+                registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field.copy(requiredStatus = true))),
+            )
+            for (answers in listOf("{}", "{\"${field.title}\":null}", "{\"${field.title}\":\"\"}", "{\"${field.title}\":\"  \"}")) {
+                mockMvc
+                    .perform(post("/application/field/standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body(answers)))
+                    .andExpect(status().isBadRequest)
+            }
+        }
+        verify(gateway, org.mockito.Mockito.times(8)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(8)).form(EXPO_1, "STANDARD", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `학교가 필요한 직업에 학교 답변이 없으면 참가자를 만들지 않는다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_3, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(
+                OffsetDateTime.now().minusDays(1).toString(),
+                OffsetDateTime.now().plusDays(1).toString(),
+                listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL")),
+            ),
+        )
+        for (occupation in listOf("TEACHER", "PRE_SERVICE_TEACHER")) {
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_3")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(mapper.writeValueAsString(mapOf("직업" to occupation)))),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(2)).expoPeriod(EXPO_3)
+        verify(gateway, org.mockito.Mockito.times(2)).form(EXPO_3, "STANDARD", "PRE", true)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `아홉 직업은 교사와 예비교사만 학교를 포함해 그대로 전달한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL"))
+        `when`(gateway.form(EXPO_3, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields),
+        )
+        val questions =
+            fields.mapIndexed { order, item ->
+                RegistrationQuestion(item.id, item.title, order, item.formType, item.jsonData, item.otherJson, item.dynamicFormType)
+            }
+        for ((index, occupation) in listOf(
+            "KINDERGARTEN_STUDENT",
+            "SCHOOL_STAFF",
+            "ELEMENTARY_STUDENT",
+            "MIDDLE_SCHOOL_STUDENT",
+            "HIGH_SCHOOL_STUDENT",
+            "PARENT",
+            "GENERAL",
+            "TEACHER",
+            "PRE_SERVICE_TEACHER",
+        ).withIndex()) {
+            val school = if (occupation in listOf("TEACHER", "PRE_SERVICE_TEACHER")) "광주고" else null
+            val answers =
+                mapper.writeValueAsString(
+                    mutableMapOf("직업" to occupation).apply { if (school != null) put("학교", school) },
+                )
+            val requestId = "school-optional-$index"
+            val registration =
+                ParticipantRegistration(
+                    EXPO_3,
+                    "홍길동",
+                    "01012345678",
+                    answers,
+                    true,
+                    "PRE",
+                    null,
+                    occupation,
+                    school,
+                    requestId,
+                    FORM_ID,
+                    questions,
+                )
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(index + 1L, "01012345678"))
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_3")
+                        .header("Idempotency-Key", requestId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(answers)),
+                ).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration)
+        }
+    }
+
+    @Test
+    fun `동행자는 아홉 직업과 직업별 학교 규칙을 지켜 원문으로 전달된다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val fields = listOf(RegistrationField(9, "함께 오는 사람", "COMPANION", mapper.readTree("{}"), null, "DEFAULT"))
+        val form = registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields)
+        val questions =
+            fields.mapIndexed { order, item ->
+                RegistrationQuestion(item.id, item.title, order, item.formType, item.jsonData, item.otherJson, item.dynamicFormType)
+            }
+        val companions =
+            listOf(
+                "KINDERGARTEN_STUDENT",
+                "ELEMENTARY_STUDENT",
+                "MIDDLE_SCHOOL_STUDENT",
+                "HIGH_SCHOOL_STUDENT",
+                "SCHOOL_STAFF",
+                "PARENT",
+                "GENERAL",
+                "TEACHER",
+                "PRE_SERVICE_TEACHER",
+            ).mapIndexed { index, occupation ->
+                mutableMapOf(
+                    "name" to "가".repeat(10),
+                    "occupation" to occupation,
+                    "region" to listOf("GWANGJU", "JEONNAM", "OTHER")[index % 3],
+                ).apply {
+                    if (occupation in listOf("TEACHER", "PRE_SERVICE_TEACHER")) put("school", "가".repeat(100))
+                }
+            }
+        for ((route, type, applicationType) in listOf(
+            Triple("pre-standard", "STANDARD", "PRE"),
+            Triple("", "TRAINEE", "PRE"),
+            Triple("field/standard", "STANDARD", "FIELD"),
+            Triple("field", "TRAINEE", "FIELD"),
+        )) {
+            `when`(gateway.form(EXPO_1, type, applicationType, applicationType == "PRE")).thenReturn(form)
+            for ((index, group) in (listOf(emptyList<Map<String, String>>()) + companions.chunked(4)).withIndex()) {
+                val answers = mapper.writeValueAsString(mapOf("함께 오는 사람" to group))
+                val requestId = "$type-$applicationType-$index"
+                val registration =
+                    ParticipantRegistration(
+                        EXPO_1,
+                        "홍길동",
+                        "01012345678",
+                        answers,
+                        true,
+                        applicationType,
+                        "training-1",
+                        null,
+                        null,
+                        requestId,
+                        FORM_ID,
+                        questions,
+                    )
+                `when`(gateway.participant(type, registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+                mockMvc
+                    .perform(
+                        post(if (route.isEmpty()) "/application/$EXPO_1" else "/application/$route/$EXPO_1")
+                            .header("Idempotency-Key", requestId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(answers, "training-1")),
+                    ).andExpect(status().isCreated)
+                verify(gateway).participant(type, registration)
+            }
+        }
+    }
+
+    @Test
+    fun `잘못된 동행자 답변은 네 등록 경로 모두 User 호출 전에 거부한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val valid = mapOf("name" to "동행자", "occupation" to "GENERAL", "region" to "OTHER")
+        val invalid =
+            listOf(
+                null,
+                "문자열",
+                mapOf("name" to "동행자"),
+                listOf(null),
+                listOf("문자열"),
+                List(5) { valid },
+                listOf(valid - "name"),
+                listOf(valid + ("name" to " ")),
+                listOf(valid + ("name" to "가".repeat(11))),
+                listOf(valid + ("name" to 123)),
+                listOf(valid - "occupation"),
+                listOf(valid + ("occupation" to "UNKNOWN")),
+                listOf(valid + ("occupation" to 123)),
+                listOf(valid - "region"),
+                listOf(valid + ("region" to "SEOUL")),
+                listOf(valid + ("occupation" to "MIDDLE_HIGH_SCHOOL_STUDENT")),
+                listOf(valid + ("occupation" to " GENERAL ")),
+                listOf(valid + ("region" to " OTHER ")),
+                listOf(valid + ("region" to 123)),
+                listOf(valid + ("school" to "학교")),
+                listOf(valid + ("school" to null)),
+                listOf(valid + ("occupation" to "TEACHER")),
+                listOf(valid + ("occupation" to "PRE_SERVICE_TEACHER")),
+                listOf(valid + mapOf("occupation" to "TEACHER", "school" to " ")),
+                listOf(valid + mapOf("occupation" to "TEACHER", "school" to 123)),
+                listOf(valid + mapOf("occupation" to "TEACHER", "school" to "가".repeat(101))),
+            )
+        for ((route, type, applicationType) in listOf(
+            Triple("pre-standard", "STANDARD", "PRE"),
+            Triple("", "TRAINEE", "PRE"),
+            Triple("field/standard", "STANDARD", "FIELD"),
+            Triple("field", "TRAINEE", "FIELD"),
+        )) {
+            `when`(gateway.form(EXPO_1, type, applicationType, applicationType == "PRE")).thenReturn(
+                registrationForm(
+                    OffsetDateTime.now().minusDays(1).toString(),
+                    OffsetDateTime.now().plusDays(1).toString(),
+                    listOf(RegistrationField(9, "함께 오는 사람", "COMPANION", mapper.readTree("{}"), null, "DEFAULT")),
+                ),
+            )
+            for (answer in invalid) {
+                mockMvc
+                    .perform(
+                        post(if (route.isEmpty()) "/application/$EXPO_1" else "/application/$route/$EXPO_1")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(mapper.writeValueAsString(mapOf("함께 오는 사람" to answer)), "training-1")),
+                    ).andExpect(status().isBadRequest)
+                    .andExpect {
+                        if (answer !is List<*>) {
+                            assertEquals("동행자 답변은 JSON 배열이어야 합니다.", (it.resolvedException as ResponseStatusException).reason)
+                        }
+                    }
+            }
+            verify(gateway, org.mockito.Mockito.times(invalid.size)).form(EXPO_1, type, applicationType, applicationType == "PRE")
+        }
+        verify(gateway, org.mockito.Mockito.times(invalid.size * 4)).expoPeriod(EXPO_1)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `동행자는 폼별 상한과 여러 문항의 합계 상한을 넘길 수 없다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val companion = mapOf("name" to "동행자", "occupation" to "GENERAL", "region" to "OTHER")
+        val fields =
+            listOf(
+                RegistrationField(9, "첫 목록", "COMPANION", mapper.readTree("{}"), mapper.readTree("{\"maxSelection\":2}"), "DEFAULT"),
+                RegistrationField(10, "둘째 목록", "COMPANION", mapper.readTree("{}"), mapper.readTree("{\"maxSelection\":5}"), "DEFAULT"),
+            )
+        `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields),
+        )
+        for (answers in listOf(
+            mapOf("첫 목록" to List(3) { companion }),
+            mapOf("둘째 목록" to List(5) { companion }),
+            mapOf("첫 목록" to List(2) { companion }, "둘째 목록" to List(3) { companion }),
+        )) {
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(mapper.writeValueAsString(answers))),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(3)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(3)).form(EXPO_1, "STANDARD", "PRE", true)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `Form의 동행자 상한이 잘못되면 User 호출 없이 502로 반환한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val invalidLimits = listOf("null", "\"2\"", "2.5", "true", "[]", "{}", "0", "-1", "2147483648")
+        for (limit in invalidLimits) {
+            `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(
+                registrationForm(
+                    OffsetDateTime.now().minusDays(1).toString(),
+                    OffsetDateTime.now().plusDays(1).toString(),
+                    listOf(
+                        RegistrationField(
+                            9,
+                            "동행자",
+                            "COMPANION",
+                            mapper.readTree("{}"),
+                            mapper.readTree("{\"maxSelection\":$limit}"),
+                            "DEFAULT",
+                        ),
+                    ),
+                ),
+            )
+            mockMvc
+                .perform(
+                    post("/application/pre-standard/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("{\"동행자\":[]}")),
+                ).andExpect(status().isBadGateway)
+        }
+        verify(gateway, org.mockito.Mockito.times(invalidLimits.size)).expoPeriod(EXPO_1)
+        verify(gateway, org.mockito.Mockito.times(invalidLimits.size)).form(EXPO_1, "STANDARD", "PRE", true)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `학교 답변이 문자열이 아니면 참가자를 만들지 않는다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_4)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_4, "STANDARD", "PRE", true)).thenReturn(
+            registrationForm(
+                OffsetDateTime.now().minusDays(1).toString(),
+                OffsetDateTime.now().plusDays(1).toString(),
+                listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL")),
+            ),
+        )
+        mockMvc
+            .perform(
+                post("/application/pre-standard/$EXPO_4")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{\"직업\":\"TEACHER\",\"학교\":123}")),
+            ).andExpect(status().isBadRequest)
+        verify(gateway).expoPeriod(EXPO_4)
+        verify(gateway).form(EXPO_4, "STANDARD", "PRE", true)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `참가자 저장 후 집계 실패는 재시도 가능한 503으로 반환한다`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/internal/expo/") { exchange ->
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        }
+        server.start()
+        try {
+            val actualGateway =
+                RegistrationGateway(mapper, "http://127.0.0.1:${server.address.port}", "", "", "test-token")
+            val error = assertThrows<ResponseStatusException> { actualGateway.countStandard(EXPO_1, 42) }
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.statusCode)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `현장 폼 404는 허용하고 연수자 응답의 traineeId를 읽는다`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val sentBody = AtomicReference<String>()
+        server.createContext("/internal/forms/") { exchange ->
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        }
+        server.createContext("/internal/trainees") { exchange ->
+            sentBody.set(exchange.requestBody.bufferedReader().readText())
+            val response = "{\"traineeId\":7,\"phoneNumber\":\"01012345678\"}".toByteArray()
+            exchange.sendResponseHeaders(201, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val actualGateway = RegistrationGateway(mapper, "", url, url, "test-token")
+            assertNull(actualGateway.form(EXPO_1, "TRAINEE", "FIELD", false))
+            assertEquals(
+                HttpStatus.NOT_FOUND,
+                assertThrows<ResponseStatusException> { actualGateway.form(EXPO_1, "TRAINEE", "PRE", true) }.statusCode,
+            )
+            val registration =
+                ParticipantRegistration(
+                    EXPO_1,
+                    "홍길동",
+                    "01012345678",
+                    "{}",
+                    true,
+                    "FIELD",
+                    "training-1",
+                    null,
+                    null,
+                    "request-1",
+                    null,
+                    null,
+                )
+            assertEquals(7, actualGateway.participant("TRAINEE", registration).participantId)
+            val sent = mapper.readTree(sentBody.get())
+            assertEquals(mapper.readTree("null"), sent.get("formId"))
+            assertEquals(mapper.readTree("null"), sent.get("questions"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `등록 호출은 대상 서비스별 내부 토큰을 사용한다`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val tokens = mutableMapOf<String, String?>()
+        server.createContext("/internal/expo/") { exchange ->
+            tokens["expo"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            val response = "{\"startedDay\":\"2026-10-01\",\"finishedDay\":\"2026-10-31\"}".toByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.createContext("/internal/forms/") { exchange ->
+            tokens["form"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        }
+        server.createContext("/internal/standard-participants") { exchange ->
+            tokens["user"] = exchange.requestHeaders.getFirst("X-Internal-Token")
+            val response = "{\"participantId\":42,\"phoneNumber\":\"01012345678\"}".toByteArray()
+            exchange.sendResponseHeaders(201, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val actualGateway = RegistrationGateway(mapper, url, url, url, "shared-token", "expo-token", "form-token", "user-token")
+            actualGateway.expoPeriod(EXPO_1)
+            actualGateway.form(EXPO_1, "STANDARD", "FIELD", false)
+            actualGateway.participant(
+                "STANDARD",
+                ParticipantRegistration(EXPO_1, "홍길동", "01012345678", "{}", true, "FIELD", null, null, null, "request-1", null, null),
+            )
+            assertEquals("expo-token", tokens["expo"])
+            assertEquals("form-token", tokens["form"])
+            assertEquals("user-token", tokens["user"])
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `현장 등록에 폼이 있으면 기간과 무관하게 스냅샷을 전달한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_2, "TRAINEE", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(3, "학교", "SCHOOL"))),
+        )
+        val registration =
+            ParticipantRegistration(
+                EXPO_2,
+                "홍길동",
+                "01012345678",
+                "{\"학교\":\"광주고\"}",
+                true,
+                "FIELD",
+                "training-1",
+                null,
+                "광주고",
+                "request-2",
+                FORM_ID,
+                listOf(
+                    RegistrationQuestion(
+                        3,
+                        "학교",
+                        0,
+                        "SENTENCE",
+                        mapper.readTree("{}"),
+                        mapper.readTree("{\"conditional\":{\"parentIndex\":0}}"),
+                        "SCHOOL",
+                    ),
+                ),
+            )
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_2")
+                    .header("Idempotency-Key", "request-2")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{\"학교\":\"광주고\"}", "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+    }
+
+    @Test
+    fun `실제 Form 응답의 문항 스펙을 User 요청 JSON에 보존한다`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val sentBody = AtomicReference<String>()
+        server.createContext("/internal/forms/") { exchange ->
+            val response =
+                """{"id":"$FORM_ID","expoId":"$EXPO_1","title":"신청서","informationText":"안내","participantType":"STANDARD","applicationType":"FIELD","startDate":"2026-10-01T00:00:00Z","endDate":"2026-10-31T00:00:00Z","dynamicForm":[{"id":3,"title":"학교","formType":"SENTENCE","requiredStatus":false,"jsonData":{},"otherJson":{"conditional":{"parentIndex":0}},"dynamicFormType":"SCHOOL"}]}"""
+                    .toByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.createContext("/internal/standard-participants") { exchange ->
+            sentBody.set(exchange.requestBody.bufferedReader().readText())
+            val response = "{\"participantId\":42,\"phoneNumber\":\"01012345678\"}".toByteArray()
+            exchange.sendResponseHeaders(201, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val actualGateway = RegistrationGateway(mapper, "", url, url, "test-token")
+            val form = actualGateway.form(EXPO_1, "STANDARD", "FIELD", false)!!
+            val field = form.dynamicForm.single()
+            val question =
+                RegistrationQuestion(field.id, field.title, 0, field.formType, field.jsonData, field.otherJson, field.dynamicFormType)
+            val registration =
+                ParticipantRegistration(
+                    EXPO_1,
+                    "홍길동",
+                    "01012345678",
+                    "{}",
+                    true,
+                    "FIELD",
+                    null,
+                    null,
+                    null,
+                    "request-1",
+                    form.id,
+                    listOf(question),
+                )
+            actualGateway.participant("STANDARD", registration)
+            val sent = mapper.readTree(sentBody.get())
+            assertEquals(FORM_ID, sent.get("formId").stringValue())
+            assertEquals(
+                mapper.readTree(
+                    """[{"id":3,"title":"학교","order":0,"formType":"SENTENCE","jsonData":{},"otherJson":{"conditional":{"parentIndex":0}},"dynamicFormType":"SCHOOL"}]""",
+                ),
+                sent.get("questions"),
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `등록 활성화 상태에서도 참가자 쿠키와 요청 주장은 내부 토큰을 대체하지 못한다`() {
+        for (token in listOf(null, "wrong-token")) {
+            val request =
+                post("/internal/standard-program-applications")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "unverified-session"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participant":{"id":42,"expoId":"$EXPO_1"},"programs":[],"verified":true,"phoneNumber":"01012345678"}""")
+            if (token != null) request.header("X-Internal-Token", token)
+            mockMvc.perform(request).andExpect(status().isUnauthorized)
+        }
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `일반 인증 사용자도 내부 참가자와 연수자 신청 조회 토큰을 대체하지 못한다`() {
+        for (path in listOf(
+            "/internal/standard-program-applications/program/7",
+            "/internal/program-applications/standard/7/participants/42",
+            "/internal/program-applications/training/7/trainees/42",
+        )) {
+            mockMvc.perform(get(path).with(user("representative"))).andExpect(status().isForbidden)
+        }
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `등록 경로 외 요청은 공개하지 않고 잘못된 박람회 ID는 거부한다`() {
+        mockMvc.perform(get("/application/$EXPO_1")).andExpect(status().isUnauthorized)
+        mockMvc
+            .perform(post("/application/pre-standard/invalid-id").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
+            .andExpect(status().isBadRequest)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `User 계약보다 긴 재시도 키는 하위 서비스를 호출하기 전에 거부한다`() {
+        mockMvc
+            .perform(
+                post("/application/field/standard/$EXPO_1")
+                    .header("Idempotency-Key", "a".repeat(101))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isBadRequest)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `박람회 날짜 응답이 잘못되면 502를 반환한다`() {
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod("invalid", "2026-12-31"))
+        mockMvc
+            .perform(post("/application/field/standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
+            .andExpect(status().isBadGateway)
+    }
+
+    @Test
+    fun `폼 날짜 응답이 잘못되면 502를 반환한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(registrationForm("invalid", "2026-12-31T00:00:00Z"))
+        mockMvc
+            .perform(post("/application/pre-standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
+            .andExpect(status().isBadGateway)
+    }
+
+    @Test
+    fun `대문자 박람회 ID는 정규화해서 하위 서비스에 전달한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(null)
+        val registration =
+            ParticipantRegistration(EXPO_1, "홍길동", "01012345678", "{}", true, "FIELD", null, null, null, "request-1", null, null)
+        `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/field/standard/${EXPO_1.uppercase()}")
+                    .header("Idempotency-Key", "request-1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            ).andExpect(status().isCreated)
+        verify(gateway).countStandard(EXPO_1, 42)
+    }
+
+    @Test
+    fun `User 길이 제한을 넘는 입력은 외부 호출 전에 400으로 거부한다`() {
+        for ((key, value) in listOf("name" to "가".repeat(11), "phoneNumber" to "1".repeat(16), "trainingId" to "t".repeat(16))) {
+            val request =
+                mutableMapOf<String, Any>(
+                    "name" to "홍길동",
+                    "phoneNumber" to "01012345678",
+                    "informationJson" to "{}",
+                    "personalInformationStatus" to true,
+                    "trainingId" to "training-1",
+                )
+            request[key] = value
+            mockMvc
+                .perform(post("/application/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest)
+        }
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `User 학교 길이 제한을 넘는 답변은 참가자 저장 전에 400으로 거부한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "TRAINEE", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(3, "학교", "SCHOOL"))),
+        )
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body(mapper.writeValueAsString(mapOf("학교" to "가".repeat(101))), "training-1")),
+            ).andExpect(status().isBadRequest)
+        verify(gateway).expoPeriod(EXPO_1)
+        verify(gateway).form(EXPO_1, "TRAINEE", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    private fun body(
+        answers: String,
+        trainingId: String? = null,
+    ) = mapper.writeValueAsString(
+        mapOf(
+            "name" to "홍길동",
+            "phoneNumber" to "01012345678",
+            "informationJson" to answers,
+            "personalInformationStatus" to true,
+            "trainingId" to trainingId,
+            "sessionId" to 1,
+        ),
+    )
+
+    private fun registrationForm(
+        startDate: String,
+        endDate: String,
+        dynamicForm: List<RegistrationField> = emptyList(),
+    ) = RegistrationForm(FORM_ID, startDate, endDate, dynamicForm)
+
+    private fun field(
+        id: Long,
+        title: String,
+        type: String,
+    ) = RegistrationField(
+        id,
+        title,
+        if (type == "SCHOOL") "SENTENCE" else "DROPDOWN",
+        mapper.readTree(if (type == "OCCUPATION") "{\"TEACHER\":\"교사\"}" else "{}"),
+        if (type == "SCHOOL") mapper.readTree("{\"conditional\":{\"parentIndex\":0}}") else null,
+        type,
+    )
+
+    companion object {
+        private const val FORM_ID = "0199c000-0000-7000-8000-000000000010"
+        private const val EXPO_1 = "0199c000-0000-7000-8000-000000000001"
+        private const val EXPO_2 = "0199c000-0000-7000-8000-000000000002"
+        private const val EXPO_3 = "0199c000-0000-7000-8000-000000000003"
+        private const val EXPO_4 = "0199c000-0000-7000-8000-000000000004"
+
+        @Container
+        @ServiceConnection
+        @JvmStatic
+        val postgres = PostgreSQLContainer("postgres:17-alpine")
+    }
+}
