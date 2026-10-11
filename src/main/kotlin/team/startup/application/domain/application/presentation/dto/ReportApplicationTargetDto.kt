@@ -29,15 +29,30 @@ data class ReportApplicationFilter(
     val from: Instant? = null,
     val until: Instant? = null,
     val sort: AdminApplicationSort = AdminApplicationSort.CREATED_DESC,
+    @field:Size(min = 1, max = 50) val q: String? = null,
+    val occupation: AdminOccupation? = null,
 ) : StrictReportTargetRequest() {
     @get:Valid
     @get:JsonIgnore
     val query: AdminApplicationQuery
-        get() = AdminApplicationQuery(programType, programId, groupId, applicationId, status, search, from, until, sort = sort)
+        get() =
+            AdminApplicationQuery(
+                programType,
+                programId,
+                groupId,
+                applicationId,
+                status,
+                search,
+                from,
+                until,
+                sort = sort,
+                q = q,
+                occupation = occupation,
+            )
 
     @get:AssertTrue(message = "search must not be blank")
     @get:JsonIgnore
-    val isSearchValid: Boolean get() = search == null || search.isNotBlank()
+    val isSearchValid: Boolean get() = (search == null || search.isNotBlank()) && (q == null || q.isNotBlank())
 }
 
 data class SelectReportApplicationTargetsRequest(
