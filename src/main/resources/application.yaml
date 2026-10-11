@@ -13,6 +13,7 @@ application:
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
   owner:
     session-cookie-name: ${PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}
+    cancellation-recovery-delay-ms: ${APPLICATION_OWNER_CANCELLATION_RECOVERY_DELAY_MS:60000}
   program-sessions:
     enabled: ${APPLICATION_PROGRAM_SESSIONS_ENABLED:false}
   attendance:

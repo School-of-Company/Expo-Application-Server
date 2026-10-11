@@ -246,6 +246,32 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
+    fun `nullable cancellation deadline accepts old definitions and exact approval reconciliation`() {
+        response = mapper.writeValueAsString(definition).replace(",\"cancelEndedAt\":null", "")
+        assertEquals(null, gateway.find(expoId, 1)?.cancelEndedAt)
+        val next = definition.copy(cancelEndedAt = Instant.parse("2026-10-30T00:30:00.123456Z"), revision = 2)
+        prepare.execute(change(next))
+        publish(next.copy(cancelEndedAt = null))
+        assertFalse(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        publish(next)
+        assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        assertEquals(next, repository.definition(expoId, 1))
+    }
+
+    @Test
+    fun `deadline only changes cannot bypass application history protection`() {
+        apply.execute(command(1))
+        val next = definition.copy(cancelEndedAt = Instant.parse("2026-10-30T00:30:00.123456Z"), revision = 2)
+        assertConflict { prepare.execute(change(next)) }
+        assertEquals(
+            400,
+            assertThrows(ResponseStatusException::class.java) {
+                prepare.execute(change(next, false))
+            }.statusCode.value(),
+        )
+    }
+
+    @Test
     fun `approval survives expo failure and only matching entire revision unblocks`() {
         val next = definition.copy(capacity = 3, revision = 2)
         val request = change(next)

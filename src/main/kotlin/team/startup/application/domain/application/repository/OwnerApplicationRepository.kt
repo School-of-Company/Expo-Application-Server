@@ -24,6 +24,7 @@ class OwnerApplicationRepository(
         val participantId: Long,
         val sessionOrProgramId: Long,
         val status: String,
+        val traineeId: Long? = null,
     )
 
     fun cancellationTarget(
@@ -44,10 +45,10 @@ class OwnerApplicationRepository(
             }
         val sql =
             if (isPreregister) {
-                "SELECT id, participant_id, session_id AS program_id, status FROM tb_preregister_application " +
+                "SELECT id, participant_id, session_id AS program_id, status, NULL::bigint AS trainee_id FROM tb_preregister_application " +
                     "WHERE id = :id AND expo_id = :expo AND representative_id = :representative AND participant_id IN (:participants)"
             } else {
-                "SELECT id, participant_id, program_id, status FROM tb_program_session_application " +
+                "SELECT id, participant_id, program_id, status, trainee_id FROM tb_program_session_application " +
                     "WHERE id = :id AND expo_id = :expo AND program_type = :type AND participant_id IN (:participants)"
             }
         return named
@@ -64,7 +65,13 @@ class OwnerApplicationRepository(
                     rs,
                     _,
                     ->
-                    CancellationTarget(rs.getString("id"), rs.getLong("participant_id"), rs.getLong("program_id"), rs.getString("status"))
+                    CancellationTarget(
+                        rs.getString("id"),
+                        rs.getLong("participant_id"),
+                        rs.getLong("program_id"),
+                        rs.getString("status"),
+                        rs.getObject("trainee_id", Long::class.javaObjectType),
+                    )
                 },
             ).singleOrNull()
     }

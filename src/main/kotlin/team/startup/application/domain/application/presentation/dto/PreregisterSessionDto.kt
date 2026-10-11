@@ -19,6 +19,7 @@ data class PreregisterSessionDefinition(
     @field:Positive val capacity: Int,
     @param:JsonProperty(required = true) val closed: Boolean,
     @field:Positive val revision: Long,
+    val cancelEndedAt: Instant? = null,
 )
 
 enum class PreregisterChangeOperation { UPDATE, DELETE }
@@ -67,4 +68,5 @@ data class PreregisterSessionKey(
 internal fun PreregisterSessionDefinition.isValidDefinition(): Boolean =
     id > 0 && revision > 0 && capacity > 0 &&
         title.isNotBlank() && title.codePointCount(0, title.length) <= 50 && place.isNotBlank() &&
-        startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0
+        startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0 &&
+        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0)
