@@ -47,6 +47,37 @@ class ProgramApplicationLookupHttpTests {
     }
 
     @Test
+    fun `과거 출석 값이 있어도 applied는 신청 존재 여부이고 삭제 후 false다`() {
+        jdbc.update(
+            """
+            INSERT INTO tb_standard_program_application
+            (participant_id, standard_program_id, status, entry_time, leave_time, attendance_date)
+            VALUES (42, 7, true, '09:00:30', '10:00', '2026-10-07')
+            """.trimIndent(),
+        )
+        jdbc.update(
+            """
+            INSERT INTO tb_training_program_application
+            (trainee_id, training_program_id, status, entry_time, attendance_date)
+            VALUES (8, 9, false, '09:00', '2026-10-07')
+            """.trimIndent(),
+        )
+        val paths = listOf("/standard/7/participants/42", "/training/9/trainees/8")
+        paths.forEach { path ->
+            val response = mvc.perform(get("$BASE$path").header("X-Internal-Token", "test-token")).andReturn().response
+            assertEquals(200, response.status)
+            assertEquals("""{"applied":true}""", response.contentAsString)
+        }
+        jdbc.update("DELETE FROM tb_standard_program_application WHERE participant_id = 42 AND standard_program_id = 7")
+        jdbc.update("DELETE FROM tb_training_program_application WHERE trainee_id = 8 AND training_program_id = 9")
+        paths.forEach { path ->
+            val response = mvc.perform(get("$BASE$path").header("X-Internal-Token", "test-token")).andReturn().response
+            assertEquals(200, response.status)
+            assertEquals("""{"applied":false}""", response.contentAsString)
+        }
+    }
+
+    @Test
     fun `조회에는 내부 토큰과 양수 ID가 필요하다`() {
         assertEquals(
             401,
