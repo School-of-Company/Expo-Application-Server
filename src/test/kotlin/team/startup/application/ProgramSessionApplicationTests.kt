@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -20,6 +21,9 @@ import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
@@ -46,6 +50,7 @@ import team.startup.application.domain.application.service.ApplyProgramSessionSe
 import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.impl.ApplyProgramSessionServiceImpl
+import team.startup.application.domain.application.service.impl.ProgramFormAdapter
 import team.startup.application.domain.application.service.impl.ProgramWaitlist
 import team.startup.application.domain.application.service.impl.ProgramWaitlistScheduler
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -121,6 +126,91 @@ class ProgramSessionApplicationTests {
         linkFailure = false
         title = "Session"
         unavailableLookup = null
+    }
+
+    @Test
+    fun `public entry uses real Form contract and atomically stores answers snapshot and receipt`() {
+        formMode = "real"
+        val path = "/application/expos/$EXPO/program-sessions/STANDARD/1/applications"
+
+        fun request(answer: String) =
+            post(path)
+                .with(csrf())
+                .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                .header("Idempotency-Key", "real-form")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"participantId":1,"formVersion":1,"answers":{"101":"$answer"}}""")
+        mvc.perform(request("missing-option")).andExpect(status().isBadRequest)
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_session_receipt"))
+        mvc.perform(request("a")).andExpect(status().isCreated)
+        assertEquals(1L, count("tb_program_session_application"))
+        assertEquals(1L, count("tb_program_session_receipt"))
+        assertEquals(1L, count("tb_program_session_history"))
+        val stored = jdbc.queryForObject("SELECT questions_snapshot::text FROM tb_program_session_application", String::class.java)
+        assertEquals(mapper.readTree(REAL_FIELDS), mapper.readTree(stored))
+        mvc.perform(request("a")).andExpect(status().isCreated)
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `public program entry authenticates participant cookie validates request and protects csrf`() {
+        val path = "/application/expos/$EXPO/program-sessions/STANDARD/1/applications"
+        val body = """{"participantId":1,"formVersion":1,"answers":{"101":"a"}}"""
+
+        fun request() = post(path).contentType(MediaType.APPLICATION_JSON).content(body).header("Idempotency-Key", "public")
+        mvc
+            .perform(request().cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isForbidden)
+            .andExpect(jsonPath("$.code").value("CSRF_REQUIRED"))
+        mvc
+            .perform(request().with(csrf()).with(user("admin")).header("X-Internal-Token", "test-token"))
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
+        mvc
+            .perform(request().with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "expired")))
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.code").value("SESSION_EXPIRED"))
+        mvc
+            .perform(request().with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isCreated)
+            .andExpect(jsonPath("$.status").value("CONFIRMED"))
+        mvc
+            .perform(request().with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "renewed-session")))
+            .andExpect(status().isCreated)
+        assertEquals(1L, count("tb_program_session_application"))
+        mvc
+            .perform(request().content(body.replace("\"a\"", "\"b\"")).with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+        mvc
+            .perform(
+                request()
+                    .content(
+                        body.replace("\"participantId\":1", "\"participantId\":0"),
+                    ).with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isBadRequest)
+            .andExpect(jsonPath("$.code").value("INVALID_APPLICATION"))
+    }
+
+    @Test
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.BEFORE_METHOD)
+    fun `browser can fetch and submit csrf token without Spring authenticated user`() {
+        val result = mvc.perform(get("/application/program-session-csrf")).andExpect(status().isOk).andReturn()
+        val token = mapper.readTree(result.response.contentAsString)
+        val csrfCookie = requireNotNull(result.response.getCookie("XSRF-TOKEN"))
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/program-sessions/TRAINING/1/applications")
+                    .cookie(csrfCookie, Cookie("PARTICIPANT_SESSION", "session"))
+                    .header(token.path("headerName").stringValue(), token.path("token").stringValue())
+                    .header("Idempotency-Key", "browser")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":1,"formVersion":1,"answers":{"101":"a"}}"""),
+            ).andExpect(status().isCreated)
+            .andExpect(jsonPath("$.traineeId").value(501))
+        assertEquals(1, linkCalls.get())
     }
 
     @Test
@@ -1277,7 +1367,10 @@ class ProgramSessionApplicationTests {
         fun testClock(): Clock = testClock
 
         @Bean
-        fun programForms(mapper: ObjectMapper): ProgramFormProvider =
+        fun programForms(
+            mapper: ObjectMapper,
+            gateway: RegistrationGateway,
+        ): ProgramFormProvider =
             object : ProgramFormProvider {
                 override fun loadAndValidate(
                     expoId: String,
@@ -1285,6 +1378,7 @@ class ProgramSessionApplicationTests {
                     version: Long,
                     answers: JsonNode,
                 ): ProgramFormSnapshot {
+                    if (formMode == "real") return ProgramFormAdapter(gateway).loadAndValidate(expoId, formId, version, answers)
                     if (answers.size() != 1 || answers.get("101")?.stringValue() !in setOf("a", "b")) {
                         throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid fake form answer")
                     }
@@ -1305,6 +1399,9 @@ class ProgramSessionApplicationTests {
         private const val EXPO = "aaaaaaaa-0000-0000-0000-000000000043"
         private const val FORM = "00000000-0000-0000-0000-000000000001"
         private const val GROUP = "00000000-0000-0000-0000-000000000002"
+        private const val REAL_FIELDS =
+            """[{"id":101,"title":"Question","formType":"DROPDOWN","requiredStatus":true,""" +
+                """"jsonData":{"a":"First","b":"Second"},"otherJson":null,"dynamicFormType":"DEFAULT"}]"""
         private const val QUESTIONS =
             """[{"id":101,"title":"Question","options":[""" +
                 """{"id":"a","label":"First"},{"id":"b","label":"Second"}]}]"""
@@ -1376,10 +1473,15 @@ class ProgramSessionApplicationTests {
                                 "{}"
                             }
 
+                            path == "/internal/forms/by-id/$FORM" -> {
+                                """{"id":"$FORM","expoId":"$EXPO","purpose":"PROGRAM","version":1,"participantType":null,""" +
+                                    """"startDate":"2020-01-01T00:00:00Z","endDate":"2100-01-01T00:00:00Z","dynamicForm":$REAL_FIELDS}"""
+                            }
+
                             path.endsWith("participant-sessions/resolve") -> {
                                 if (body.contains("expired")) {
                                     status = 401
-                                    "{}"
+                                    """{"code":"SESSION_EXPIRED"}"""
                                 } else {
                                     sessionResponse
                                         ?: """{"expoId":"$EXPO","phoneNumber":"01012345678","expiresAt":"2100-01-01T00:00:00"}"""
@@ -1504,6 +1606,8 @@ class ProgramSessionApplicationTests {
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
             registry.add("application.registration.expo-internal-token") { "test-token" }
             registry.add("application.registration.user-internal-token") { "test-token" }
+            registry.add("application.registration.form-internal-token") { "test-token" }
+            registry.add("application.registration.form-url") { "http://127.0.0.1:${server.address.port}" }
             registry.add("application.registration.expo-url") { "http://127.0.0.1:${server.address.port}" }
             registry.add("application.registration.user-url") { "http://127.0.0.1:${server.address.port}" }
         }

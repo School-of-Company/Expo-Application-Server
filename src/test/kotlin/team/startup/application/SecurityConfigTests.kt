@@ -36,6 +36,17 @@ class SecurityConfigTests {
     private lateinit var mockMvc: MockMvc
 
     @Test
+    fun `program public entry stays disabled by default`() {
+        mockMvc.perform(get("/application/program-session-csrf")).andExpect(status().isUnauthorized)
+        mockMvc
+            .perform(
+                post("/application/expos/0199c000-0000-7000-8000-000000000001/program-sessions/STANDARD/1/applications")
+                    .with(csrf())
+                    .with(user("admin")),
+            ).andExpect(status().isNotFound)
+    }
+
+    @Test
     fun `health와 prometheus는 인증 없이 GET 할 수 있다`() {
         mockMvc.perform(get("/actuator/health")).andExpect(status().isOk)
         mockMvc.perform(get("/actuator/health/db")).andExpect(status().isOk)

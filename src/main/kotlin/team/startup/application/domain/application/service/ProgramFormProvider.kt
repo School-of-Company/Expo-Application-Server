@@ -4,7 +4,6 @@ import team.startup.application.domain.application.presentation.dto.ProgramFormS
 import tools.jackson.databind.JsonNode
 import java.util.UUID
 
-// Form #103 has no program-form read contract. No production implementation is registered yet.
 interface ProgramFormProvider {
     // The adapter must validate question IDs, required answers, types and option IDs against this exact version.
     fun loadAndValidate(
