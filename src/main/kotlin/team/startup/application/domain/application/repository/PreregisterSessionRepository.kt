@@ -178,18 +178,21 @@ class PreregisterSessionRepository(
         representativeId: Long,
         participantId: Long,
         status: String,
+        reservationRequestId: String? = null,
     ): PreregisterApplicationReceipt {
         val id =
             requireNotNull(
                 jdbc.queryForObject(
-                    "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
-                        "VALUES (?, ?, ?, ?, ?) RETURNING id",
+                    "INSERT INTO tb_preregister_application " +
+                        "(expo_id, session_id, representative_id, participant_id, status, reservation_request_id) " +
+                        "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
                     Long::class.java,
                     expoId,
                     sessionId,
                     representativeId,
                     participantId,
                     status,
+                    reservationRequestId,
                 ),
             )
         transition(id)
@@ -289,11 +292,6 @@ class PreregisterSessionRepository(
             "UPDATE tb_preregister_reservation SET next_attempt_at = CURRENT_TIMESTAMP WHERE expo_id = ? AND state = 'RESERVED'",
             expoId,
         )
-        // Retain only uncertain User deliveries for same-requestId recovery and QR invalidation.
-        jdbc.update(
-            "DELETE FROM tb_preregister_reservation WHERE expo_id = ? AND (state <> 'RESERVED' OR attempts = 0)",
-            expoId,
-        )
         listOf(
             "tb_preregister_transition",
             "tb_preregister_request",
@@ -303,5 +301,10 @@ class PreregisterSessionRepository(
         ).forEach {
             jdbc.update("DELETE FROM $it WHERE expo_id = ?", expoId)
         }
+        // Retain only uncertain User deliveries for same-requestId recovery and QR invalidation.
+        jdbc.update(
+            "DELETE FROM tb_preregister_reservation WHERE expo_id = ? AND (state <> 'RESERVED' OR attempts = 0)",
+            expoId,
+        )
     }
 }

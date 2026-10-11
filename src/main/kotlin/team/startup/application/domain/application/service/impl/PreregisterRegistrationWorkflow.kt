@@ -196,7 +196,7 @@ class PreregisterRegistrationWorkflow(
                     )
                 }
                 ids.forEach {
-                    repository.insert(expoId, reserved.sessionId, result.participantId, it, "CONFIRMED")
+                    repository.insert(expoId, reserved.sessionId, result.participantId, it, "CONFIRMED", reserved.requestId)
                     attendance.confirmed(expoId, it, reserved.sessionId)
                 }
                 reservations.enqueueCounts(expoId, ids)
