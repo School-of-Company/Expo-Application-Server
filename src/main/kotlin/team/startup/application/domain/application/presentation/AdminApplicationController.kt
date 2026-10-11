@@ -43,7 +43,10 @@ class AdminApplicationController(
 
     @Operation(
         summary = "내부 프로그램 회차 접수 집계",
-        description = "내부 토큰 전용. 목록과 같은 필터의 신청 건수/고유 참가자/회차별 집계. 출석·사전등록·현재 정원은 포함하지 않습니다.",
+        description =
+            "내부 토큰 전용. 목록과 같은 필터의 신청 건수/고유 참가자/회차별 집계. " +
+                "attendance는 표시된 회차 전체의 실제 출석 인원과 HH:mm 입실 범위이며 접수 필터를 적용하지 않습니다. " +
+                "행사 입장·사전등록·현재 정원은 포함하지 않으며 출석 원천 장애는 오류로 반환합니다.",
     )
     @GetMapping("/summary")
     fun summary(

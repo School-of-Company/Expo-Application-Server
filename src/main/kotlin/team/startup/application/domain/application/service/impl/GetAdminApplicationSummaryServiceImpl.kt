@@ -12,10 +12,15 @@ import java.util.UUID
 @Service
 class GetAdminApplicationSummaryServiceImpl(
     private val repository: AdminApplicationQueryRepository,
+    private val attendance: AdminAttendanceGateway,
 ) : GetAdminApplicationSummaryService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     override fun execute(
         expoId: UUID,
         query: AdminApplicationQuery,
-    ): AdminApplicationSummary = repository.summary(expoId, query)
+    ): AdminApplicationSummary {
+        val summary = repository.summary(expoId, query)
+        val counts = attendance.summarize(summary.sessions)
+        return summary.copy(sessions = summary.sessions.map { it.copy(attendance = counts.getValue(it.programType to it.programId)) })
+    }
 }
