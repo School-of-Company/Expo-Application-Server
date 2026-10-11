@@ -1,6 +1,9 @@
 package team.startup.application
 
+import com.sun.net.httpserver.HttpServer
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -10,16 +13,23 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.test.context.DynamicPropertyRegistry
+import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.presentation.dto.AdminApplicationSessionSummary
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
 import tools.jackson.databind.ObjectMapper
+import java.net.InetSocketAddress
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -44,6 +54,9 @@ class AdminApplicationHttpTests {
 
     @BeforeEach
     fun seed() {
+        attendanceStatus = 200
+        attendanceBody = null
+        attendanceRequests.clear()
         jdbc.execute("TRUNCATE tb_program_session_application CASCADE")
         insert(first, expoId, "CONFIRMED")
         insert(second, expoId, "WAITING")
@@ -78,6 +91,74 @@ class AdminApplicationHttpTests {
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
 
     private fun summary(query: String = "") = read("/summary$query")
+
+    @Test
+    fun `출석 조회 미설정과 연결 실패는 서비스 불가이며 중복 회차는 한 번만 요청한다`() {
+        val session = AdminApplicationSessionSummary(ProgramSessionType.STANDARD, 7, groupId, 1, 1, emptyMap())
+        val missing =
+            assertThrows(ResponseStatusException::class.java) { AdminAttendanceGateway(mapper, "", "").summarize(listOf(session)) }
+        assertEquals(503, missing.statusCode.value())
+        val stopped = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val url = "http://127.0.0.1:${stopped.address.port}"
+        stopped.start()
+        stopped.stop(0)
+        val unavailable =
+            assertThrows(ResponseStatusException::class.java) {
+                AdminAttendanceGateway(mapper, url, "attendance-token").summarize(listOf(session))
+            }
+        assertEquals(503, unavailable.statusCode.value())
+        val result =
+            AdminAttendanceGateway(mapper, "http://127.0.0.1:${attendance.address.port}", "attendance-token")
+                .summarize(listOf(session, session.copy(groupId = UUID.randomUUID())))
+        assertEquals(1, result.size)
+        assertEquals(1, mapper.readTree(attendanceRequests.single())["programs"].size())
+    }
+
+    @Test
+    fun `실제 출석은 접수 필터와 구분하고 유형과 회차 ID로 공급자를 조회한다`() {
+        insert(UUID.randomUUID(), expoId, "CANCELLED", "TRAINING", 7)
+        val body = mapper.readTree(summary("?sort=CREATED_ASC").contentAsString)
+        val standard = body["sessions"].first { it["programType"].asString() == "STANDARD" }
+        val training = body["sessions"].first { it["programType"].asString() == "TRAINING" && it["programId"].asInt() == 7 }
+        assertEquals(2, standard["attendance"]["attendeeCount"].asInt())
+        assertEquals("09:05", standard["attendance"]["firstEntryTime"].asString())
+        assertEquals("10:30", standard["attendance"]["lastEntryTime"].asString())
+        assertEquals(0, training["attendance"]["attendeeCount"].asInt())
+        assertTrue(training["attendance"]["firstEntryTime"].isNull)
+        assertTrue(attendanceRequests.single().contains("\"programType\":\"TRAINING\",\"programId\":7"))
+        val filtered = mapper.readTree(summary("?status=WAITING&programType=STANDARD&programId=7").contentAsString)
+        assertEquals(1, filtered["totalElements"].asInt())
+        assertEquals(2, filtered["sessions"][0]["attendance"]["attendeeCount"].asInt())
+    }
+
+    @Test
+    fun `출석 공급자 오류와 잘못된 성공을 0으로 위장하지 않는다`() {
+        for (status in listOf(400, 401, 403, 404, 409, 429, 302, 204, 500, 503)) {
+            attendanceStatus = status
+            assertEquals(if (status >= 500) 503 else 502, summary("?programType=STANDARD&programId=7").status, "HTTP $status")
+        }
+        attendanceStatus = 200
+        val valid = """{"programType":"STANDARD","programId":7,"attendeeCount":2,"firstEntryTime":"09:05","lastEntryTime":"10:30"}"""
+        for (body in listOf(
+            "not-json",
+            "[]",
+            "[$valid,$valid]",
+            "[${valid.replace("STANDARD", "TRAINING")}]",
+            "[${valid.replace("\"programId\":7", "\"programId\":8")}]",
+            "[${valid.replace("\"attendeeCount\":2", "\"attendeeCount\":-1")}]",
+            "[${valid.replace("09:05", "25:05")}]",
+            "[${valid.replace("09:05", "11:00")}]",
+            "[${valid.replace("\"attendeeCount\":2", "\"attendeeCount\":0")}]",
+            """[{"programType":"STANDARD","programId":7}]""",
+        )) {
+            attendanceBody = body
+            assertEquals(502, summary("?programType=STANDARD&programId=7").status, body)
+        }
+        attendanceStatus = 503
+        attendanceRequests.clear()
+        assertEquals(200, summary("?applicationId=${UUID.randomUUID()}").status)
+        assertTrue(attendanceRequests.isEmpty())
+    }
 
     @Test
     fun `회차 집계는 목록과 Report 전체 대상과 같은 필터를 적용한다`() {
@@ -311,6 +392,44 @@ class AdminApplicationHttpTests {
     }
 
     companion object {
+        private var attendanceStatus = 200
+        private var attendanceBody: String? = null
+        private val attendanceRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private val attendance =
+            HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                createContext("/internal/program-attendances/summary") { exchange ->
+                    assertEquals("POST", exchange.requestMethod)
+                    assertEquals("attendance-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                    val request = exchange.requestBody.bufferedReader().readText()
+                    attendanceRequests.add(request)
+                    val refs = Regex("\\{\"programType\":\"(STANDARD|TRAINING)\",\"programId\":([0-9]+)\\}").findAll(request)
+                    val body =
+                        attendanceBody ?: refs.joinToString(",", "[", "]") {
+                            val count = if (it.groupValues[1] == "STANDARD") 2 else 0
+                            val times = if (count == 0) "null,\"lastEntryTime\":null" else "\"09:05\",\"lastEntryTime\":\"10:30\""
+                            "${it.value.dropLast(1)},\"attendeeCount\":$count,\"firstEntryTime\":$times}"
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(attendanceStatus, if (attendanceStatus == 204) -1 else bytes.size.toLong())
+                    if (attendanceStatus != 204) exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                start()
+            }
+
+        @DynamicPropertySource
+        @JvmStatic
+        fun attendanceProperties(registry: DynamicPropertyRegistry) {
+            registry.add("application.attendance.url") { "http://127.0.0.1:${attendance.address.port}" }
+            registry.add("application.attendance.internal-token") { "attendance-token" }
+        }
+
+        @AfterAll
+        @JvmStatic
+        fun stopAttendance() {
+            attendance.stop(0)
+        }
+
         @Container
         @ServiceConnection
         @JvmStatic

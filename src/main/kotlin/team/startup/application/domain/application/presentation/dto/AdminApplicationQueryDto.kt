@@ -81,4 +81,13 @@ data class AdminApplicationSessionSummary(
     val totalElements: Long,
     val uniqueParticipants: Long,
     val statusCounts: Map<AdminApplicationStatus, Long>,
+    val attendance: AdminProgramAttendanceSummary? = null,
+)
+
+data class AdminProgramAttendanceSummary(
+    val programType: ProgramSessionType,
+    val programId: Long,
+    val attendeeCount: Long,
+    val firstEntryTime: String?,
+    val lastEntryTime: String?,
 )
