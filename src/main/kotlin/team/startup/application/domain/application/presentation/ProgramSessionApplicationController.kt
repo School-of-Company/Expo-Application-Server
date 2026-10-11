@@ -28,7 +28,7 @@ import java.util.UUID
 @ConditionalOnProperty(name = ["application.program-sessions.enabled"], havingValue = "true")
 class ProgramSessionApplicationController(
     private val service: ApplyProgramSessionService,
-    @Value("\${APPLICATION_PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}") private val cookieName: String,
+    @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val cookieName: String,
 ) {
     @GetMapping("/application/program-session-csrf")
     @Operation(summary = "프로그램 신청 CSRF 토큰 조회", responses = [ApiResponse(responseCode = "200", description = "CSRF 토큰과 헤더 이름")])
