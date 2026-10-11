@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -13,6 +14,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
 import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
@@ -696,6 +698,32 @@ class RegistrationHttpTests {
         } finally {
             server.stop(0)
         }
+    }
+
+    @Test
+    fun `등록 활성화 상태에서도 참가자 쿠키와 요청 주장은 내부 토큰을 대체하지 못한다`() {
+        for (token in listOf(null, "wrong-token")) {
+            val request =
+                post("/internal/standard-program-applications")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "unverified-session"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participant":{"id":42,"expoId":"$EXPO_1"},"programs":[],"verified":true,"phoneNumber":"01012345678"}""")
+            if (token != null) request.header("X-Internal-Token", token)
+            mockMvc.perform(request).andExpect(status().isUnauthorized)
+        }
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `일반 인증 사용자도 내부 참가자와 연수자 신청 조회 토큰을 대체하지 못한다`() {
+        for (path in listOf(
+            "/internal/standard-program-applications/program/7",
+            "/internal/program-applications/standard/7/participants/42",
+            "/internal/program-applications/training/7/trainees/42",
+        )) {
+            mockMvc.perform(get(path).with(user("representative"))).andExpect(status().isForbidden)
+        }
+        verifyNoMoreInteractions(gateway)
     }
 
     @Test
