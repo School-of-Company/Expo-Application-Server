@@ -4,6 +4,8 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
@@ -11,6 +13,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.UUID
 
 data class ExpoPeriod(
     val startedDay: String,
@@ -79,8 +82,171 @@ class RegistrationGateway(
     @Value("\${application.registration.expo-internal-token:}") private val expoInternalToken: String = internalToken,
     @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String = internalToken,
     @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String = internalToken,
+    @Value("\${application.program-sessions.enabled:false}") private val programSessionsEnabled: Boolean = false,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+
+    fun programDefinition(
+        expoId: String,
+        type: ProgramSessionType,
+        programId: Long,
+    ): ProgramSessionDefinition? = programDefinitions(expoId, type, listOf(programId)).singleOrNull()
+
+    fun programDefinitions(
+        expoId: String,
+        type: ProgramSessionType,
+        programIds: List<Long>,
+        existing: Boolean = false,
+    ): List<ProgramSessionDefinition> {
+        if (!programSessionsEnabled || programIds.isEmpty()) return emptyList()
+        if (expoUrl.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정책 공급자 주소가 없습니다.")
+        val canonicalExpo = UUID.fromString(expoId).toString()
+        val ids = programIds.distinct().sorted()
+        val nodes =
+            if (type == ProgramSessionType.STANDARD) {
+                ids.mapNotNull { id ->
+                    val response =
+                        call(
+                            expoUrl,
+                            "/internal/expo/$canonicalExpo/standard-programs/$id",
+                            allowNotFound = existing,
+                            token = expoInternalToken,
+                            conflictReason = "프로그램 정책 변경 중입니다.",
+                        )
+                    if (response.statusCode() == 404) null else decode(response.body(), JsonNode::class.java)
+                }
+            } else {
+                ids.chunked(100).flatMap { trainingDefinitions(canonicalExpo, it, existing) }
+            }
+        val definitions =
+            nodes.map { node ->
+                val definition = decode(mapper.writeValueAsString(node), ProgramSessionDefinition::class.java)
+                val owner =
+                    try {
+                        UUID.fromString(definition.expoId).toString()
+                    } catch (
+                        _: IllegalArgumentException,
+                    ) {
+                        invalidProgramResponse()
+                    }
+                if (owner != canonicalExpo || definition.programType != type || definition.id !in ids || definition.revision <= 0) {
+                    invalidProgramResponse()
+                }
+                if (!existing && definition.pendingRevision != null) {
+                    throw ResponseStatusException(HttpStatus.CONFLICT, "프로그램 정책 변경 중입니다.")
+                }
+                definition.copy(expoId = canonicalExpo)
+            }
+        if (definitions.map { it.id }.distinct().size != definitions.size ||
+            (!existing && definitions.size != ids.size)
+        ) {
+            invalidProgramResponse()
+        }
+        return definitions
+    }
+
+    private fun trainingDefinitions(
+        expoId: String,
+        ids: List<Long>,
+        existing: Boolean,
+    ): List<JsonNode> {
+        val response =
+            call(
+                expoUrl,
+                "/internal/expo/$expoId/training-programs/batch",
+                "POST",
+                mapper.writeValueAsString(mapOf("programIds" to ids)),
+                allowNotFound = existing,
+                token = expoInternalToken,
+                conflictReason = "프로그램 정책 변경 중입니다.",
+            )
+        if (response.statusCode() == 404) {
+            if (ids.size == 1) return emptyList()
+            return ids.chunked((ids.size + 1) / 2).flatMap { trainingDefinitions(expoId, it, true) }
+        }
+        val array = decode(response.body(), JsonNode::class.java)
+        if (!array.isArray || array.size() != ids.size) invalidProgramResponse()
+        val nodes = (0 until array.size()).map { array.get(it) }
+        if (nodes.any { !it.path("id").isIntegralNumber } || nodes.map { it.path("id").asLong() }.toSet() != ids.toSet()) {
+            invalidProgramResponse()
+        }
+        return nodes
+    }
+
+    fun managedOccupation(
+        expoId: String,
+        sessionId: String,
+        participantId: Long,
+    ): String? {
+        val session =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/participant-sessions/resolve",
+                    "POST",
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "sessionId" to sessionId)),
+                    token = userInternalToken,
+                    participantSession = true,
+                ).body(),
+                JsonNode::class.java,
+            )
+        if (!session.path("expoId").isString || session.path("expoId").stringValue() != expoId || !session.path("phoneNumber").isString ||
+            session.path("phoneNumber").stringValue().isBlank()
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "참가자 세션 응답이 올바르지 않습니다.")
+        }
+        val participants =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/standard-participants/managed/select",
+                    "POST",
+                    mapper.writeValueAsString(
+                        mapOf(
+                            "expoId" to expoId,
+                            "phoneNumber" to session.path("phoneNumber").stringValue(),
+                            "participantIds" to listOf(participantId),
+                        ),
+                    ),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        if (!participants.isArray || participants.size() != 1 || !participants.get(0).path("participantId").isIntegralNumber ||
+            participants.get(0).path("participantId").asLong() != participantId
+        ) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")
+        }
+        val occupation = participants.get(0).get("occupation")
+        if (occupation == null || (!occupation.isNull && !occupation.isString)) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 역할 응답이 올바르지 않습니다.")
+        }
+        return if (occupation.isNull) null else occupation.stringValue()
+    }
+
+    fun resolveTrainee(
+        expoId: String,
+        participantId: Long,
+    ): Long {
+        val response =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/trainees/resolve-or-create-by-participant",
+                    "POST",
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId)),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        val id = response.get("traineeId")
+        if (id == null || !id.isIntegralNumber || !id.canConvertToLong() || id.asLong() <= 0) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "연수자 연결 응답이 올바르지 않습니다.")
+        }
+        return id.asLong()
+    }
+
+    private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
 
     fun expoPeriod(expoId: String): ExpoPeriod =
         decode(call(expoUrl, "/internal/expo/$expoId", token = expoInternalToken).body(), ExpoPeriod::class.java)
@@ -160,6 +326,8 @@ class RegistrationGateway(
         body: String? = null,
         allowNotFound: Boolean = false,
         token: String,
+        participantSession: Boolean = false,
+        conflictReason: String = "이미 등록된 참가자입니다.",
     ): HttpResponse<String> {
         if (base.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스 연결 주소가 없습니다.")
         val request =
@@ -178,11 +346,33 @@ class RegistrationGateway(
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스와 연결할 수 없습니다.", ex)
             }
         when (response.statusCode()) {
-            in 200..299 -> return response
-            404 -> if (allowNotFound) return response else throw ResponseStatusException(HttpStatus.NOT_FOUND, "등록 대상을 찾을 수 없습니다.")
-            409 -> throw ResponseStatusException(HttpStatus.CONFLICT, "이미 등록된 참가자입니다.")
-            in 500..599 -> throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스가 응답하지 않습니다.")
-            else -> throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 응답이 올바르지 않습니다.")
+            in 200..299 -> {
+                return response
+            }
+
+            401 -> {
+                if (participantSession) {
+                    throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요하거나 만료되었습니다.")
+                } else {
+                    throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "공급자 내부 인증에 실패했습니다.")
+                }
+            }
+
+            404 -> {
+                if (allowNotFound) return response else throw ResponseStatusException(HttpStatus.NOT_FOUND, "등록 대상을 찾을 수 없습니다.")
+            }
+
+            409 -> {
+                throw ResponseStatusException(HttpStatus.CONFLICT, conflictReason)
+            }
+
+            in 500..599 -> {
+                throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스가 응답하지 않습니다.")
+            }
+
+            else -> {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 응답이 올바르지 않습니다.")
+            }
         }
     }
 }
