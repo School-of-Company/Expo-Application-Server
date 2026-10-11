@@ -37,9 +37,10 @@ class CancelOwnerApplicationServiceImpl(
         val party = gateway.managedParty(command.expoId, command.sessionId)
         val original =
             owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
-        if (original.status == "CANCELLED") return
         val guard =
             guards.ifAvailable ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "소유권·입장·출석·취소 기한 보호 계약이 준비되지 않았습니다.")
+        guard.recover(command)
+        if (original.status == "CANCELLED") return
         guard.acquire(command, original.participantId, party).use { permit ->
             ledger.transactions.executeWithoutResult {
                 ledger.lock(command.expoId)
@@ -48,7 +49,13 @@ class CancelOwnerApplicationServiceImpl(
                 val current =
                     owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
                 if (current.status == "CANCELLED") return@executeWithoutResult
+                if (command.type == OwnerApplicationType.TRAINING && current.status == "CONFIRMED" &&
+                    (current.traineeId == null || current.traineeId != permit.linkedTraineeId)
+                ) {
+                    conflict("연결된 연수자 정보가 변경되었습니다. 취소를 재시도해 주세요.")
+                }
                 if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
+                var cancellationRevision: Long? = null
                 if (command.type == OwnerApplicationType.PREREGISTER) {
                     ledger.ensureAvailable(command.expoId, current.sessionOrProgramId)
                     if (owners.activePrograms(command.expoId, current.participantId, permit.linkedTraineeId)) {
@@ -58,10 +65,12 @@ class CancelOwnerApplicationServiceImpl(
                         conflict("동행자의 사전등록을 먼저 취소해야 합니다.")
                     }
                     preregister.status(current.applicationId.toLong(), "CANCELLED")
-                    attendance.cancelled(command.expoId, current.participantId)
+                    val outboxId = attendance.cancelled(command.expoId, current.participantId)
+                    cancellationRevision = Math.addExact(Math.multiplyExact(outboxId, 2L), 1L)
                 } else {
                     cancelProgram.execute(CancelProgramSessionCommand(UUID.fromString(current.applicationId)))
                 }
+                permit.committed(cancellationRevision)
             }
         }
     }

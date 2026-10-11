@@ -24,8 +24,8 @@ class SessionAttendanceOutbox(
     fun cancelled(
         expoId: UUID,
         participantId: Long,
-    ) {
+    ): Long {
         require(participantId > 0)
-        repository.append(expoId, participantId, null)
+        return repository.append(expoId, participantId, null)
     }
 }

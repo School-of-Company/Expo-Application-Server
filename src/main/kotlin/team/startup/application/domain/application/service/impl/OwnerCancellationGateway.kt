@@ -22,10 +22,20 @@ class OwnerCancellationGateway(
     @Value("\${application.registration.user-url:}") private val baseUrl: String,
     @Value("\${application.registration.user-internal-token:}") private val token: String,
 ) {
+    data class VerifiedStatus(
+        val phoneNumber: String,
+        val status: OwnerCancellationStatus,
+    ) {
+        override fun toString() = "VerifiedStatus(status=$status)"
+    }
+
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     @Transactional(propagation = Propagation.NEVER)
-    fun find(command: GetOwnerCancellationStatusCommand): OwnerCancellationStatus {
+    fun find(command: GetOwnerCancellationStatusCommand): OwnerCancellationStatus = verify(command).status
+
+    @Transactional(propagation = Propagation.NEVER)
+    fun verify(command: GetOwnerCancellationStatusCommand): VerifiedStatus {
         if (command.sessionId.isBlank()) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
         if (command.participantId <= 0) throw ResponseStatusException(HttpStatus.NOT_FOUND)
         val session =
@@ -37,7 +47,7 @@ class OwnerCancellationGateway(
         val expo = session.get("expoId")
         val phone = session.get("phoneNumber")
         if (expo == null || !expo.isString || expo.stringValue() != command.expoId.toString() ||
-            phone == null || !phone.isString || phone.stringValue().isBlank()
+            phone == null || !phone.isString || phone.stringValue().isBlank() || phone.stringValue().length > 20
         ) {
             invalidResponse()
         }
@@ -59,12 +69,15 @@ class OwnerCancellationGateway(
         ) {
             invalidResponse()
         }
-        return OwnerCancellationStatus(
-            id.asLong(),
-            representative.asBoolean(),
-            entered.asBoolean(),
-            linked.asBoolean(),
-            if (trainee.isNull) null else trainee.asLong(),
+        return VerifiedStatus(
+            phone.stringValue(),
+            OwnerCancellationStatus(
+                id.asLong(),
+                representative.asBoolean(),
+                entered.asBoolean(),
+                linked.asBoolean(),
+                if (trainee.isNull) null else trainee.asLong(),
+            ),
         )
     }
 

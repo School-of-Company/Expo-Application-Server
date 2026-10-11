@@ -107,7 +107,7 @@ class OwnerApplicationTests {
                 "tb_standard_program_application, tb_training_program_application, tb_training_application_version, " +
                 "tb_training_operation_receipt, tb_preregister_application, tb_preregister_transition, tb_preregister_request, " +
                 "tb_preregister_reservation, tb_preregister_session_state, tb_preregister_session_change, " +
-                "tb_preregister_deleted_expo, tb_session_attendance_outbox RESTART IDENTITY CASCADE",
+                "tb_preregister_deleted_expo, tb_session_attendance_outbox, tb_owner_cancellation_delivery RESTART IDENTITY CASCADE",
         )
         transactions.executeWithoutResult {
             preregister.saveDefinition(session)
@@ -542,7 +542,8 @@ class OwnerApplicationTests {
         @Bean @Primary
         fun ownerClock(): Clock = TEST_CLOCK
 
-        @Bean fun ownerGuard(): OwnerCancellationGuard =
+        @Bean @Primary
+        fun ownerGuard(): OwnerCancellationGuard =
             object : OwnerCancellationGuard {
                 override fun acquire(
                     command: CancelOwnerApplicationCommand,

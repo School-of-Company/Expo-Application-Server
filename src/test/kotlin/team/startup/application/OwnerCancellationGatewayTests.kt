@@ -25,6 +25,7 @@ import team.startup.application.domain.application.repository.ProgramSessionAppl
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.CancelProgramSessionService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
+import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
 import team.startup.application.domain.application.service.impl.OwnerCancellationGateway
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
@@ -107,6 +108,7 @@ class OwnerCancellationGatewayTests {
             "{",
             """{"expoId":"${UUID.randomUUID()}","phoneNumber":"010"}""",
             """{"expoId":"$EXPO","phoneNumber":" "}""",
+            """{"expoId":"$EXPO","phoneNumber":"${"1".repeat(21)}"}""",
         )) {
             sessionBody = body
             failure(HttpStatus.BAD_GATEWAY) { gateway.find(COMMAND) }
@@ -161,10 +163,12 @@ class OwnerCancellationGatewayTests {
     }
 
     @Test
-    fun `successful status snapshot cannot replace missing production guard`() {
+    fun `successful status snapshot and attendance transport cannot replace authoritative deadline guard`() {
         assertFalse(gateway.find(COMMAND).entered)
         val beans = DefaultListableBeanFactory()
         beans.registerSingleton("ownerCancellationGateway", gateway)
+        val cancellationAdapter = mock(AttendanceCancellationAdapter::class.java)
+        beans.registerSingleton("attendanceCancellationAdapter", cancellationAdapter)
         val registration = mock(RegistrationGateway::class.java)
         val owners = mock(OwnerApplicationRepository::class.java)
         val ledger = mock(PreregisterSessionLedger::class.java)
@@ -188,7 +192,7 @@ class OwnerCancellationGatewayTests {
                 Clock.systemUTC(),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(command) }
-        verifyNoInteractions(ledger, outbox)
+        verifyNoInteractions(ledger, outbox, cancellationAdapter)
     }
 
     @Test
