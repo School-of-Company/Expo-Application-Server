@@ -48,6 +48,10 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity")
                     .permitAll()
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/{type}/{applicationId}/cancellation")
+                    .permitAll()
                     .requestMatchers(internal)
                     .access {
                         _,

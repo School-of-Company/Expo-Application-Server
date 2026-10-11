@@ -3,7 +3,6 @@ package team.startup.application.domain.application.presentation.dto
 import tools.jackson.databind.JsonNode
 import java.util.UUID
 
-// Service-only commands: no public route exists until participant cookie/CSRF and cancellation contracts are ready.
 data class GetOwnerApplicationsCommand(
     val expoId: UUID,
     val sessionId: String,

@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -442,12 +443,47 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `owner public paths remain unavailable including internal token and unrelated authenticated user`() {
+    fun `public owner paths require participant cookie and cancellation requires CSRF`() {
         val path = "/application/expos/$EXPO/my-applications"
         mvc.perform(get(path)).andExpect(status().isUnauthorized)
         mvc.perform(get(path).header("X-Internal-Token", "test-token")).andExpect(status().isUnauthorized)
-        mvc.perform(post("$path/2/cancellation").with(csrf())).andExpect(status().isUnauthorized)
-        mvc.perform(get(path).with(user("admin"))).andExpect(status().isNotFound)
+        mvc.perform(get(path).with(user("admin"))).andExpect(status().isUnauthorized)
+        mvc.perform(get(path).param("sessionId", "session")).andExpect(status().isUnauthorized)
+        mvc
+            .perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session"), Cookie("PARTICIPANT_SESSION", "other")))
+            .andExpect(status().isUnauthorized)
+        val result =
+            mvc
+                .perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+                .andExpect(status().isOk)
+                .andReturn()
+        assertEquals("no-store", result.response.getHeader("Cache-Control"))
+        val token = requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))
+        val webSession = requireNotNull(result.request.session)
+        assertFalse(result.response.contentAsString.contains("phoneNumber"))
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isForbidden)
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()))
+            .andExpect(status().isUnauthorized)
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "other")))
+            .andExpect(status().isNotFound)
+        mvc
+            .perform(
+                post("$path/PREREGISTER/2/cancellation")
+                    .session(webSession as org.springframework.mock.web.MockHttpSession)
+                    .header("X-CSRF-TOKEN", token)
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isNoContent)
+        assertEquals("CANCELLED", state(2))
+        mvc
+            .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_session_attendance_outbox"))
+        sessionStatus = 401
+        mvc.perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session"))).andExpect(status().isUnauthorized)
     }
 
     private fun cancelCommand(
