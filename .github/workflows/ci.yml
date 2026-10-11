@@ -14,9 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  test:
+    name: Test (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       SPRING_PROFILES_ACTIVE: local
     steps:
@@ -26,15 +31,35 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/develop' }}
       - name: Start PostgreSQL and Redis
         run: |
           cp .env.example .env
           docker compose up -d --wait
       - name: Build, test and check formatting
-        run: ./gradlew build ktlintCheck spotlessCheck --no-daemon
+        run: ./gradlew build ktlintCheck spotlessCheck --build-cache -PciTestShard=${{ matrix.shard }} --no-daemon
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.shard }}
+          path: |
+            build/reports/tests/test
+            build/test-results/test/*.xml
+          retention-days: 7
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs
       - name: Stop services
         if: always()
         run: docker compose down
+  build:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check both test shards
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: test "$TEST_RESULT" = success

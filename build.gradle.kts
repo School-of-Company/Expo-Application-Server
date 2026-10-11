@@ -83,6 +83,15 @@ allOpen {
 tasks.withType<Test> {
     useJUnitPlatform()
     systemProperty("application.internal-token", "test-token")
+    providers.gradleProperty("ciTestShard").orNull?.let { shard ->
+        require(shard == "1" || shard == "2") { "Unknown ciTestShard: $shard" }
+        inputs.property("ciTestShard", shard)
+        exclude { element ->
+            val className = element.name.substringBefore('$').removeSuffix(".class")
+            !element.isDirectory && ((className.hashCode() and 1) + 1) != shard.toInt()
+        }
+        outputs.doNotCacheIf("CI shards must execute their tests") { true }
+    }
 }
 
 noArg {
