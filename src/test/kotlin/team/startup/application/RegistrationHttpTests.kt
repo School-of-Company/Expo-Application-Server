@@ -1,6 +1,7 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.mockito.Mockito.verify
@@ -24,6 +25,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.service.impl.ExpoPeriod
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
+import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.RegistrationField
 import team.startup.application.domain.application.service.impl.RegistrationForm
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -49,6 +51,43 @@ class RegistrationHttpTests {
     @Autowired private lateinit var mapper: ObjectMapper
 
     @MockitoBean private lateinit var gateway: RegistrationGateway
+
+    @MockitoBean private lateinit var preregistration: PreregisterRegistrationWorkflow
+
+    @BeforeEach
+    fun isolatePreregistrationPersistence() {
+        // This class verifies form validation/serialization; PreregisterRegistrationHttpTests exercises the real reservation.
+        org.mockito.Mockito
+            .doAnswer { invocation ->
+                val registration = invocation.getArgument<ParticipantRegistration>(1)
+                val result = gateway.participant("STANDARD", registration)
+                result.participantIds.forEach { gateway.countStandard(registration.expoId, it) }
+                null
+            }.`when`(preregistration)
+            .register(
+                org.mockito.ArgumentMatchers.any() ?: team.startup.application.domain.application.service.RegistrationCommand(
+                    EXPO_1,
+                    team.startup.application.domain.application.presentation
+                        .RegistrationRequest("person", "010", "{}", true),
+                    null,
+                ),
+                org.mockito.ArgumentMatchers.any() ?: ParticipantRegistration(
+                    EXPO_1,
+                    "person",
+                    "010",
+                    "{}",
+                    true,
+                    "PRE",
+                    null,
+                    null,
+                    null,
+                    "key",
+                    null,
+                    null,
+                ),
+                org.mockito.ArgumentMatchers.anyInt(),
+            )
+    }
 
     @Test
     fun `사전 일반 등록은 폼 답변을 분리하고 인원을 집계하며 재시도 키를 전달한다`() {
@@ -729,6 +768,7 @@ class RegistrationHttpTests {
             "informationJson" to answers,
             "personalInformationStatus" to true,
             "trainingId" to trainingId,
+            "sessionId" to 1,
         ),
     )
 

@@ -12,6 +12,7 @@ import team.startup.application.domain.application.service.CancelPreregisterSess
 class CancelPreregisterSessionServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
+    private val attendance: SessionAttendanceOutbox,
 ) : CancelPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -29,7 +30,7 @@ class CancelPreregisterSessionServiceImpl(
         return requireNotNull(
             ledger.transactions.execute {
                 ledger.lock(command.expoId)
-                val definition = ledger.current(command.expoId, command.sessionId, observation)
+                ledger.current(command.expoId, command.sessionId, observation)
                 val owned = repository.selectedOwned(command.expoId, command.sessionId, command.applicationIds)
                 if (owned.size != command.applicationIds.size ||
                     owned.any {
@@ -42,17 +43,10 @@ class CancelPreregisterSessionServiceImpl(
                 val cancelled =
                     selected.filter { it.status != "CANCELLED" }.map {
                         repository.status(it.id, "CANCELLED")
+                        attendance.cancelled(command.expoId, it.participantId)
                         it.copy(status = "CANCELLED")
                     }
-                val promoted =
-                    if (selected.any { it.status == "CONFIRMED" } &&
-                        repository.autoPromote(command.expoId, command.sessionId)
-                    ) {
-                        ledger.promote(definition, automatic = true)
-                    } else {
-                        emptyList()
-                    }
-                cancelled + promoted
+                cancelled
             },
         )
     }

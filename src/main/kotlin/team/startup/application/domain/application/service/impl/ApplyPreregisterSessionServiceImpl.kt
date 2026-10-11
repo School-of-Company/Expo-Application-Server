@@ -14,6 +14,7 @@ class ApplyPreregisterSessionServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
     private val mapper: ObjectMapper,
+    private val attendance: SessionAttendanceOutbox,
 ) : ApplyPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: ApplyPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -45,11 +46,8 @@ class ApplyPreregisterSessionServiceImpl(
                 ) {
                     conflict("다른 회차 또는 대표자의 활성 신청이 있습니다.")
                 }
-                val counts = repository.counts(command.expoId, command.sessionId)
-                var confirmed = counts.first
-                val waiting = counts.second
                 val newCount = existing.values.count { it == null }
-                if (newCount.toLong() > definition.capacity.toLong() - confirmed + definition.waitingCapacity.toLong() - waiting) {
+                if (newCount.toLong() > definition.capacity.toLong() - repository.occupied(command.expoId, command.sessionId)) {
                     conflict("일행 전원을 수용할 수 없습니다.")
                 }
                 val receipt =
@@ -59,14 +57,12 @@ class ApplyPreregisterSessionServiceImpl(
                             command.sessionId,
                             command.representativeId,
                             participantId,
-                            if (confirmed < definition.capacity) {
-                                confirmed++
-                                "CONFIRMED"
-                            } else {
-                                "WAITING"
-                            },
+                            "CONFIRMED",
                         )
                     }
+                receipt.filter { existing[it.participantId] == null }.forEach {
+                    attendance.confirmed(command.expoId, it.participantId, command.sessionId)
+                }
                 repository.saveRequest(command.expoId, command.requestId, serialized, receipt)
                 receipt
             },

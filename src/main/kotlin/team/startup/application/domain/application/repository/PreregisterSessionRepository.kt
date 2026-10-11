@@ -20,6 +20,10 @@ class PreregisterSessionRepository(
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
     }
 
+    fun readLock(expoId: UUID) {
+        jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock_shared(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
+    }
+
     fun expoDeleted(expoId: UUID): Boolean =
         requireNotNull(
             jdbc.queryForObject(
@@ -128,8 +132,11 @@ class PreregisterSessionRepository(
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
-                "SELECT EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND session_id = ?)",
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND session_id = ?) OR " +
+                    "EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND state <> 'REJECTED')",
                 Boolean::class.java,
+                expoId,
+                sessionId,
                 expoId,
                 sessionId,
             ),
@@ -140,7 +147,8 @@ class PreregisterSessionRepository(
         sessionId: Long,
     ): List<PreregisterApplicationReceipt> =
         jdbc.query(
-            "SELECT id, participant_id, session_id, status FROM tb_preregister_application WHERE expo_id = ? AND session_id = ? ORDER BY id",
+            "SELECT id, participant_id, session_id, status FROM tb_preregister_application " +
+                "WHERE expo_id = ? AND session_id = ? ORDER BY id",
             { rs, _ -> PreregisterApplicationReceipt(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4)) },
             expoId,
             sessionId,
@@ -200,31 +208,22 @@ class PreregisterSessionRepository(
             { rs, _ -> PreregisterApplicationReceipt(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4)) to rs.getLong(5) },
         )
 
-    fun counts(
+    fun occupied(
         expoId: UUID,
         sessionId: Long,
-    ): Pair<Long, Long> =
-        jdbc
-            .query(
-                "SELECT count(*) FILTER (WHERE status = 'CONFIRMED'), count(*) FILTER (WHERE status = 'WAITING') " +
-                    "FROM tb_preregister_application WHERE expo_id = ? AND session_id = ? AND status <> 'CANCELLED'",
-                { rs, _ -> rs.getLong(1) to rs.getLong(2) },
+    ): Long =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT (SELECT count(*) FROM tb_preregister_application " +
+                    "WHERE expo_id = ? AND session_id = ? AND status = 'CONFIRMED') + " +
+                    "(SELECT coalesce(sum(applicants), 0) FROM tb_preregister_reservation " +
+                    "WHERE expo_id = ? AND session_id = ? AND state = 'RESERVED')",
+                Long::class.java,
                 expoId,
                 sessionId,
-            ).single()
-
-    fun waiting(
-        expoId: UUID,
-        sessionId: Long,
-        limit: Int,
-    ): List<PreregisterApplicationReceipt> =
-        jdbc.query(
-            "SELECT id, participant_id, session_id, status FROM tb_preregister_application " +
-                "WHERE expo_id = ? AND session_id = ? AND status = 'WAITING' ORDER BY id LIMIT ?",
-            { rs, _ -> PreregisterApplicationReceipt(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4)) },
-            expoId,
-            sessionId,
-            limit,
+                expoId,
+                sessionId,
+            ),
         )
 
     fun status(
@@ -242,32 +241,6 @@ class PreregisterSessionRepository(
             id,
         )
     }
-
-    fun setAutoPromote(
-        expoId: UUID,
-        sessionId: Long,
-        enabled: Boolean,
-    ) {
-        jdbc.update(
-            "UPDATE tb_preregister_session_state SET auto_promote = ? WHERE expo_id = ? AND session_id = ?",
-            enabled,
-            expoId,
-            sessionId,
-        )
-    }
-
-    fun autoPromote(
-        expoId: UUID,
-        sessionId: Long,
-    ): Boolean =
-        requireNotNull(
-            jdbc.queryForObject(
-                "SELECT auto_promote FROM tb_preregister_session_state WHERE expo_id = ? AND session_id = ?",
-                Boolean::class.java,
-                expoId,
-                sessionId,
-            ),
-        )
 
     fun request(
         expoId: UUID,
@@ -302,7 +275,25 @@ class PreregisterSessionRepository(
     }
 
     fun purge(expoId: UUID) {
+        jdbc
+            .query(
+                "SELECT participant_id FROM tb_preregister_application WHERE expo_id = ? AND status = 'CONFIRMED'",
+                { rs, _ -> rs.getLong(1) },
+                expoId,
+            ).forEach {
+                SessionAttendanceOutboxRepository(jdbc).append(expoId, it, null)
+            }
         jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?) ON CONFLICT DO NOTHING", expoId)
+        jdbc.update("DELETE FROM tb_preregister_count_outbox WHERE expo_id = ?", expoId)
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET next_attempt_at = CURRENT_TIMESTAMP WHERE expo_id = ? AND state = 'RESERVED'",
+            expoId,
+        )
+        // Retain only uncertain User deliveries for same-requestId recovery and QR invalidation.
+        jdbc.update(
+            "DELETE FROM tb_preregister_reservation WHERE expo_id = ? AND (state <> 'RESERVED' OR attempts = 0)",
+            expoId,
+        )
         listOf(
             "tb_preregister_transition",
             "tb_preregister_request",
