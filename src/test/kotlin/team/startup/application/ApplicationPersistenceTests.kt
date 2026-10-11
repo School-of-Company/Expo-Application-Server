@@ -89,14 +89,14 @@ class ApplicationPersistenceTests {
         assertThrows(DataIntegrityViolationException::class.java) {
             jdbc.update(
                 "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
-                    "VALUES (?, 2, 42, 42, 'WAITING')",
+                    "VALUES (?, 2, 42, 42, 'CONFIRMED')",
                 expoId,
             )
         }
         jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE expo_id = ?", expoId)
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
-                "VALUES (?, 2, 42, 42, 'WAITING')",
+                "VALUES (?, 2, 42, 42, 'CONFIRMED')",
             expoId,
         )
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE expo_id = ?", Int::class.java, expoId))

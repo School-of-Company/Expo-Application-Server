@@ -25,6 +25,7 @@ data class RegistrationRequest(
     @field:NotBlank val informationJson: String,
     val personalInformationStatus: Boolean,
     @field:Size(max = 15) val trainingId: String? = null,
+    @field:jakarta.validation.constraints.Positive val sessionId: Long? = null,
 )
 
 @RestController

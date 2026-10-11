@@ -7,6 +7,8 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import team.startup.application.domain.application.presentation.RegistrationController
+import team.startup.application.domain.application.service.impl.ParticipantRegistration
+import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.RegisterStandardFieldServiceImpl
 import team.startup.application.domain.application.service.impl.RegisterStandardPreServiceImpl
 import team.startup.application.domain.application.service.impl.RegisterTraineeFieldServiceImpl
@@ -89,8 +91,38 @@ class RegistrationIntegrationContractTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val workflow =
-                RegistrationWorkflow(RegistrationGateway(mapper, url, url, url, "shared", "expo-token", "form-token", "user-token"), mapper)
+            val gateway = RegistrationGateway(mapper, url, url, url, "shared", "expo-token", "form-token", "user-token")
+            val preregistration = org.mockito.Mockito.mock(PreregisterRegistrationWorkflow::class.java)
+            org.mockito.Mockito
+                .doAnswer { invocation ->
+                    val registration = invocation.getArgument<ParticipantRegistration>(1)
+                    gateway.participant("STANDARD", registration).participantIds.forEach { gateway.countStandard(expoId, it) }
+                    null
+                }.`when`(preregistration)
+                .register(
+                    org.mockito.ArgumentMatchers.any() ?: team.startup.application.domain.application.service.RegistrationCommand(
+                        expoId,
+                        team.startup.application.domain.application.presentation
+                            .RegistrationRequest("person", "010", "{}", true),
+                        null,
+                    ),
+                    org.mockito.ArgumentMatchers.any() ?: ParticipantRegistration(
+                        expoId,
+                        "person",
+                        "010",
+                        "{}",
+                        true,
+                        "PRE",
+                        null,
+                        null,
+                        null,
+                        "key",
+                        null,
+                        null,
+                    ),
+                    org.mockito.ArgumentMatchers.anyInt(),
+                )
+            val workflow = RegistrationWorkflow(gateway, mapper, preregistration)
             val controller =
                 RegistrationController(
                     RegisterTraineePreServiceImpl(workflow),
@@ -109,6 +141,7 @@ class RegistrationIntegrationContractTests {
                         "informationJson" to answers,
                         "personalInformationStatus" to true,
                         "trainingId" to "training-1",
+                        "sessionId" to 1,
                     ),
                 )
             val routes = listOf("" to "TRAINEE", "/pre-standard" to "STANDARD", "/field" to "TRAINEE", "/field/standard" to "STANDARD")

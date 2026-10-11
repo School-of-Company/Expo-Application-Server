@@ -5,11 +5,9 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
-import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.PreregisterChangeOperation
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
-import java.time.Instant
 import java.util.UUID
 
 @Component
@@ -43,12 +41,13 @@ class PreregisterSessionLedger(
         expoId: UUID,
         sessionId: Long,
         observation: PreregisterSessionDefinition?,
+        persist: Boolean = true,
     ): PreregisterSessionDefinition {
         ensureAvailable(expoId, sessionId)
         val remote = observation ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "회차를 찾을 수 없습니다.")
         val stored = repository.definition(expoId, sessionId)
         if (stored != null && stored != remote) conflict("승인되지 않은 회차 정의 변경입니다.")
-        if (stored == null) repository.saveDefinition(remote)
+        if (stored == null && persist) repository.saveDefinition(remote)
         return remote
     }
 
@@ -79,22 +78,6 @@ class PreregisterSessionLedger(
                     true
                 }
             }
-        }
-    }
-
-    fun promote(
-        definition: PreregisterSessionDefinition,
-        automatic: Boolean,
-    ): List<PreregisterApplicationReceipt> {
-        if (automatic && !Instant.now().isBefore(definition.startedAt)) return emptyList()
-        val (confirmed, waiting) = repository.counts(definition.expoId, definition.id)
-        val available = (definition.capacity - confirmed).coerceAtLeast(0).toInt()
-        if (available > 0 && waiting > 0 && definition.closed) {
-            conflict("마감 중 승급 정책이 확정되지 않았습니다.")
-        }
-        return repository.waiting(definition.expoId, definition.id, available).map {
-            repository.status(it.id, "CONFIRMED")
-            it.copy(status = "CONFIRMED")
         }
     }
 }
