@@ -93,7 +93,6 @@ class ApplyProgramSessionServiceImpl(
         val waiting =
             ledger.confirmedCount(command.programType, command.programId) >= policy.capacity ||
                 waitingCount > 0
-        if (waiting && !now.isBefore(policy.promotionEndedAt)) conflict("프로그램 대기 접수 기간이 끝났습니다.")
         if (waiting && waitingCount >= policy.waitingCapacity) conflict("프로그램 대기 정원이 찼습니다.")
         val traineeId =
             if (command.programType == ProgramSessionType.TRAINING && !waiting) {
@@ -115,6 +114,11 @@ class ApplyProgramSessionServiceImpl(
             } else {
                 null
             }
+        val acceptedAt = waitlist.now()
+        if (!acceptedAt.isBefore(policy.applicationEndedAt) || !acceptedAt.isBefore(form.endedAt)) {
+            conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
+        }
+        if (waiting && !acceptedAt.isBefore(policy.promotionEndedAt)) conflict("프로그램 대기 접수 기간이 끝났습니다.")
         val receipt =
             ProgramSessionReceipt(
                 UUID.randomUUID(),
