@@ -71,6 +71,7 @@ data class ParticipantRegistrationResult(
     val participantId: Long,
     val phoneNumber: String,
     val participantIds: List<Long> = listOf(participantId),
+    val groupParticipantIds: List<Long> = participantIds,
 )
 
 data class TraineeRegistrationResult(
@@ -345,6 +346,11 @@ class RegistrationGateway(
         val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
         return if (type == "STANDARD") {
             val body = decode(response.body(), JsonNode::class.java)
+            body.get("groupParticipantIds")?.let { ids ->
+                if (!ids.isArray || ids.any { !it.isIntegralNumber || !it.canConvertToLong() }) {
+                    throw ParticipantIdsMismatchException()
+                }
+            }
             val result =
                 if (body.isArray) {
                     if (body.size() !in 1..5) throw ParticipantIdsMismatchException()
@@ -360,7 +366,17 @@ class RegistrationGateway(
                 }
             if (result.participantIds.size !in 1..5 || result.participantId <= 0 ||
                 result.participantIds.any { it <= 0 } ||
-                result.participantIds.distinct().size != result.participantIds.size
+                result.participantIds.distinct().size != result.participantIds.size ||
+                result.groupParticipantIds.size !in 1..5 ||
+                result.groupParticipantIds.any { it <= 0 } ||
+                result.groupParticipantIds.distinct().size != result.groupParticipantIds.size ||
+                (
+                    body.has("groupParticipantIds") &&
+                        (
+                            result.groupParticipantIds.first() != result.participantId ||
+                                !result.groupParticipantIds.containsAll(result.participantIds)
+                        )
+                )
             ) {
                 throw ParticipantIdsMismatchException()
             }

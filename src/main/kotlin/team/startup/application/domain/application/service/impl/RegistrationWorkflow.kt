@@ -173,7 +173,7 @@ class RegistrationWorkflow(
             return
         }
         val participant = gateway.participant(participantType, registration)
-        if (participantType == "STANDARD") participant.participantIds.forEach { gateway.countStandard(expoId, it) }
+        if (participantType == "STANDARD") participant.groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
     }
 
     private fun validateCompanion(companion: JsonNode) {
