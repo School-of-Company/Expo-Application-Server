@@ -144,7 +144,14 @@ class PreregisterRegistrationHttpTests {
                 .andReturn()
                 .response
         assertEquals(200, status.status)
-        assertEquals(listOf(42L, 43L, 44L), mapper.readTree(status.contentAsString).get("participantIds").toList().map { it.asLong() })
+        assertEquals(
+            listOf(42L, 43L, 44L),
+            mapper
+                .readTree(status.contentAsString)
+                .get("participantIds")
+                .toList()
+                .map { it.asLong() },
+        )
         assertEquals(201, submit(people = 3))
         assertEquals(1, userRequests.size)
         recovery.recover()
@@ -803,7 +810,10 @@ class PreregisterRegistrationHttpTests {
                                 val ids = (42L until 42L + count).joinToString(",")
                                 val response =
                                     responseBody.get()
-                                        ?: """{"participantId":42,"phoneNumber":"01012345678","participantIds":[$ids],"groupParticipantIds":[$ids]}"""
+                                        ?: (
+                                            """{"participantId":42,"phoneNumber":"01012345678","participantIds":[$ids],""" +
+                                                """"groupParticipantIds":[$ids]}"""
+                                        )
                                 if (userStatus.get() == 0 ||
                                     userStatus.get() in 200..299
                                 ) {
