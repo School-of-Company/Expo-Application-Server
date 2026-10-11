@@ -15,6 +15,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
+import org.springframework.context.annotation.Primary
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
@@ -37,6 +38,7 @@ import team.startup.application.domain.application.presentation.dto.ApplyProgram
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
@@ -44,12 +46,17 @@ import team.startup.application.domain.application.service.ApplyProgramSessionSe
 import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.impl.ApplyProgramSessionServiceImpl
+import team.startup.application.domain.application.service.impl.ProgramWaitlist
+import team.startup.application.domain.application.service.impl.ProgramWaitlistScheduler
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
 import java.sql.DriverManager
+import java.time.Clock
 import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -76,7 +83,8 @@ class ProgramSessionApplicationTests {
     @BeforeEach
     fun reset() {
         jdbc.execute(
-            "TRUNCATE tb_program_session_history, tb_program_session_receipt, tb_program_session_application, " +
+            "TRUNCATE tb_program_session_event, tb_program_session_state, tb_program_change_receipt, " +
+                "tb_program_session_history, tb_program_session_receipt, tb_program_session_application, " +
                 "tb_standard_program_application, tb_training_program_application, tb_training_application_version, " +
                 "tb_training_operation_receipt, tb_deleted_standard_program, tb_deleted_training_program, " +
                 "tb_preregister_application, tb_preregister_session_state RESTART IDENTITY",
@@ -103,6 +111,16 @@ class ProgramSessionApplicationTests {
         batchCalls.set(0)
         checkTraineeLock = false
         lockChecks.set(0)
+        capacity = 1
+        waitingCapacity = 0
+        revision = 1
+        applicationEnd = Instant.parse("2100-01-01T00:00:00Z")
+        promotionEnd = applicationEnd
+        cancelEnd = applicationEnd
+        testClock.current = Instant.parse("2026-10-11T10:00:00Z")
+        linkFailure = false
+        title = "Session"
+        unavailableLookup = null
     }
 
     @Test
@@ -256,6 +274,8 @@ class ProgramSessionApplicationTests {
                 context.getBean(TrainingOperationRepository::class.java),
                 context.getBean(RegistrationGateway::class.java),
                 DefaultListableBeanFactory().getBeanProvider(ProgramFormProvider::class.java),
+                context.getBean(ProgramWaitlist::class.java),
+                context.getBean(ProgramWaitlistRepository::class.java),
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
@@ -485,6 +505,741 @@ class ProgramSessionApplicationTests {
             .andExpect(jsonPath("$.applied").value(false))
     }
 
+    @Test
+    fun `waiting is bounded replayable excludes applied and blocks sibling sessions`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        assertEquals("WAITING", waiting.status)
+        assertEquals(waiting, service.execute(command(participant = 2)))
+        assertEquals(2L, count("tb_program_session_event"))
+        assertThrows(
+            ProgramApplicationConflictException::class.java,
+        ) { service.execute(command(program = 2, participant = 2, key = "sibling")) }
+        addParticipant(3)
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3)) }
+        applied(2, false)
+        cancel(confirmed.applicationId)
+        applied(2, true)
+        assertEquals(waiting, service.execute(command(participant = 2)))
+        cancel(confirmed.applicationId)
+        assertEquals(
+            1L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_history WHERE application_id = ? AND status = 'CONFIRMED'",
+                Long::class.java,
+                waiting.applicationId,
+            ),
+        )
+        assertEquals(
+            1L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_event WHERE application_id = ? AND status = 'CONFIRMED'",
+                Long::class.java,
+                waiting.applicationId,
+            ),
+        )
+    }
+
+    @Test
+    fun `FIFO uses server reception time then stable UUID for equal timestamps`() {
+        waitingCapacity = 3
+        addParticipant(3)
+        addParticipant(4)
+        val confirmed = service.execute(command())
+        val entries = (2L..4L).map { service.execute(command(participant = it)) }
+        assertEquals(
+            entries.map { it.applicationId },
+            jdbc.query(
+                "SELECT id FROM tb_program_session_application WHERE status = 'WAITING' ORDER BY created_at, id",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+            ),
+        )
+        jdbc.update("UPDATE tb_program_session_application SET created_at = '2026-10-11T10:00:00Z' WHERE status = 'WAITING'")
+        val first =
+            jdbc.queryForObject(
+                "SELECT id FROM tb_program_session_application WHERE status = 'WAITING' ORDER BY created_at, id LIMIT 1",
+                UUID::class.java,
+            )
+        cancel(confirmed.applicationId)
+        assertEquals(
+            "CONFIRMED",
+            jdbc.queryForObject("SELECT status FROM tb_program_session_application WHERE id = ?", String::class.java, first),
+        )
+        assertEquals(
+            2L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+        )
+        assertEquals(3, entries.size)
+    }
+
+    @Test
+    fun `application and promotion deadline immediately before at and after cancel boundary`() {
+        val boundary = Instant.parse("2026-10-12T10:00:00Z")
+        for (deadline in listOf("application", "promotion")) {
+            for (offset in listOf(-1L, 0L, 1L)) {
+                reset()
+                waitingCapacity = 1
+                if (deadline == "application") applicationEnd = boundary else promotionEnd = boundary
+                val confirmed = service.execute(command())
+                val waiting = service.execute(command(participant = 2))
+                testClock.current = boundary.plusNanos(offset)
+                cancel(confirmed.applicationId)
+                applied(waiting.participantId, offset < 0)
+                reconcile()
+                applied(waiting.participantId, offset < 0)
+            }
+        }
+        reset()
+        applicationEnd = boundary
+        testClock.current = boundary
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+    }
+
+    @Test
+    fun `closed cancellation suspends FIFO until approved reopen and capacity changes reconcile`() {
+        waitingCapacity = 2
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        change { it.put("closed", true) }
+        cancel(confirmed.applicationId)
+        applied(2, false)
+        reconcile()
+        applied(2, false)
+        change { it.put("closed", false) }
+        reconcile()
+        applied(2, true)
+        addParticipant(3)
+        service.execute(command(participant = 3))
+        change { it.put("capacity", 2) }
+        reconcile()
+        applied(3, true)
+    }
+
+    @Test
+    fun `actual Expo change HTTP validates counts permanent receipt and pending admission fence`() {
+        waitingCapacity = 1
+        service.execute(command())
+        service.execute(command(participant = 2))
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        for ((field, value) in listOf("waitingCapacity" to 0, "capacity" to 0)) {
+            val next = previous.deepCopy().asObject()
+            next.put("revision", 2)
+            next.path("policy").asObject().put(field, value)
+            val body = """{"mutations":[{"previous":$previous,"definition":$next}]}"""
+            mvc
+                .perform(
+                    put(
+                        "/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}",
+                    ).header("X-Internal-Token", "test-token").contentType(MediaType.APPLICATION_JSON).content(body),
+                ).andExpect(if (field == "capacity") status().isBadRequest else status().isConflict)
+        }
+        val next = previous.deepCopy().asObject()
+        next.put("revision", 2)
+        next.path("policy").asObject().put("capacity", 2)
+        val body = """{"mutations":[{"previous":$previous,"definition":$next}]}"""
+        val path = "/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}"
+        mvc.perform(put(path).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isUnauthorized)
+        repeat(2) {
+            mvc
+                .perform(
+                    put(path).header("X-Internal-Token", "test-token").contentType(MediaType.APPLICATION_JSON).content(body),
+                ).andExpect(status().isNoContent)
+        }
+        addParticipant(3)
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3)) }
+        applied(2, false)
+        capacity = 2
+        revision = 2
+        reconcile()
+        applied(2, true)
+        assertEquals(1L, count("tb_program_change_receipt"))
+        next.path("policy").asObject().put("capacity", 3)
+        mvc
+            .perform(
+                put(
+                    path,
+                ).header(
+                    "X-Internal-Token",
+                    "test-token",
+                ).contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+    }
+
+    @Test
+    fun `training waiting creates User link only upon promotion and increments version`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        assertEquals("WAITING", waiting.status)
+        assertEquals(null, waiting.traineeId)
+        assertEquals(1, linkCalls.get())
+        mvc
+            .perform(
+                get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
+            ).andExpect(jsonPath("$.applied").value(false))
+        cancel(confirmed.applicationId)
+        assertEquals(2, linkCalls.get())
+        mvc
+            .perform(
+                get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
+            ).andExpect(jsonPath("$.applied").value(true))
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT version FROM tb_training_application_version WHERE trainee_id = 502", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `concurrent double cancellation promotes one waiter and concurrent admissions respect queue bound`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map { pool.submit { cancel(confirmed.applicationId) } }
+            results.forEach { it.get(30, TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(1L, count("tb_standard_program_application"))
+        assertEquals(4L, count("tb_program_session_history"))
+        reset()
+        waitingCapacity = 1
+        addParticipant(3)
+        val results = concurrent(command(), command(participant = 2), command(participant = 3))
+        assertEquals(2, results.count { it == "ok" })
+        assertEquals(1, results.count { it == "conflict" })
+    }
+
+    @Test
+    fun `failed training promotion preserves cancellation and retries without duplicate history or event`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        linkFailure = true
+        mvc
+            .perform(
+                post(
+                    "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
+                ).header("X-Internal-Token", "test-token"),
+            ).andExpect(status().isNoContent)
+        assertEquals(
+            "CANCELLED",
+            jdbc.queryForObject(
+                "SELECT status FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                confirmed.applicationId,
+            ),
+        )
+        assertEquals(3L, count("tb_program_session_history"))
+        assertEquals(3L, count("tb_program_session_event"))
+        assertEquals(
+            "WAITING",
+            jdbc.queryForObject(
+                "SELECT status FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                waiting.applicationId,
+            ),
+        )
+        linkFailure = false
+        cancel(confirmed.applicationId)
+        cancel(confirmed.applicationId)
+        reconcile(ProgramSessionType.TRAINING)
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(
+            "CONFIRMED",
+            jdbc.queryForObject(
+                "SELECT status FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                waiting.applicationId,
+            ),
+        )
+        assertEquals(4L, count("tb_program_session_event"))
+    }
+
+    @Test
+    fun `legacy training replacement cancellation automatically promotes under the same lock`() {
+        waitingCapacity = 1
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        mvc
+            .perform(
+                put(
+                    "/internal/training-program-applications/trainee/501",
+                ).header(
+                    "X-Internal-Token",
+                    "test-token",
+                ).contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":501,"expoId":"$EXPO"},"programs":[]}"""),
+            ).andExpect(status().isNoContent)
+        mvc
+            .perform(
+                get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
+            ).andExpect(jsonPath("$.applied").value(true))
+        assertEquals(4L, count("tb_program_session_event"))
+    }
+
+    @Test
+    fun `cancel ended boundary rejects mutation but cancelled replay remains accepted`() {
+        val boundary = Instant.parse("2026-10-12T10:00:00Z")
+        for (offset in listOf(-1L, 0L, 1L)) {
+            reset()
+            cancelEnd = boundary
+            val confirmed = service.execute(command())
+            testClock.current = boundary.plusNanos(offset)
+            mvc
+                .perform(
+                    post(
+                        "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
+                    ).header("X-Internal-Token", "test-token"),
+                ).andExpect(
+                    if (offset <
+                        0
+                    ) {
+                        status().isNoContent
+                    } else {
+                        status().isConflict
+                    },
+                )
+            if (offset < 0) {
+                testClock.current = boundary.plusSeconds(1)
+                cancel(confirmed.applicationId)
+            }
+        }
+    }
+
+    @Test
+    fun `predecessor snapshots without new deadline fields remain cancellable and receipts immutable`() {
+        val confirmed = service.execute(command())
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = jsonb_set(definition_snapshot, '{policy}', " +
+                "(definition_snapshot->'policy') - 'cancelEndedAt' - 'promotionEndedAt')",
+        )
+        cancel(confirmed.applicationId)
+        applied(1, false)
+        assertEquals(confirmed, service.execute(command()))
+        assertEquals(2L, count("tb_program_session_history"))
+    }
+
+    @Test
+    fun `capacity reduction racing last confirmation cannot approve an overbooked definition`() {
+        capacity = 2
+        service.execute(command())
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", 2)
+        next.path("policy").asObject().put("capacity", 1)
+        val body = """{"mutations":[{"previous":$previous,"definition":$next}]}"""
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val admission =
+                pool.submit<String> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    try {
+                        service.execute(command(participant = 2))
+                        "confirmed"
+                    } catch (_: ProgramApplicationConflictException) {
+                        "conflict"
+                    }
+                }
+            val approval =
+                pool.submit<Int> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    mvc
+                        .perform(
+                            put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                                .header("X-Internal-Token", "test-token")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(body),
+                        ).andReturn()
+                        .response.status
+                }
+            start.countDown()
+            val accepted = admission.get(30, TimeUnit.SECONDS) == "confirmed"
+            assertEquals(if (accepted) 409 else 204, approval.get(30, TimeUnit.SECONDS))
+            assertEquals(if (accepted) 2L else 1L, count("tb_standard_program_application"))
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `permanent head conflict holds FIFO without blocking cancellation replacement or new waiting`() {
+        for (operation in listOf("cancel", "replace")) {
+            reset()
+            waitingCapacity = 3
+            addParticipant(3)
+            val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+            val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+            jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (502, 2)")
+            if (operation == "cancel") {
+                cancel(confirmed.applicationId)
+            } else {
+                mvc
+                    .perform(
+                        put("/internal/training-program-applications/trainee/501")
+                            .header("X-Internal-Token", "test-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""{"trainee":{"id":501,"expoId":"$EXPO"},"programs":[]}"""),
+                    ).andExpect(status().isNoContent)
+            }
+            val next = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+            assertEquals("WAITING", next.status)
+            assertEquals(
+                "WAITING",
+                jdbc.queryForObject(
+                    "SELECT status FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    head.applicationId,
+                ),
+            )
+            assertEquals(
+                0L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_training_program_application WHERE training_program_id = 1", Long::class.java),
+            )
+            cancel(head.applicationId)
+            assertEquals(
+                "CONFIRMED",
+                jdbc.queryForObject(
+                    "SELECT status FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    next.applicationId,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `policyless legacy standard training and replace accept updated Expo metadata`() {
+        for (operation in listOf("standard", "training", "replace")) {
+            reset()
+            noPolicyProgram = 0
+            val standard = operation == "standard"
+            val route = if (standard) "standard" else "training"
+            val person = if (standard) "participant" else "trainee"
+            val category = if (standard) "" else ",\"category\":\"CHOICE\""
+            val firstId = if (standard) 1 else 501
+
+            fun body(id: Int) = """{"$person":{"id":$id,"expoId":"$EXPO"},"programs":[{"id":1,"expoId":"$EXPO"$category}]}"""
+            mvc
+                .perform(
+                    post(
+                        "/internal/$route-program-applications",
+                    ).header("X-Internal-Token", "test-token").contentType(MediaType.APPLICATION_JSON).content(body(firstId)),
+                ).andExpect(status().isCreated)
+            revision = 2
+            title = "Renamed"
+            val request =
+                if (operation ==
+                    "replace"
+                ) {
+                    put("/internal/training-program-applications/trainee/501")
+                } else {
+                    post("/internal/$route-program-applications")
+                }
+            val id =
+                if (operation == "replace") {
+                    501
+                } else if (standard) {
+                    2
+                } else {
+                    502
+                }
+            mvc
+                .perform(request.header("X-Internal-Token", "test-token").contentType(MediaType.APPLICATION_JSON).content(body(id)))
+                .andExpect(if (operation == "replace") status().isNoContent else status().isCreated)
+        }
+    }
+
+    @Test
+    fun `expired waiting stops polling but pending policy extension still reconciles`() {
+        waitingCapacity = 1
+        promotionEnd = Instant.parse("2026-10-12T10:00:00Z")
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        testClock.current = promotionEnd
+        val before = batchCalls.get()
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
+        assertEquals(before, batchCalls.get())
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+        )
+        change(ProgramSessionType.TRAINING) {
+            it.put("promotionEndedAt", promotionEnd.plusSeconds(3600).toString())
+            it.put("capacity", 2)
+        }
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
+        assertEquals(2L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `new waiting ends at promotion cutoff while vacant confirmed seats remain available`() {
+        val boundary = Instant.parse("2026-10-12T10:00:00Z")
+        for (offset in listOf(-1L, 0L, 1L)) {
+            reset()
+            waitingCapacity = 1
+            promotionEnd = boundary
+            service.execute(command())
+            testClock.current = boundary.plusNanos(offset)
+            if (offset < 0) {
+                assertEquals("WAITING", service.execute(command(participant = 2)).status)
+            } else {
+                assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2)) }
+                assertEquals(1L, count("tb_program_session_application"))
+            }
+        }
+        reset()
+        waitingCapacity = 2
+        promotionEnd = boundary
+        testClock.current = boundary
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        reset()
+        waitingCapacity = 2
+        promotionEnd = boundary
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        addParticipant(3)
+        testClock.current = boundary
+        cancel(confirmed.applicationId)
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3)) }
+        applied(2, false)
+    }
+
+    @Test
+    fun `waiting trainee lock contention does not undo another trainee cancellation`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        val locked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val holder =
+                pool.submit {
+                    transactions.execute {
+                        context.getBean(TrainingProgramApplicationRepository::class.java).lockTrainee(502)
+                        locked.countDown()
+                        assertTrue(release.await(30, TimeUnit.SECONDS))
+                    }
+                }
+            assertTrue(locked.await(10, TimeUnit.SECONDS))
+            cancel(confirmed.applicationId)
+            assertEquals(
+                "WAITING",
+                jdbc.queryForObject(
+                    "SELECT status FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    waiting.applicationId,
+                ),
+            )
+            assertEquals(0L, count("tb_training_program_application"))
+            release.countDown()
+            holder.get(10, TimeUnit.SECONDS)
+            reconcile(ProgramSessionType.TRAINING)
+            assertEquals(1L, count("tb_training_program_application"))
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `Expo lookup failure for head preserves cancellation and retries after recovery`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (502, 2)")
+        unavailableLookup = 2
+        cancel(confirmed.applicationId)
+        assertEquals(
+            "WAITING",
+            jdbc.queryForObject(
+                "SELECT status FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                waiting.applicationId,
+            ),
+        )
+        unavailableLookup = null
+        jdbc.update("DELETE FROM tb_training_program_application WHERE trainee_id = 502 AND training_program_id = 2")
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(
+            "CONFIRMED",
+            jdbc.queryForObject(
+                "SELECT status FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                waiting.applicationId,
+            ),
+        )
+        assertEquals(4L, count("tb_program_session_event"))
+    }
+
+    @Test
+    fun `promotion database failure still rolls back cancellation relation history and event`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        jdbc.execute(
+            "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_promotion_failure CHECK (application_id <> '${waiting.applicationId}' OR status <> 'CONFIRMED')",
+        )
+        try {
+            assertThrows(jakarta.servlet.ServletException::class.java) {
+                mvc.perform(
+                    post(
+                        "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
+                    ).header("X-Internal-Token", "test-token"),
+                )
+            }
+            assertEquals(
+                "CONFIRMED",
+                jdbc.queryForObject(
+                    "SELECT status FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    confirmed.applicationId,
+                ),
+            )
+            assertEquals(
+                "WAITING",
+                jdbc.queryForObject(
+                    "SELECT status FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    waiting.applicationId,
+                ),
+            )
+            applied(1, true)
+            applied(2, false)
+            assertEquals(2L, count("tb_program_session_history"))
+            assertEquals(2L, count("tb_program_session_event"))
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_history DROP CONSTRAINT test_promotion_failure")
+        }
+        cancel(confirmed.applicationId)
+        applied(2, true)
+    }
+
+    @Test
+    fun `large capacity increase processes bounded FIFO batches and converges without duplicate links`() {
+        waitingCapacity = 20
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting =
+            (2L..15L).map { id ->
+                if (id > 2) addParticipant(id)
+                service.execute(command(participant = id, type = ProgramSessionType.TRAINING))
+            }
+        change(ProgramSessionType.TRAINING) { it.put("capacity", 15) }
+        reconcile(ProgramSessionType.TRAINING)
+        val firstBatch = requireNotNull(count("tb_training_program_application"))
+        assertTrue(firstBatch in 2L..14L)
+        val confirmedParticipants =
+            jdbc.query(
+                "SELECT participant_id FROM tb_program_session_application WHERE status = 'CONFIRMED' ORDER BY created_at, id",
+                { rs, _ -> rs.getLong(1) },
+            )
+        assertEquals((1L..firstBatch).toList(), confirmedParticipants)
+        repeat(14) { reconcile(ProgramSessionType.TRAINING) }
+        assertEquals(15L, count("tb_training_program_application"))
+        assertEquals(15, linkCalls.get())
+        assertEquals(29L, count("tb_program_session_event"))
+        assertEquals(waiting.first(), service.execute(command(participant = 2, type = ProgramSessionType.TRAINING)))
+    }
+
+    @Test
+    fun `policyless metadata refresh cannot bypass pending policy activation`() {
+        noPolicyProgram = 0
+        mvc
+            .perform(
+                post("/internal/standard-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participant":{"id":1,"expoId":"$EXPO"},"programs":[{"id":1,"expoId":"$EXPO"}]}"""),
+            ).andExpect(status().isCreated)
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        noPolicyProgram = null
+        waitingCapacity = 1
+        val next = mapper.readTree(definition("1", "STANDARD")).asObject()
+        next.put("revision", 2)
+        mvc
+            .perform(
+                put(
+                    "/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}",
+                ).header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
+        noPolicyProgram = 0
+        mvc
+            .perform(
+                post("/internal/standard-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participant":{"id":2,"expoId":"$EXPO"},"programs":[{"id":1,"expoId":"$EXPO"}]}"""),
+            ).andExpect(status().isConflict)
+        noPolicyProgram = null
+        revision = 2
+        assertEquals("WAITING", service.execute(command(participant = 2)).status)
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    private fun addParticipant(id: Long) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) VALUES (?, 1, 1, ?, 'CONFIRMED')",
+            UUID.fromString(EXPO),
+            id,
+        )
+    }
+
+    private fun applied(
+        participant: Long,
+        value: Boolean,
+    ) {
+        mvc
+            .perform(
+                get("/internal/program-applications/standard/1/participants/$participant").header("X-Internal-Token", "test-token"),
+            ).andExpect(jsonPath("$.applied").value(value))
+    }
+
+    private fun cancel(id: UUID) {
+        mvc
+            .perform(
+                post("/internal/program-session-applications/$id/cancellation").header("X-Internal-Token", "test-token"),
+            ).andExpect(status().isNoContent)
+    }
+
+    private fun reconcile(type: ProgramSessionType = ProgramSessionType.STANDARD) {
+        mvc
+            .perform(
+                post("/internal/expos/$EXPO/program-sessions/$type/1/reconciliation").header("X-Internal-Token", "test-token"),
+            ).andExpect(status().isNoContent)
+    }
+
+    private fun change(
+        type: ProgramSessionType = ProgramSessionType.STANDARD,
+        update: (tools.jackson.databind.node.ObjectNode) -> Unit,
+    ) {
+        val previous = mapper.readTree(definition("1", type.name))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", revision + 1)
+        update(next.path("policy").asObject())
+        mvc
+            .perform(
+                put(
+                    "/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}",
+                ).header(
+                    "X-Internal-Token",
+                    "test-token",
+                ).contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
+        revision++
+        closed = next.path("policy").path("closed").asBoolean()
+        capacity = next.path("policy").path("capacity").asInt()
+        waitingCapacity = next.path("policy").path("waitingCapacity").asInt()
+        promotionEnd = Instant.parse(next.path("policy").path("promotionEndedAt").stringValue())
+    }
+
     private fun command(
         program: Long = 1,
         participant: Long = 1,
@@ -517,6 +1272,10 @@ class ProgramSessionApplicationTests {
 
     @TestConfiguration
     class Forms {
+        @Bean
+        @Primary
+        fun testClock(): Clock = testClock
+
         @Bean
         fun programForms(mapper: ObjectMapper): ProgramFormProvider =
             object : ProgramFormProvider {
@@ -552,6 +1311,34 @@ class ProgramSessionApplicationTests {
         private val linkCalls = AtomicInteger()
         private val batchCalls = AtomicInteger()
         private val lockChecks = AtomicInteger()
+        private val testClock =
+            object : Clock() {
+                @Volatile var current: Instant = Instant.parse("2026-10-11T10:00:00Z")
+
+                override fun instant(): Instant = current
+
+                override fun getZone(): ZoneId = ZoneOffset.UTC
+
+                override fun withZone(zone: ZoneId): Clock = Clock.fixed(current, zone)
+            }
+
+        @Volatile private var capacity = 1
+
+        @Volatile private var waitingCapacity = 0
+
+        @Volatile private var revision = 1L
+
+        @Volatile private var applicationEnd = Instant.parse("2100-01-01T00:00:00Z")
+
+        @Volatile private var promotionEnd = applicationEnd
+
+        @Volatile private var cancelEnd = applicationEnd
+
+        @Volatile private var linkFailure = false
+
+        @Volatile private var title = "Session"
+
+        @Volatile private var unavailableLookup: Long? = null
 
         @Volatile private var checkTraineeLock = false
 
@@ -604,14 +1391,21 @@ class ProgramSessionApplicationTests {
                                     status = 404
                                     "{}"
                                 } else {
-                                    val id = if (body.contains("[2]")) 2 else 1
+                                    val id =
+                                        ObjectMapper()
+                                            .readTree(body)
+                                            .path("participantIds")
+                                            .get(0)
+                                            .asLong()
                                     """[{"participantId":$id,"name":"Person","occupation":${occupationResponse ?: "\"$occupation\""},"representative":true}]"""
                                 }
                             }
 
                             path.endsWith("resolve-or-create-by-participant") -> {
                                 linkCalls.incrementAndGet()
-                                """{"traineeId":501,"created":true}"""
+                                if (linkFailure) status = 503
+                                val id = ObjectMapper().readTree(body).path("participantId").asLong() + 500
+                                """{"traineeId":$id,"created":true}"""
                             }
 
                             path.contains("standard-programs/") -> {
@@ -652,6 +1446,7 @@ class ProgramSessionApplicationTests {
                                 }
                                 val array = ObjectMapper().readTree(body).path("programIds")
                                 val ids = (0 until array.size()).map { array.get(it).asLong() }
+                                if (unavailableLookup != null && unavailableLookup in ids) status = 503
                                 when {
                                     status == 503 -> {
                                         "{}"
@@ -691,7 +1486,7 @@ class ProgramSessionApplicationTests {
             type: String,
         ): String {
             val response =
-                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"Session","groupId":"$GROUP","revision":1,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":["TEACHER"],"capacity":1,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021" else "2100"}-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":$closed}}"""
+                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"$GROUP","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":["TEACHER"],"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed}}"""
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
                 val json = ObjectMapper().readTree(response).asObject()
                 json.putNull("policy")
@@ -706,6 +1501,7 @@ class ProgramSessionApplicationTests {
         @DynamicPropertySource @JvmStatic
         fun properties(registry: DynamicPropertyRegistry) {
             registry.add("application.program-sessions.enabled") { true }
+            registry.add("application.program-sessions.reconcile-delay") { 3600000 }
             registry.add("application.registration.expo-internal-token") { "test-token" }
             registry.add("application.registration.user-internal-token") { "test-token" }
             registry.add("application.registration.expo-url") { "http://127.0.0.1:${server.address.port}" }

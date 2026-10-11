@@ -8,6 +8,7 @@ import team.startup.application.domain.application.presentation.dto.ApplyTrainin
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.presentation.dto.TrainingOperationType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 
@@ -17,6 +18,8 @@ class ReplaceTrainingProgramsServiceImpl(
     private val journal: TrainingOperationJournal,
     private val gateway: RegistrationGateway,
     private val ledger: ProgramSessionApplicationRepository,
+    private val waitlist: ProgramWaitlist,
+    private val repository: ProgramWaitlistRepository,
 ) : ReplaceTrainingProgramsService {
     @Transactional
     override fun execute(command: ApplyTrainingProgramsCommand) {
@@ -28,16 +31,28 @@ class ReplaceTrainingProgramsServiceImpl(
 
         val previousIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }.toSet()
         val definitions = gateway.programDefinitions(command.trainee.expoId, ProgramSessionType.TRAINING, programIds)
+        val previousDefinitions =
+            gateway.programDefinitions(
+                command.trainee.expoId,
+                ProgramSessionType.TRAINING,
+                previousIds.toList(),
+                existing = true,
+            )
         if (definitions.any { it.policy != null && it.id !in previousIds }) {
             throw ProgramApplicationConflictException("정책이 설정된 프로그램은 참가자와 폼 답변을 포함하는 신청이 필요합니다.")
         }
         applications.lockTrainee(command.trainee.id)
         val oldIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }
-        if (definitions.isNotEmpty() && oldIds.toSet() != previousIds) {
+        if ((definitions.isNotEmpty() || previousDefinitions.isNotEmpty()) && oldIds.toSet() != previousIds) {
             throw ProgramApplicationConflictException("연수 신청이 변경되었습니다. 재시도해 주세요.")
         }
-        ledger.lockGroups(definitions)
+        ledger.lockGroups(definitions + previousDefinitions)
         (oldIds + programIds).distinct().sorted().forEach(applications::lockTrainingProgram)
+        (definitions + previousDefinitions).distinctBy { it.id }.forEach(repository::observe)
+        val now = waitlist.now()
+        if (previousDefinitions.any { it.id !in programIds && it.policy?.let { policy -> !now.isBefore(policy.cancelEndedAt) } == true }) {
+            throw ProgramApplicationConflictException("프로그램 취소 기간이 끝났습니다.")
+        }
         ledger.ensureLegacyGroups(definitions, emptyList(), command.trainee.id, replacing = true)
         val version = journal.lockVersion(command)
         val existing = applications.findAllByTraineeId(command.trainee.id)
@@ -58,5 +73,6 @@ class ReplaceTrainingProgramsServiceImpl(
             },
         )
         journal.complete(command, TrainingOperationType.REPLACE, version, retainedIds != programIds.toSet(), programIds)
+        previousDefinitions.filter { it.id !in programIds }.sortedBy { it.id }.forEach { waitlist.promote(it, now) }
     }
 }
