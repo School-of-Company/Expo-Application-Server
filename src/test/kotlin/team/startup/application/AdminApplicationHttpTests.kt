@@ -224,6 +224,23 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `삭제된 User 참가자 한 명도 관리자 전체 목록을 실패시키며 원장 답변과 이력은 보존한다`() {
+        val before = read("?sort=CREATED_ASC")
+        assertEquals(200, before.status)
+        participantIds = participantIds.filterNot { it == 2L }
+        val missing = admin("?sort=CREATED_ASC")
+        assertEquals(502, missing.status)
+        assertTrue(userRequests.none { it.startsWith("batch:") })
+        val after = read("?sort=CREATED_ASC")
+        assertEquals(200, after.status)
+        assertEquals(mapper.readTree(before.contentAsString), mapper.readTree(after.contentAsString))
+        val saved = mapper.readTree(after.contentAsString)["items"][0]
+        assertEquals("saved", saved["answers"]["1"].asString())
+        assertEquals("CONFIRMED", saved["history"][0]["status"].asString())
+        assertTrue(saved["participant"].isNull)
+    }
+
+    @Test
     fun `현재 회차는 빈 접수에도 조회하며 버전 변경과 타 행사 선택을 구분한다`() {
         val response = admin("/current-sessions")
         assertEquals(200, response.status)

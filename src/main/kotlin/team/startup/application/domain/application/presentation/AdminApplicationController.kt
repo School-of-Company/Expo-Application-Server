@@ -18,10 +18,11 @@ import team.startup.application.domain.application.presentation.dto.AdminApplica
 import team.startup.application.domain.application.presentation.dto.AdminApplicationSummary
 import team.startup.application.domain.application.presentation.dto.AdminCurrentSessionPage
 import team.startup.application.domain.application.presentation.dto.AdminCurrentSessionQuery
+import team.startup.application.domain.application.presentation.dto.AuthorizeAdminApplicationCommand
+import team.startup.application.domain.application.service.AuthorizeAdminApplicationService
 import team.startup.application.domain.application.service.GetAdminApplicationSummaryService
 import team.startup.application.domain.application.service.GetAdminApplicationsService
 import team.startup.application.domain.application.service.GetAdminCurrentSessionsService
-import team.startup.application.domain.application.service.impl.AdminExpoGateway
 import java.util.UUID
 
 @RestController
@@ -30,14 +31,15 @@ class AdminApplicationController(
     private val service: GetAdminApplicationsService,
     private val summaryService: GetAdminApplicationSummaryService,
     private val currentSessions: GetAdminCurrentSessionsService,
-    private val expo: AdminExpoGateway,
+    private val authorization: AuthorizeAdminApplicationService,
 ) {
     @Operation(
         summary = "내부 프로그램 회차 접수 원장 조회",
         description =
             "내부 경로는 내부 토큰, 관리자 경로는 원본 Bearer JWT의 Expo 현재 APPLICATION_READ 검증이 필요합니다. " +
                 "search는 제출 당시 제목, q는 User 이름/번호, occupation은 원본 직업 코드입니다. from 포함/until 제외. " +
-                "동일 필터의 목록/전체 건수/상태 집계 및 applicationId 상세/이력을 반환합니다. participant.information은 User 현재 등록 답변입니다.",
+                "동일 필터의 목록/전체 건수/상태 집계 및 applicationId 상세/이력을 반환합니다. participant.information은 User 현재 등록 답변입니다. " +
+                "관리자 목록은 User 참가자가 하나라도 누락되면 전체 502로 실패하며 원장 스냅샷은 보존합니다. participant=null 성공으로 대체하지 않습니다.",
     )
     @GetMapping
     fun list(
@@ -91,7 +93,7 @@ class AdminApplicationController(
         request: HttpServletRequest,
     ) {
         if (isAdminRequest(request)) {
-            expo.requireAccess(expoId, request.getHeader("Authorization"))
+            authorization.execute(AuthorizeAdminApplicationCommand(expoId, request.getHeader("Authorization")))
         }
     }
 

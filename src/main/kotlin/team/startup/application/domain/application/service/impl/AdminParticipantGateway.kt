@@ -1,9 +1,11 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.AdminOccupation
 import team.startup.application.domain.application.presentation.dto.AdminParticipantDetail
 import tools.jackson.databind.JsonNode
@@ -57,7 +59,9 @@ class AdminParticipantGateway(
             if (page.nextCursor == null || page.items.last().participantId >= nextWanted) break
             cursor = nextWanted - 1
         } while (true)
-        http.valid { require(results.keys == wanted) }
+        if (results.keys != wanted) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "참가자 원천에 누락된 ID가 있어 관리자 목록 전체를 반환할 수 없습니다.")
+        }
         confirm(expoId, wanted.sorted())
         return results
     }

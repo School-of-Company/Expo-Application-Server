@@ -94,6 +94,11 @@ data class AdminExpoAccess(
     val scope: String,
 )
 
+data class AuthorizeAdminApplicationCommand(
+    val expoId: UUID,
+    val authorization: String?,
+)
+
 data class AdminCurrentSessionQuery(
     val programType: ProgramSessionType? = null,
     @field:Positive val programId: Long? = null,
