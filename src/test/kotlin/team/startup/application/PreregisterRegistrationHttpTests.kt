@@ -126,6 +126,55 @@ class PreregisterRegistrationHttpTests {
     private fun count(table: String): Int = jdbc.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
 
     @Test
+    fun `added companion SMS IDs do not replace the full party ledger and recovery snapshot`() {
+        responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[44],"groupParticipantIds":[42,43,44]}""")
+        assertEquals(201, submit(people = 3))
+        assertEquals(3, count("tb_preregister_application"))
+        assertEquals(3, count("tb_preregister_count_outbox"))
+        assertEquals(3, count("tb_session_attendance_outbox"))
+        assertEquals(2, capacity().get("remaining").intValue())
+        val saved = reservations.find(EXPO, "request", "")!!
+        assertEquals(listOf(44L), saved.result!!.participantIds)
+        assertEquals(listOf(42L, 43L, 44L), saved.result.groupParticipantIds)
+        assertEquals("COMPLETED", saved.state)
+        assertEquals(null, saved.errorStatus)
+        val status =
+            mvc
+                .perform(get("/internal/expos/$EXPO/preregister-reservations/request").header("X-Internal-Token", "test-token"))
+                .andReturn()
+                .response
+        assertEquals(200, status.status)
+        assertEquals(
+            listOf(42L, 43L, 44L),
+            mapper
+                .readTree(status.contentAsString)
+                .get("participantIds")
+                .toList()
+                .map { it.asLong() },
+        )
+        assertEquals(201, submit(people = 3))
+        assertEquals(1, userRequests.size)
+        recovery.recover()
+        assertEquals(listOf(42L, 43L, 44L), counts.sorted())
+        attendance.dispatch()
+        assertEquals(listOf("PUT:42", "PUT:43", "PUT:44"), attendanceRequests.toList())
+    }
+
+    @Test
+    fun `invalid full party IDs retain reserved seats without count or Attendance delivery`() {
+        capacity.set(8)
+        for ((index, group) in listOf("[]", "[43,42]", "[42,42]", "[42,0]", "[42,45]", "[\"42\"]", "null", "[1.5]").withIndex()) {
+            responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[43],"groupParticipantIds":$group}""")
+            assertEquals(502, submit("group-$index", phone = "0100000000$index"))
+        }
+        assertEquals(0, capacity().get("remaining").intValue())
+        assertTrue(reservations.due().isEmpty())
+        assertEquals(0, count("tb_preregister_application"))
+        assertEquals(0, count("tb_preregister_count_outbox"))
+        assertEquals(0, count("tb_session_attendance_outbox"))
+    }
+
+    @Test
     fun `PRE accepts before the event within the form period while FIELD still rejects`() {
         expoDayOffset.set(10)
         assertEquals(201, submit())
@@ -462,6 +511,7 @@ class PreregisterRegistrationHttpTests {
     @Test
     fun `lost User response keeps seats and recovers original snapshot and requestId without Expo or Form`() {
         capacity.set(2)
+        responseBody.set("""{"participantId":42,"phoneNumber":"01012345678","participantIds":[43],"groupParticipantIds":[42,43]}""")
         userStatus.set(0)
         assertEquals(503, submit(people = 2))
         assertEquals(0, capacity().get("remaining").intValue())
@@ -477,6 +527,8 @@ class PreregisterRegistrationHttpTests {
         assertEquals(1, stored.size)
         assertEquals(2, count("tb_preregister_application"))
         assertEquals(2, count("tb_session_attendance_outbox"))
+        assertEquals(listOf(43L), reservations.find(EXPO, "request", "")!!.result!!.participantIds)
+        assertEquals(listOf(42L, 43L), reservations.find(EXPO, "request", "")!!.result!!.groupParticipantIds)
         val requests = userRequests.size
         assertEquals(201, submit(people = 2))
         assertEquals(requests, userRequests.size)
@@ -758,7 +810,10 @@ class PreregisterRegistrationHttpTests {
                                 val ids = (42L until 42L + count).joinToString(",")
                                 val response =
                                     responseBody.get()
-                                        ?: """{"participantId":42,"phoneNumber":"01012345678","created":true,"participantIds":[$ids]}"""
+                                        ?: (
+                                            """{"participantId":42,"phoneNumber":"01012345678","participantIds":[$ids],""" +
+                                                """"groupParticipantIds":[$ids]}"""
+                                        )
                                 if (userStatus.get() == 0 ||
                                     userStatus.get() in 200..299
                                 ) {

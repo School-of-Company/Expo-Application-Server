@@ -99,7 +99,7 @@ class RegistrationIntegrationContractTests {
             org.mockito.Mockito
                 .doAnswer { invocation ->
                     val registration = invocation.getArgument<ParticipantRegistration>(1)
-                    gateway.participant("STANDARD", registration).participantIds.forEach { gateway.countStandard(expoId, it) }
+                    gateway.participant("STANDARD", registration).groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
                     null
                 }.`when`(preregistration)
                 .register(
@@ -238,7 +238,7 @@ class RegistrationIntegrationContractTests {
                 .andExpect(content().string(""))
             assertEquals((42L..46L).toList(), counts.takeLast(5).map { it.substringAfterLast('/').toLong() })
 
-            standardResponse = """{"participantId":42,"phoneNumber":"01012345678","participantIds":[43,44]}"""
+            standardResponse = """{"participantId":42,"phoneNumber":"01012345678","participantIds":[44],"groupParticipantIds":[42,43,44]}"""
             mvc
                 .perform(
                     post("/application/field/standard/$expoId")
@@ -246,7 +246,7 @@ class RegistrationIntegrationContractTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body),
                 ).andExpect(status().isCreated)
-            assertEquals(listOf(43L, 44L), counts.takeLast(2).map { it.substringAfterLast('/').toLong() })
+            assertEquals(listOf(42L, 43L, 44L), counts.takeLast(3).map { it.substringAfterLast('/').toLong() })
 
             val countBeforeInvalidResponse = counts.size
             for (invalid in listOf(
