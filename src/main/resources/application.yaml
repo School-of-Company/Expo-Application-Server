@@ -11,6 +11,8 @@ spring:
 
 application:
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  owner:
+    session-cookie-name: ${PARTICIPANT_SESSION_COOKIE_NAME:PARTICIPANT_SESSION}
   program-sessions:
     enabled: ${APPLICATION_PROGRAM_SESSIONS_ENABLED:false}
   attendance:
