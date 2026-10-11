@@ -98,6 +98,9 @@ class RegistrationGateway(
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
+    fun programForm(formId: UUID): JsonNode =
+        decode(call(formUrl, "/internal/forms/by-id/$formId", token = formInternalToken).body(), JsonNode::class.java)
+
     fun programDefinition(
         expoId: String,
         type: ProgramSessionType,
@@ -428,7 +431,16 @@ class RegistrationGateway(
 
             401 -> {
                 if (participantSession) {
-                    throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요하거나 만료되었습니다.")
+                    val code =
+                        try {
+                            mapper.readTree(response.body()).path("code").stringValue()
+                        } catch (_: Exception) {
+                            null
+                        }
+                    throw ResponseStatusException(
+                        HttpStatus.UNAUTHORIZED,
+                        if (code == "SESSION_EXPIRED") code else "SESSION_REQUIRED",
+                    )
                 } else {
                     throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "공급자 내부 인증에 실패했습니다.")
                 }

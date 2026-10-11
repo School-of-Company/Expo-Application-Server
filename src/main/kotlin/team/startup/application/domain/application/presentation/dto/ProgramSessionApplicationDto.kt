@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation.dto
 
 import jakarta.validation.Valid
+import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
 import java.time.Instant
@@ -36,7 +37,14 @@ data class ProgramSessionDefinition(
     val category: String? = null,
 )
 
-// This command is service-only until the public route and cookie/CSRF contract are agreed.
+data class ApplyProgramSessionRequest(
+    @field:Positive
+    val participantId: Long,
+    @field:Positive
+    val formVersion: Long,
+    val answers: JsonNode,
+)
+
 data class ApplyProgramSessionCommand(
     val expoId: String,
     val programType: ProgramSessionType,
