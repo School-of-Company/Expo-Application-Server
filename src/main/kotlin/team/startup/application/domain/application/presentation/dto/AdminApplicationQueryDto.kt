@@ -63,3 +63,22 @@ data class AdminApplicationPage(
     val page: Int,
     val size: Int,
 )
+
+data class AdminApplicationSummary(
+    val totalElements: Long,
+    val uniqueParticipants: Long,
+    val statusCounts: Map<AdminApplicationStatus, Long>,
+    val totalSessions: Long,
+    val sessions: List<AdminApplicationSessionSummary>,
+    val page: Int,
+    val size: Int,
+)
+
+data class AdminApplicationSessionSummary(
+    val programType: ProgramSessionType,
+    val programId: Long,
+    val groupId: UUID,
+    val totalElements: Long,
+    val uniqueParticipants: Long,
+    val statusCounts: Map<AdminApplicationStatus, Long>,
+)
