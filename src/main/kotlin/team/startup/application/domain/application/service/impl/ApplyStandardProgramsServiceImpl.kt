@@ -7,6 +7,7 @@ import team.startup.application.domain.application.exception.ProgramApplicationC
 import team.startup.application.domain.application.presentation.dto.ApplyStandardProgramsCommand
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyStandardProgramsService
 
@@ -15,6 +16,7 @@ class ApplyStandardProgramsServiceImpl(
     private val applications: StandardProgramApplicationRepository,
     private val gateway: RegistrationGateway,
     private val ledger: ProgramSessionApplicationRepository,
+    private val repository: ProgramWaitlistRepository,
 ) : ApplyStandardProgramsService {
     @Transactional
     override fun execute(command: ApplyStandardProgramsCommand) {
@@ -53,6 +55,7 @@ class ApplyStandardProgramsServiceImpl(
         }
         ledger.lockGroups(definitions + existingDefinitions)
         programIds.sorted().forEach(applications::lockProgram)
+        definitions.forEach(repository::observe)
         ledger.ensureLegacyGroups(definitions, existingDefinitions, command.participant.id)
         command.programs.forEach { program ->
             if (applications.isDeleted(program.id)) {

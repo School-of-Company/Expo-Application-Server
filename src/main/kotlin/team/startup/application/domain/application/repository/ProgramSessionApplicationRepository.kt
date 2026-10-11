@@ -141,7 +141,7 @@ class ProgramSessionApplicationRepository(
             "INSERT INTO tb_program_session_application " +
                 "(id, expo_id, program_type, program_id, group_id, participant_id, trainee_id, status, " +
                 "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
             receipt.applicationId,
             UUID.fromString(command.expoId),
             command.programType.name,
@@ -149,13 +149,14 @@ class ProgramSessionApplicationRepository(
             definition.groupId,
             command.participantId,
             receipt.traineeId,
+            receipt.status,
             mapper.writeValueAsString(definition),
             form.id,
             form.version,
             mapper.writeValueAsString(form.questions),
             mapper.writeValueAsString(command.answers),
         )
-        jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, 'CONFIRMED')", receipt.applicationId)
+        jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, ?)", receipt.applicationId, receipt.status)
         jdbc.update(
             "INSERT INTO tb_program_session_receipt (expo_id, participant_id, idempotency_key, command, receipt, application_id) " +
                 "VALUES (?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?)",
@@ -172,6 +173,12 @@ class ProgramSessionApplicationRepository(
         type: ProgramSessionType,
         programId: Long,
     ) {
+        jdbc.update(
+            "INSERT INTO tb_program_session_event (application_id, status) " +
+                "SELECT id, 'CANCELLED' FROM tb_program_session_application WHERE program_type = ? AND program_id = ? AND status <> 'CANCELLED' ON CONFLICT DO NOTHING",
+            type.name,
+            programId,
+        )
         jdbc.update(
             "INSERT INTO tb_program_session_history (application_id, status) " +
                 "SELECT id, 'CANCELLED' FROM tb_program_session_application WHERE program_type = ? AND program_id = ? AND status <> 'CANCELLED'",
@@ -196,6 +203,13 @@ class ProgramSessionApplicationRepository(
                 traineeId,
             ).filter { it !in retainedIds }
             .forEach { programId ->
+                jdbc.update(
+                    "INSERT INTO tb_program_session_event (application_id, status) " +
+                        "SELECT id, 'CANCELLED' FROM tb_program_session_application " +
+                        "WHERE program_type = 'TRAINING' AND trainee_id = ? AND program_id = ? AND status = 'CONFIRMED' ON CONFLICT DO NOTHING",
+                    traineeId,
+                    programId,
+                )
                 jdbc.update(
                     "INSERT INTO tb_program_session_history (application_id, status) " +
                         "SELECT id, 'CANCELLED' FROM tb_program_session_application " +

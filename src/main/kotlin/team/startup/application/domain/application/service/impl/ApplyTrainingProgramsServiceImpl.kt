@@ -8,6 +8,7 @@ import team.startup.application.domain.application.presentation.dto.ApplyTrainin
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.presentation.dto.TrainingOperationType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyTrainingProgramsService
 
@@ -17,6 +18,7 @@ class ApplyTrainingProgramsServiceImpl(
     private val journal: TrainingOperationJournal,
     private val gateway: RegistrationGateway,
     private val ledger: ProgramSessionApplicationRepository,
+    private val repository: ProgramWaitlistRepository,
 ) : ApplyTrainingProgramsService {
     @Transactional
     override fun execute(command: ApplyTrainingProgramsCommand) {
@@ -56,6 +58,7 @@ class ApplyTrainingProgramsServiceImpl(
         }
         ledger.lockGroups(definitions + existingDefinitions)
         programIds.sorted().forEach(applications::lockTrainingProgram)
+        definitions.forEach(repository::observe)
         ledger.ensureLegacyGroups(definitions, existingDefinitions, command.trainee.id)
         val version = journal.lockVersion(command)
         command.programs.forEach { program ->
