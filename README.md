@@ -66,7 +66,8 @@ Application 구현 완료와 공개 접수 활성화는 별도로 판정합니�
    운영자가 해당 이력을 먼저 해소해야 하며 자동으로 삭제하거나 확정하지 않습니다.
 5. `APPLICATION_REGISTRATION_EXPO_URL`, `APPLICATION_REGISTRATION_FORM_URL`,
    `APPLICATION_REGISTRATION_USER_URL`과 서비스별 `APPLICATION_REGISTRATION_*_INTERNAL_TOKEN`을
-   수신 서비스 토큰에 맞춥니다. 기본 토큰은 `APPLICATION_INTERNAL_TOKEN`입니다.
+   수신 서비스 토큰에 맞춥니다. `APPLICATION_INTERNAL_TOKEN`은 Application 자신의 수신 검증에만
+   쓰이며 송신 토큰으로 대체되지 않습니다. 등록을 켜면 Expo/Form/User 토큰이 없을 때 기동이 실패합니다.
    `APPLICATION_ATTENDANCE_URL`, `APPLICATION_ATTENDANCE_INTERNAL_TOKEN`을 설정하고
    `APPLICATION_ATTENDANCE_ENABLED=true`로 켜야 일반 사전등록이 가능합니다.
 6. Gateway/Config의 등록·잔여석 경로, 참가자 쿠키 전달과 브라우저 요청 보호를 확인한 뒤

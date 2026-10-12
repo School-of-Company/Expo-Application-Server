@@ -64,8 +64,9 @@ class ProgramFormAdapterTests {
                     "",
                     "http://127.0.0.1:${server.address.port}",
                     "",
-                    "app-token",
-                    formInternalToken = "form-token",
+                    "expo-token",
+                    "form-token",
+                    "user-token",
                 ),
             )
     }
@@ -75,7 +76,7 @@ class ProgramFormAdapterTests {
 
     @Test
     fun `production adapter is registered only when no explicit provider exists`() {
-        val gateway = RegistrationGateway(mapper, "", "", "", "token")
+        val gateway = RegistrationGateway(mapper, "", "", "", "expo-token", "form-token", "user-token")
         val runner =
             ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(ProgramFormAdapterConfig::class.java))

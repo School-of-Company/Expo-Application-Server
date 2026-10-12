@@ -30,7 +30,8 @@ class ManagedParticipantContractTests {
         }
         server.start()
         try {
-            val gateway = RegistrationGateway(mapper, "", "", "http://127.0.0.1:${server.address.port}", "token")
+            val gateway =
+                RegistrationGateway(mapper, "", "", "http://127.0.0.1:${server.address.port}", "expo-token", "form-token", "user-token")
             assertEquals(501L, gateway.resolveTrainee("expo", 1))
             assertEquals(501L, gateway.resolveTrainee("expo", 1, "academy-1"))
             assertEquals(501L, gateway.resolveTrainee("expo", 1, "academy-1"))
@@ -65,7 +66,9 @@ class ManagedParticipantContractTests {
                     "",
                     "",
                     "",
-                    "application-token",
+                    "expo-token",
+                    "form-token",
+                    "user-token",
                     attendanceUrl = "http://127.0.0.1:${server.address.port}",
                     attendanceToken = "attendance-token",
                 )
