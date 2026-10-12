@@ -113,4 +113,5 @@ data class ProgramSessionKey(
 
 data class CancelProgramSessionCommand(
     val applicationId: UUID,
+    val actorId: Long? = null,
 )

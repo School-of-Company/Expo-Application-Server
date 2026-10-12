@@ -10,9 +10,19 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 
-@RestControllerAdvice(assignableTypes = [AdminGroupMessageController::class])
+@RestControllerAdvice(
+    assignableTypes = [
+        AdminGroupMessageController::class,
+        AdminSourceHistoryController::class,
+        AdminApplicationCancellationController::class,
+    ],
+)
 class AdminGroupMessageExceptionHandler {
+    @ExceptionHandler(ProgramApplicationConflictException::class)
+    fun conflict(): ResponseEntity<ProblemDetail> = error(409, "Application cancellation conflicts with the current program policy")
+
     @ExceptionHandler(ResponseStatusException::class)
     fun expected(exception: ResponseStatusException): ResponseEntity<ProblemDetail> =
         error(exception.statusCode.value(), exception.reason ?: "Admin group message request failed")

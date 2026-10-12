@@ -24,6 +24,14 @@ class AttendanceCancellationAdapter(
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
+    fun acquireAdmin(
+        expoId: UUID,
+        participantId: Long,
+        operationId: UUID,
+    ) {
+        send(expoId, participantId, operationId, "PUT", admin = true)
+    }
+
     fun acquire(
         expoId: UUID,
         participantId: Long,
@@ -56,12 +64,14 @@ class AttendanceCancellationAdapter(
         operationId: UUID,
         method: String,
         body: String? = null,
+        admin: Boolean = false,
     ) {
         require(participantId > 0)
         if (baseUrl.isBlank() || token.isBlank()) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "취소 보호 연동이 설정되지 않았습니다.")
         }
-        val path = "/internal/expos/$expoId/participants/$participantId/cancellation-guard/$operationId"
+        val guard = if (admin) "admin-cancellation-guard" else "cancellation-guard"
+        val path = "/internal/expos/$expoId/participants/$participantId/$guard/$operationId"
         val response =
             try {
                 val request =
