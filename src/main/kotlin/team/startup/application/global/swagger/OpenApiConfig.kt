@@ -29,6 +29,16 @@ class OpenApiConfig(
     fun applicationOpenApiCustomizer(): OpenApiCustomizer =
         OpenApiCustomizer { api ->
             val components = api.components ?: Components().also { api.components = it }
+            components.addSecuritySchemes(
+                "bearerAuth",
+                SecurityScheme().type(SecurityScheme.Type.HTTP).scheme("bearer").bearerFormat("JWT"),
+            )
+            api.paths
+                ?.filterKeys { it.startsWith("/application/") }
+                ?.values
+                ?.forEach { path ->
+                    path.readOperations().forEach { it.addSecurityItem(SecurityRequirement().addList("bearerAuth")) }
+                }
             if (includeInternal) {
                 components.addSecuritySchemes(
                     "internalToken",
