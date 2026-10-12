@@ -3,6 +3,8 @@ package team.startup.application.domain.application.repository
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
+import team.startup.application.domain.application.presentation.dto.AdminPreregisterSessionSummary
+import team.startup.application.domain.application.presentation.dto.AdminPreregisterSummary
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
@@ -15,6 +17,57 @@ class PreregisterSessionRepository(
     private val mapper: ObjectMapper,
 ) {
     private val namedJdbc = NamedParameterJdbcTemplate(jdbc)
+
+    fun adminSummary(expoId: UUID): AdminPreregisterSummary {
+        val totals =
+            jdbc.queryForMap(
+                "SELECT count(DISTINCT participant_id) FILTER (WHERE status = 'CONFIRMED') AS confirmed, " +
+                    "count(DISTINCT participant_id) FILTER (WHERE status = 'CANCELLED') AS cancelled " +
+                    "FROM tb_preregister_application WHERE expo_id = ?",
+                expoId,
+            )
+        val reservations =
+            jdbc.queryForMap(
+                "SELECT count(*) AS requests, coalesce(sum(applicants), 0) AS applicants " +
+                    "FROM tb_preregister_reservation WHERE expo_id = ? AND state = 'RESERVED'",
+                expoId,
+            )
+        val sessions =
+            jdbc.query(
+                "WITH sessions AS (SELECT session_id FROM tb_preregister_session_state WHERE expo_id = ? " +
+                    "UNION SELECT session_id FROM tb_preregister_application WHERE expo_id = ? " +
+                    "UNION SELECT session_id FROM tb_preregister_reservation WHERE expo_id = ?) " +
+                    "SELECT s.session_id, " +
+                    "(SELECT count(DISTINCT participant_id) FROM tb_preregister_application a " +
+                    " WHERE a.expo_id = ? AND a.session_id = s.session_id AND a.status = 'CONFIRMED') AS confirmed, " +
+                    "(SELECT count(DISTINCT participant_id) FROM tb_preregister_application a " +
+                    " WHERE a.expo_id = ? AND a.session_id = s.session_id AND a.status = 'CANCELLED') AS cancelled, " +
+                    "(SELECT count(*) FROM tb_preregister_reservation r " +
+                    " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'RESERVED') AS requests, " +
+                    "(SELECT coalesce(sum(applicants), 0) FROM tb_preregister_reservation r " +
+                    " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'RESERVED') AS applicants " +
+                    "FROM sessions s ORDER BY s.session_id",
+                { rs, _ ->
+                    AdminPreregisterSessionSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), 0, rs.getLong(4), rs.getLong(5))
+                },
+                expoId,
+                expoId,
+                expoId,
+                expoId,
+                expoId,
+                expoId,
+                expoId,
+            )
+        return AdminPreregisterSummary(
+            expoId,
+            (totals["confirmed"] as Number).toLong(),
+            (totals["cancelled"] as Number).toLong(),
+            0,
+            (reservations["requests"] as Number).toLong(),
+            (reservations["applicants"] as Number).toLong(),
+            sessions,
+        )
+    }
 
     fun lock(expoId: UUID) {
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
