@@ -126,6 +126,132 @@ class AdminApplicationHttpTests {
         .response
 
     @Test
+    fun `관리자 행사 처리 이력은 신청 취소 승급을 구분하고 행사 범위와 페이지를 지킨다`() {
+        jdbc.update("UPDATE tb_program_session_history SET created_at = '2026-10-11T00:00:00Z' WHERE application_id = ?", first)
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, created_at) VALUES (?, 'WAITING', '2026-10-11T00:01:00Z')",
+            second,
+        )
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, created_at) VALUES (?, 'CONFIRMED', '2026-10-11T00:02:00Z')",
+            second,
+        )
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, created_at) VALUES (?, 'CANCELLED', '2026-10-11T00:03:00Z')",
+            second,
+        )
+        val path = "/application/admin/expos/$expoId/program-session-applications/activities"
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(
+            403,
+            mvc
+                .perform(get(path).header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 200
+        val response = mvc.perform(get("$path?size=2").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(4, body["totalElements"].asInt())
+        assertEquals("CANCELLED", body["items"][0]["action"].asString())
+        assertEquals("PROMOTED", body["items"][1]["action"].asString())
+        assertTrue(body["items"][0]["actorId"].isNull)
+        val applied =
+            mapper.readTree(
+                mvc
+                    .perform(
+                        get("$path?action=APPLIED&page=0&size=10").header("Authorization", "Bearer original-admin-jwt"),
+                    ).andReturn()
+                    .response.contentAsString,
+            )
+        assertEquals(2, applied["totalElements"].asInt())
+        assertEquals(
+            0,
+            mapper
+                .readTree(
+                    mvc
+                        .perform(
+                            get("$path?applicationId=${UUID.randomUUID()}").header("Authorization", "Bearer original-admin-jwt"),
+                        ).andReturn()
+                        .response.contentAsString,
+                )["totalElements"]
+                .asInt(),
+        )
+        assertEquals(
+            400,
+            mvc
+                .perform(get("$path?size=101").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+    }
+
+    @Test
+    fun `관리자 사전등록 집계는 고유 참가자와 예약 인원을 분리한다`() {
+        jdbc.execute(
+            "TRUNCATE tb_preregister_transition, tb_preregister_application, tb_preregister_reservation, tb_preregister_session_state CASCADE",
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}'), (?, 2, '{}')",
+            expoId,
+            expoId,
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 10, 10, 'CONFIRMED'), (?, 1, 10, 11, 'CONFIRMED'), (?, 2, 10, 10, 'CANCELLED')",
+            expoId,
+            expoId,
+            expoId,
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants, state) " +
+                "VALUES (?, 'pending', 2, '{}', '{}', 3, 'RESERVED'), (?, 'done', 1, '{}', '{}', 2, 'COMPLETED')",
+            expoId,
+            expoId,
+        )
+        val path = "/application/admin/expos/$expoId/preregistrations/summary"
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(
+            403,
+            mvc
+                .perform(get(path).header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 200
+        val response = mvc.perform(get(path).header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(2, body["confirmedUniqueParticipants"].asInt())
+        assertEquals(1, body["cancelledUniqueParticipants"].asInt())
+        assertEquals(0, body["waitingParticipants"].asInt())
+        assertEquals(1, body["pendingReservations"].asInt())
+        assertEquals(3, body["pendingApplicants"].asInt())
+        assertEquals(2, body["sessions"].size())
+        assertEquals(2, body["sessions"][0]["confirmedParticipants"].asInt())
+        assertEquals(0, body["sessions"][1]["confirmedParticipants"].asInt())
+        assertEquals(1, body["sessions"][1]["cancelledParticipants"].asInt())
+        assertEquals(3, body["sessions"][1]["pendingApplicants"].asInt())
+    }
+
+    @Test
     fun `관리자 원본 JWT와 현재 권한은 모든 개인정보 원천 조회 전에 검증한다`() {
         for (suffix in listOf("", "/summary", "/current-sessions")) {
             assertEquals(401, admin(suffix, null).status)

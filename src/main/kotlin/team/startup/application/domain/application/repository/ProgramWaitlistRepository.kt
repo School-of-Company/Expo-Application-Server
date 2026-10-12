@@ -190,6 +190,7 @@ class ProgramWaitlistRepository(
         id: UUID,
         status: String,
         traineeId: Long? = null,
+        actorId: Long? = null,
     ) {
         jdbc.update(
             "UPDATE tb_program_session_application SET status = ?, trainee_id = COALESCE(?, trainee_id) WHERE id = ?",
@@ -197,7 +198,7 @@ class ProgramWaitlistRepository(
             traineeId,
             id,
         )
-        jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, ?)", id, status)
+        jdbc.update("INSERT INTO tb_program_session_history (application_id, status, actor_id) VALUES (?, ?, ?)", id, status, actorId)
         event(id, status)
     }
 

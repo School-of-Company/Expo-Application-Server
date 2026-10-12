@@ -60,7 +60,7 @@ class CancelProgramSessionServiceImpl(
                 operations.incrementVersion(traineeId)
             }
         }
-        repository.transition(entry.id, "CANCELLED")
+        repository.transition(entry.id, "CANCELLED", actorId = command.actorId)
         waitlist.promote(definition, now)
     }
 }

@@ -10,14 +10,18 @@ import team.startup.application.domain.application.presentation.dto.AdminGroupMe
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessagePreview
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageSource
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTarget
+import team.startup.application.domain.application.presentation.dto.AdminMessageHistoryPage
+import team.startup.application.domain.application.presentation.dto.AdminMessageHistoryQuery
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.io.IOException
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.net.http.HttpTimeoutException
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.UUID
 
@@ -39,6 +43,80 @@ class AdminGroupMessageGateway(
     @Value("\${application.admin-group-messaging.notification-internal-token:}") private val notificationToken: String,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+
+    fun history(
+        expoId: UUID,
+        query: AdminMessageHistoryQuery,
+    ): AdminMessageHistoryPage {
+        val parameters = linkedMapOf("limit" to query.limit.toString())
+        query.from?.let { parameters["from"] = it.toString() }
+        query.to?.let { parameters["to"] = it.toString() }
+        query.type?.let { parameters["type"] = it.name }
+        query.cursor?.let { parameters["cursor"] = it }
+        val suffix = parameters.entries.joinToString("&") { "${it.key}=${URLEncoder.encode(it.value, StandardCharsets.UTF_8)}" }
+        val tree = node(call(Provider.NOTIFICATION, notificationUrl, "$BASE_PATH/expos/$expoId/history?$suffix", token = notificationToken))
+        return try {
+            require(tree.path("items").isArray)
+            tree.path("items").forEach { item ->
+                require(item.path("adminId").isIntegralNumber && item.path("adminId").canConvertToLong())
+                for (key in listOf("total", "pending", "accepted", "delivered", "failed", "unknown", "missing")) {
+                    require(item.path("counts").path(key).isIntegralNumber && item.path("counts").path(key).canConvertToLong())
+                }
+            }
+            val result = mapper.treeToValue(tree, AdminMessageHistoryPage::class.java)
+            require(
+                result.items.size <= query.limit && result.items
+                    .map { it.eventId }
+                    .distinct()
+                    .size == result.items.size,
+            )
+            val cursorPattern = Regex("^\\d{13}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+            fun cursor(item: team.startup.application.domain.application.presentation.dto.AdminMessageHistoryItem) =
+                "%013d:%s".format(java.util.Locale.ROOT, item.occurredAt.toEpochMilli(), item.eventId)
+            result.items.forEach {
+                require(it.adminId in 1..MAX_SAFE_INTEGER && it.jobId.matches(Regex("^[a-f0-9]{64}$")))
+                require(
+                    it.targetScope.kind == "EXPLICIT_TARGETS" &&
+                        (it.targetScope.applicationCount == null || it.targetScope.applicationCount > 0),
+                )
+                require(
+                    it.targetScope.programTypes ==
+                        it.targetScope.programTypes
+                            .distinct()
+                            .sortedBy { type -> type.name },
+                )
+                require(
+                    listOf(
+                        it.counts.total,
+                        it.counts.pending,
+                        it.counts.accepted,
+                        it.counts.delivered,
+                        it.counts.failed,
+                        it.counts.unknown,
+                        it.counts.missing,
+                    ).all { count ->
+                        count >=
+                            0
+                    },
+                )
+                require(it.occurredAt.toEpochMilli() in 0..9_999_999_999_999L)
+                require(
+                    (query.type == null || it.type == query.type) && (query.from == null || it.occurredAt >= query.from) &&
+                        (query.to == null || it.occurredAt < query.to),
+                )
+                require(query.cursor == null || cursor(it) < query.cursor)
+            }
+            require(result.items.zipWithNext().all { (a, b) -> cursor(a) > cursor(b) })
+            if (result.nextCursor != null) {
+                require(result.nextCursor.matches(cursorPattern) && result.items.size == query.limit && result.items.isNotEmpty())
+                require(result.nextCursor == cursor(result.items.last()))
+            }
+            result
+        } catch (_: Exception) {
+            invalidProviderResponse("발송 이력")
+        }
+    }
 
     fun authorize(
         expoId: UUID,
