@@ -44,11 +44,14 @@ class SwaggerIncludeInternalTests {
             .andExpect(jsonPath("$.components.securitySchemes.internalToken.name").value("X-Internal-Token"))
             .andExpect(jsonPath("$.components.securitySchemes.internalToken.type").value("apiKey"))
             .andExpect(jsonPath("$.components.securitySchemes.internalToken.in").value("header"))
-            .andExpect(jsonPath("$.components.schemas.StandardApplicationRequest").exists())
-            .andExpect(jsonPath("$.components.schemas.PreregisterReservationStatus").exists())
+            .andExpect(jsonPath("$.paths['/internal/standard-program-applications'].post.security[0].bearerAuth").doesNotExist())
             .andExpect(
-                jsonPath("$.paths['/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity'].get.security").doesNotExist(),
-            ).andExpect(content().string(not(containsString("test-token"))))
+                jsonPath(
+                    "$.paths['/application/expos/{expoId}/preregister-sessions/{sessionId}/capacity'].get.security[0].bearerAuth",
+                ).exists(),
+            ).andExpect(jsonPath("$.components.schemas.StandardApplicationRequest").exists())
+            .andExpect(jsonPath("$.components.schemas.PreregisterReservationStatus").exists())
+            .andExpect(content().string(not(containsString("test-token"))))
         val document =
             mapper.readTree(
                 mockMvc

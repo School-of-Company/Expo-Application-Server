@@ -2,6 +2,7 @@ package team.startup.application
 
 import org.hamcrest.Matchers.containsString
 import org.hamcrest.Matchers.not
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -41,6 +42,36 @@ open class SwaggerEnabledTests {
 
     @Autowired
     private lateinit var mapper: ObjectMapper
+
+    @Test
+    fun `gateway protected application operations declare bearer JWT`() {
+        val document =
+            mapper.readTree(
+                mockMvc
+                    .perform(get("/application/v3/api-docs"))
+                    .andExpect(status().isOk)
+                    .andReturn()
+                    .response.contentAsString,
+            )
+        val bearer = document.path("components").path("securitySchemes").path("bearerAuth")
+        assertEquals("http", bearer.path("type").stringValue())
+        assertEquals("bearer", bearer.path("scheme").stringValue())
+        assertEquals("JWT", bearer.path("bearerFormat").stringValue())
+        document.path("paths").properties().filter { it.key.startsWith("/application/") }.forEach { path ->
+            path.value.properties().filter { it.key in setOf("get", "post", "put", "delete", "patch") }.forEach { operation ->
+                assertEquals(
+                    "[]",
+                    operation.value
+                        .path("security")
+                        .path(0)
+                        .path("bearerAuth")
+                        .toString(),
+                    "${path.key} ${operation.key}",
+                )
+            }
+        }
+        assertFalse(document.path("paths").has("/internal/standard-program-applications"))
+    }
 
     @Test
     fun `public document excludes internal paths and their private schemas`() {
