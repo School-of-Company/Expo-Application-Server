@@ -101,15 +101,25 @@ class RegistrationGateway(
     @Value("\${application.registration.expo-url:}") private val expoUrl: String,
     @Value("\${application.registration.form-url:}") private val formUrl: String,
     @Value("\${application.registration.user-url:}") private val userUrl: String,
-    @Value("\${application.internal-token:}") private val internalToken: String,
-    @Value("\${application.registration.expo-internal-token:}") private val expoInternalToken: String = internalToken,
-    @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String = internalToken,
-    @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String = internalToken,
+    @Value("\${application.registration.expo-internal-token:}") private val expoInternalToken: String,
+    @Value("\${application.registration.form-internal-token:}") private val formInternalToken: String,
+    @Value("\${application.registration.user-internal-token:}") private val userInternalToken: String,
     @Value("\${application.program-sessions.enabled:false}") private val programSessionsEnabled: Boolean = false,
     @Value("\${application.attendance.url:}") private val attendanceUrl: String = "",
     @Value("\${application.attendance.internal-token:}") private val attendanceToken: String = "",
+    @Value("\${application.registration.enabled:false}") registrationEnabled: Boolean = false,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+
+    init {
+        if (registrationEnabled) {
+            mapOf("EXPO" to expoInternalToken, "FORM" to formInternalToken, "USER" to userInternalToken).forEach { (target, token) ->
+                require(
+                    token.isNotBlank(),
+                ) { "APPLICATION_REGISTRATION_${target}_INTERNAL_TOKEN must be configured when registration is enabled" }
+            }
+        }
+    }
 
     fun programForm(formId: UUID): JsonNode =
         decode(call(formUrl, "/internal/forms/by-id/$formId", token = formInternalToken).body(), JsonNode::class.java)

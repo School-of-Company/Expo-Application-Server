@@ -82,7 +82,7 @@ class RegistrationIntegrationContractTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val gateway = RegistrationGateway(mapper, url, url, url, "shared", "expo-token", "form-token", "user-token")
+            val gateway = RegistrationGateway(mapper, url, url, url, "expo-token", "form-token", "user-token")
             val preregistration = org.mockito.Mockito.mock(PreregisterRegistrationWorkflow::class.java)
             org.mockito.Mockito
                 .doAnswer { invocation ->
@@ -240,7 +240,7 @@ class RegistrationIntegrationContractTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val gateway = RegistrationGateway(mapper, url, url, url, "shared", "expo-token", "form-token", "user-token")
+            val gateway = RegistrationGateway(mapper, url, url, url, "expo-token", "form-token", "user-token")
             gateway.managedParty(expoId, "opaque-session")
             assertEquals(listOf("/internal/participant-sessions/resolve", "/internal/standard-participants/managed"), requests)
             requests.clear()
@@ -354,7 +354,7 @@ class RegistrationIntegrationContractTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val gateway = RegistrationGateway(mapper, url, url, url, "shared", "expo-token", "form-token", "user-token")
+            val gateway = RegistrationGateway(mapper, url, url, url, "expo-token", "form-token", "user-token")
             val preregistration = org.mockito.Mockito.mock(PreregisterRegistrationWorkflow::class.java)
             org.mockito.Mockito
                 .doAnswer { invocation ->

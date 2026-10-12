@@ -44,6 +44,19 @@ class AdminGroupMessageGateway(
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
+    init {
+        // 공급자 URL이 설정된 대상만 사용 중인 연동으로 보고 해당 토큰을 요구한다.
+        mapOf(
+            "EXPO" to (expoUrl to expoToken),
+            "USER" to (userUrl to userToken),
+            "NOTIFICATION" to (notificationUrl to notificationToken),
+        ).forEach { (target, setting) ->
+            require(setting.first.isBlank() || setting.second.isNotBlank()) {
+                "APPLICATION_ADMIN_GROUP_MESSAGE_${target}_INTERNAL_TOKEN must be configured when its URL is set"
+            }
+        }
+    }
+
     fun history(
         expoId: UUID,
         query: AdminMessageHistoryQuery,

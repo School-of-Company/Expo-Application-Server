@@ -32,6 +32,9 @@ import tools.jackson.databind.ObjectMapper
         "SWAGGER_ENABLED=true",
         "application.program-sessions.enabled=true",
         "application.registration.enabled=true",
+        "application.registration.expo-internal-token=expo-token",
+        "application.registration.form-internal-token=form-token",
+        "application.registration.user-internal-token=user-token",
     ],
 )
 @AutoConfigureMockMvc

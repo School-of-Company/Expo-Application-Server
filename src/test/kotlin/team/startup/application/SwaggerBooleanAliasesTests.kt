@@ -12,6 +12,9 @@ import org.springframework.boot.test.context.SpringBootTest
         "springdoc.swagger-ui.enabled=true",
         "application.program-sessions.enabled=true",
         "application.registration.enabled=true",
+        "application.registration.expo-internal-token=expo-token",
+        "application.registration.form-internal-token=form-token",
+        "application.registration.user-internal-token=user-token",
     ],
 )
 class SwaggerOnEnabledTests : SwaggerEnabledTests()
@@ -25,6 +28,9 @@ class SwaggerOnEnabledTests : SwaggerEnabledTests()
         "springdoc.swagger-ui.enabled=true",
         "application.program-sessions.enabled=true",
         "application.registration.enabled=true",
+        "application.registration.expo-internal-token=expo-token",
+        "application.registration.form-internal-token=form-token",
+        "application.registration.user-internal-token=user-token",
     ],
 )
 class SwaggerYesEnabledTests : SwaggerEnabledTests()
@@ -38,6 +44,9 @@ class SwaggerYesEnabledTests : SwaggerEnabledTests()
         "springdoc.swagger-ui.enabled=true",
         "application.program-sessions.enabled=true",
         "application.registration.enabled=true",
+        "application.registration.expo-internal-token=expo-token",
+        "application.registration.form-internal-token=form-token",
+        "application.registration.user-internal-token=user-token",
     ],
 )
 class SwaggerOneEnabledTests : SwaggerEnabledTests()

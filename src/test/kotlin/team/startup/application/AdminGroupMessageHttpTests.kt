@@ -30,6 +30,7 @@ import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicInteger
 
 @SpringBootTest(properties = ["eureka.client.enabled=false", "application.internal-token=test-token"])
@@ -58,6 +59,7 @@ class AdminGroupMessageHttpTests {
         notificationStatus.set(200)
         slowNotification = false
         calls.clear()
+        targetTokens.clear()
         requests.clear()
         jdbc.execute("TRUNCATE tb_program_session_application CASCADE")
         listOf(
@@ -97,6 +99,14 @@ class AdminGroupMessageHttpTests {
         assertEquals("no-store", response.getHeader("Cache-Control"))
         assertTrue(calls.contains("expo:Bearer admin:expo-token"))
         assertFalse(calls.any { it.contains("999") })
+    }
+
+    @Test
+    fun `each provider receives its own internal token instead of the application token`() {
+        val response = preview(selected(standard), "공통")
+        assertEquals(201, response.status, response.contentAsString)
+        assertTrue(calls.contains("expo:Bearer admin:expo-token"), calls.toString())
+        assertEquals(setOf("user:user-token", "notification:notification-token"), targetTokens.toSet())
     }
 
     @Test
@@ -354,6 +364,7 @@ class AdminGroupMessageHttpTests {
         private val notificationStatus = AtomicInteger(200)
         private val calls = CopyOnWriteArrayList<String>()
         private val requests = CopyOnWriteArrayList<JsonNode>()
+        private val targetTokens = CopyOnWriteArraySet<String>()
 
         @Volatile private var slowNotification = false
         private const val JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -379,6 +390,7 @@ class AdminGroupMessageHttpTests {
                 }
                 createContext("/internal/standard-participants/details") { exchange ->
                     calls.add("user")
+                    targetTokens.add("user:${exchange.requestHeaders.getFirst("X-Internal-Token")}")
                     if (userStatus.get() in 400..599) {
                         respond(exchange, userStatus.get(), "{}")
                         return@createContext
@@ -401,6 +413,7 @@ class AdminGroupMessageHttpTests {
                 }
                 createContext("/internal/admin-group-messages") { exchange ->
                     if (slowNotification) Thread.sleep(10_500)
+                    targetTokens.add("notification:${exchange.requestHeaders.getFirst("X-Internal-Token")}")
                     val path = exchange.requestURI.path
                     when {
                         path.endsWith("/config") -> {

@@ -649,7 +649,7 @@ class RegistrationHttpTests {
         server.start()
         try {
             val actualGateway =
-                RegistrationGateway(mapper, "http://127.0.0.1:${server.address.port}", "", "", "test-token")
+                RegistrationGateway(mapper, "http://127.0.0.1:${server.address.port}", "", "", "expo-token", "form-token", "user-token")
             val error = assertThrows<ResponseStatusException> { actualGateway.countStandard(EXPO_1, 42) }
             assertEquals(HttpStatus.SERVICE_UNAVAILABLE, error.statusCode)
         } finally {
@@ -674,7 +674,7 @@ class RegistrationHttpTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val actualGateway = RegistrationGateway(mapper, "", url, url, "test-token")
+            val actualGateway = RegistrationGateway(mapper, "", url, url, "expo-token", "form-token", "user-token")
             assertNull(actualGateway.form(EXPO_1, "TRAINEE", "FIELD", false))
             assertEquals(
                 HttpStatus.NOT_FOUND,
@@ -730,7 +730,7 @@ class RegistrationHttpTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val actualGateway = RegistrationGateway(mapper, url, url, url, "shared-token", "expo-token", "form-token", "user-token")
+            val actualGateway = RegistrationGateway(mapper, url, url, url, "expo-token", "form-token", "user-token")
             actualGateway.expoPeriod(EXPO_1)
             actualGateway.form(EXPO_1, "STANDARD", "FIELD", false)
             actualGateway.participant(
@@ -808,7 +808,7 @@ class RegistrationHttpTests {
         server.start()
         try {
             val url = "http://127.0.0.1:${server.address.port}"
-            val actualGateway = RegistrationGateway(mapper, "", url, url, "test-token")
+            val actualGateway = RegistrationGateway(mapper, "", url, url, "expo-token", "form-token", "user-token")
             val form = actualGateway.form(EXPO_1, "STANDARD", "FIELD", false)!!
             val field = form.dynamicForm.single()
             val question =
