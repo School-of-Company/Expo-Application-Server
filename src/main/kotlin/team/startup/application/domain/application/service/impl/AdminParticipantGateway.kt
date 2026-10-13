@@ -8,6 +8,8 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.AdminOccupation
 import team.startup.application.domain.application.presentation.dto.AdminParticipantDetail
+import team.startup.application.domain.application.presentation.dto.AdminParticipantPage
+import team.startup.application.domain.application.presentation.dto.AdminParticipantSearchQuery
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URLEncoder
@@ -40,6 +42,14 @@ class AdminParticipantGateway(
         } while (true)
         confirm(expoId, ids)
         return ids
+    }
+
+    fun search(
+        expoId: UUID,
+        query: AdminParticipantSearchQuery,
+    ): AdminParticipantPage {
+        val page = page(expoId, query.cursor, query.q, size = query.size)
+        return AdminParticipantPage(page.items, page.nextCursor)
     }
 
     fun details(
@@ -90,8 +100,9 @@ class AdminParticipantGateway(
         cursor: Long,
         q: String? = null,
         occupation: String? = null,
+        size: Int = 500,
     ): ParticipantPage {
-        val parameters = mutableListOf("cursor=$cursor", "size=500")
+        val parameters = mutableListOf("cursor=$cursor", "size=$size")
         q?.let { parameters.add("q=${URLEncoder.encode(it.trim(), StandardCharsets.UTF_8)}") }
         occupation?.let { parameters.add("occupation=$it") }
         val tree = http.read("/internal/expos/$expoId/standard-participants/details?${parameters.joinToString("&")}")
@@ -125,7 +136,7 @@ class AdminParticipantGateway(
                     mapper.treeToValue(node, AdminParticipantDetail::class.java)
                 }
             require(
-                items.size <= 500 && items.zipWithNext().all { (left, right) -> left.participantId < right.participantId } &&
+                items.size <= size && items.zipWithNext().all { (left, right) -> left.participantId < right.participantId } &&
                     items.all { it.participantId > cursor && (occupation == null || it.occupation?.name == occupation) },
             )
             val nextNode: JsonNode = tree["nextCursor"]
