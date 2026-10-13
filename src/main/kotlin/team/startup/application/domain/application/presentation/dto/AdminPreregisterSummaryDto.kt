@@ -31,3 +31,32 @@ data class AdminPreregisterSessionSummary(
     )
     val promotionBlockedReason: String? = null,
 )
+
+data class AdminPreregisterWaitlistCommand(
+    val expoId: UUID,
+    val sessionId: Long,
+)
+
+@Schema(description = "회차 대기 일행 목록. 접수 순서대로이며 승급 뒤 User 저장 중인 일행을 포함합니다.")
+data class AdminPreregisterWaitlist(
+    val expoId: UUID,
+    val sessionId: Long,
+    val items: List<AdminPreregisterWaitlistItem>,
+)
+
+data class AdminPreregisterWaitlistItem(
+    @field:Schema(description = "관리자 대기 취소에 쓰는 예약 requestId") val requestId: String,
+    val sessionId: Long,
+    @field:Schema(description = "대기 순번(1부터). PROCESSING이면 null") val position: Int?,
+    @field:Schema(description = "대표자를 포함한 일행 인원") val applicants: Int,
+    @field:Schema(description = "WAITING 또는 승급 뒤 User 저장 중인 PROCESSING") val status: String,
+    @field:Schema(description = "서버 접수 순서. 값이 작을수록 먼저 접수") val queueSeq: Long,
+    @field:Schema(description = "신청 시 대표자 이름") val representativeName: String,
+    @field:Schema(description = "신청 시 대표자 전화번호") val representativePhoneNumber: String,
+)
+
+data class WithdrawAdminPreregisterReservationCommand(
+    val expoId: UUID,
+    val requestId: String,
+    val authorization: String?,
+)
