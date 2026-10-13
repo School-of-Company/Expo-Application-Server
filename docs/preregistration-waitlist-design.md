@@ -144,9 +144,9 @@ Application이 실제로 적용하는 값을 정의 스냅샷에 명시하고, 0
 - 저장 정의에 `waitingCapacity` 키가 없고 신청 이력이 없으면: 잠금 아래 Expo 값을 채택해 저장
   (현재 첫 관찰 시 정의 저장과 동일).
 - 키가 없고 이력이 있으면: 상태 `UNADOPTED`. 이 회차는 대기 접수를 하지 않고(현행 전원 거절
-  유지) 정의 비교에서 이 키만 제외해 확정 접수는 계속합니다. 관리자 요약과 잔여석 응답에
-  `appliedWaitingCapacity: null`, `expoWaitingCapacity`, `waitingCapacityStatus: "UNADOPTED"`를
-  내려 불일치를 드러냅니다.
+  유지) 정의 비교에서 이 키만 제외해 확정 접수는 계속합니다. 잔여석 응답은
+  `appliedWaitingCapacity: null`, `expoWaitingCapacity`, `waitingCapacityStatus: "UNADOPTED"`로
+  불일치를 드러내고, 관리자 요약은 회차 항목의 `appliedWaitingCapacity`(null이면 미적용)만 내립니다.
 - 운영자는 내부 API `PUT /internal/expos/{expoId}/preregister-sessions/{sessionId}/waiting-capacity`
   (`{"expected": Expo 현재 값}`)로 명시적으로 채택하거나, 미사용으로 둡니다. 기대값이 Expo
   관찰값과 다르면 409.
@@ -170,7 +170,7 @@ Application이 실제로 적용하는 값을 정의 스냅샷에 명시하고, 0
 | Application 등록 `POST /application/pre-standard/{expoId}` | 위 재시도 응답 표 |
 | Application 잔여석 `GET …/preregister-sessions/{sessionId}/capacity` | `remaining`(대기열이 있으면 0)·`maxApplicants` 의미 유지, 예시 사이트 표시용 `confirmed`·`waiting`·`appliedWaitingCapacity`와 `waitingRemaining`·`maxWaitingApplicants`·`waitingCapacityStatus` 추가. 공개 조회가 Form을 부르지 않도록 마감 사유는 넣지 않고, Client가 이미 받는 폼 기간과 `closed`로 표시 |
 | Application 대표자 대기 조회·취소 | `GET /application/expos/{expoId}/my-applications/preregister-waitlist`, `POST …/my-applications/preregister-waitlist/cancellation`. `PARTICIPANT_SESSION` → `participantSessionPhone`으로 검증 번호를 얻어 예약 조회(V8 번호 인덱스). 취소는 CSRF 보호 |
-| Application 관리자 | 요약 회차 항목에 `waitingParticipants`·`waitingReservations`·`waitingHeadApplicants`·`freeConfirmedSeats`·`appliedWaitingCapacity`. 관리자 대기 취소는 기존 사전등록 관리자 취소와 같은 내부 API `POST /internal/expos/{expoId}/preregister-reservations/{requestId}/withdrawal`(일행 단위, 이미 취소면 204) |
+| Application 관리자 | 요약 회차 항목에 `waitingParticipants`·`waitingReservations`·`waitingHeadApplicants`·`freeConfirmedSeats`·`appliedWaitingCapacity`. 관리자 대기 취소는 기존 사전등록 관리자 취소와 같은 내부 API `POST /internal/expos/{expoId}/preregister-reservations/{requestId}/withdrawal`(일행 단위, 이미 취소면 204). 후속(Client #347): 회차 대기 목록 `GET /application/admin/expos/{expoId}/preregister-sessions/{sessionId}/waitlist`(APPLICATION_READ, 접수 순서·순번·인원·WAITING/PROCESSING·requestId와 대표자 이름·번호만, 동행자·폼 답변 제외)와 같은 취소의 공개 관리자 경로 `POST /application/admin/expos/{expoId}/preregister-reservations/{requestId}/withdrawal`(APPLICATION_CANCEL). 대기 일행은 User·Attendance 기록이 없어 프로그램 관리자 취소의 Attendance acquire·입장 확인은 적용하지 않음 |
 | Application 내부 | 예약 조회 응답에 WAITING·`withdrawn`, 대기 정원 채택 API |
 | Expo | 정의 변경 없음. 관리자 화면에 Application 적용값·불일치 표시 |
 | User | **기존 세션 계약 확인 후 결정.** 코드 근거로는 변경 불필요: User `2af1a6f`의 `ParticipantSessionTests`는 참가자 저장 없이 OTP 인증만으로 발급한 세션에 `/internal/participant-sessions/resolve`가 검증 번호를 반환하고, Application은 이미 User 저장 전 등록 단계(`RegistrationWorkflow`)에서 이 조회를 씁니다. 배포 인스턴스 확인과 세션 만료 후 재인증 흐름을 확인한 뒤 확정 |

@@ -2,6 +2,7 @@ package team.startup.application.domain.application.repository
 
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
+import team.startup.application.domain.application.presentation.dto.AdminPreregisterWaitlistItem
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
@@ -188,6 +189,34 @@ class PreregisterReservationRepository(
                 expoId,
                 phone,
             ).singleOrNull()
+
+    // Promoted parties keep queue_seq, so RESERVED rows with one are still in User delivery after leaving the queue.
+    fun adminWaitlist(
+        expoId: UUID,
+        sessionId: Long,
+    ): List<AdminPreregisterWaitlistItem> {
+        var position = 0
+        return jdbc.query(
+            "SELECT request_id, applicants, state, queue_seq, user_request::jsonb ->> 'name', user_request::jsonb ->> 'phoneNumber' " +
+                "FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND queue_seq IS NOT NULL " +
+                "AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq",
+            { rs, _ ->
+                val waiting = rs.getString(3) == "WAITING"
+                AdminPreregisterWaitlistItem(
+                    rs.getString(1),
+                    sessionId,
+                    if (waiting) ++position else null,
+                    rs.getInt(2),
+                    if (waiting) "WAITING" else "PROCESSING",
+                    rs.getLong(4),
+                    rs.getString(5),
+                    rs.getString(6),
+                )
+            },
+            expoId,
+            sessionId,
+        )
+    }
 
     fun promote(reservation: PreregisterReservation): Boolean =
         jdbc.update(

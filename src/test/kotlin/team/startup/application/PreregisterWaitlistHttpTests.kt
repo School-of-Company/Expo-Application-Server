@@ -322,6 +322,108 @@ class PreregisterWaitlistHttpTests {
     }
 
     @Test
+    fun `admin lists waiting parties in queue order and withdraws one with the cancel authority`() {
+        capacity.set(3)
+        waitingCapacity.set(10)
+        assertEquals(201, submit("a", 3, "01000000001").status)
+        waiting(submit("b", 3, "01000000002"), 1)
+        waiting(submit("c", 1, "01000000003"), 2)
+        val path = "/application/admin/expos/$EXPO/preregister-sessions/1/waitlist"
+        for (invalid in listOf(0, -1)) {
+            val invalidPath = "/application/admin/expos/$EXPO/preregister-sessions/$invalid/waitlist"
+            assertEquals(
+                400,
+                mvc
+                    .perform(get(invalidPath).header("Authorization", "Bearer admin"))
+                    .andReturn()
+                    .response.status,
+            )
+        }
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            403,
+            mvc
+                .perform(get(path).header("Authorization", "Bearer other"))
+                .andReturn()
+                .response.status,
+        )
+        val list = mvc.perform(get(path).header("Authorization", "Bearer admin")).andReturn().response
+        assertEquals(200, list.status)
+        assertEquals("no-store", list.getHeader("Cache-Control"))
+        val items = mapper.readTree(list.contentAsString).get("items").let { node -> (0 until node.size()).map(node::get) }
+        assertEquals(listOf("b", "c"), items.map { it.get("requestId").stringValue() })
+        assertEquals(listOf(1, 2), items.map { it.get("position").intValue() })
+        assertEquals(listOf(3, 1), items.map { it.get("applicants").intValue() })
+        assertEquals(true, items[0].get("queueSeq").longValue() < items[1].get("queueSeq").longValue())
+        assertEquals("01000000002", items[0].get("representativePhoneNumber").stringValue())
+        assertEquals("person", items[0].get("representativeName").stringValue())
+        assertEquals(false, items[0].has("userRequest"))
+        val withdrawal = "/application/admin/expos/$EXPO/preregister-reservations/b/withdrawal"
+        assertEquals(
+            401,
+            mvc
+                .perform(post(withdrawal))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            403,
+            mvc
+                .perform(post(withdrawal).header("Authorization", "Bearer other"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals("WAITING", state("b"))
+        cancel(1)
+        assertEquals(
+            204,
+            mvc
+                .perform(post(withdrawal).header("Authorization", "Bearer admin"))
+                .andReturn()
+                .response.status,
+        )
+        waitlist.flush()
+        assertEquals("RESERVED", state("c"))
+        val after =
+            mapper.readTree(
+                mvc
+                    .perform(get(path).header("Authorization", "Bearer admin"))
+                    .andReturn()
+                    .response.contentAsString,
+            )
+        val processing = after.get("items").single() as tools.jackson.databind.node.ObjectNode
+        assertEquals(items[1].get("queueSeq"), processing.remove("queueSeq"))
+        assertEquals(
+            mapper.readTree(
+                """{"requestId":"c","sessionId":1,"position":null,"applicants":1,"status":"PROCESSING",""" +
+                    """"representativeName":"person","representativePhoneNumber":"01000000003"}""",
+            ),
+            processing,
+        )
+        assertEquals(
+            204,
+            mvc
+                .perform(post(withdrawal).header("Authorization", "Bearer admin"))
+                .andReturn()
+                .response.status,
+        )
+        val promoted = "/application/admin/expos/$EXPO/preregister-reservations/c/withdrawal"
+        assertEquals(
+            409,
+            mvc
+                .perform(post(promoted).header("Authorization", "Bearer admin"))
+                .andReturn()
+                .response.status,
+        )
+    }
+
+    @Test
     fun `concurrent cancellations promote each waiting party once without exceeding capacity`() {
         capacity.set(2)
         assertEquals(201, submit("a", 1, "01000000001").status)
@@ -406,6 +508,27 @@ class PreregisterWaitlistHttpTests {
                         when {
                             path == "/internal/participant-sessions/resolve" -> {
                                 200 to """{"expoId":"$EXPO","phoneNumber":"$verifiedSessionPhone","expiresAt":"2100-01-01T00:00:00"}"""
+                            }
+
+                            path.endsWith("/admin-access") || path.endsWith("/admin-application-cancel-access") -> {
+                                val cancel = path.endsWith("/admin-application-cancel-access")
+                                when {
+                                    exchange.requestHeaders.getFirst("Authorization") != "Bearer admin" -> {
+                                        403 to "{}"
+                                    }
+
+                                    cancel -> {
+                                        200 to
+                                            """{"expoId":"$EXPO","adminId":1,"permission":"APPLICATION_CANCEL",""" +
+                                            """"policyVersion":"EXPO_ADMIN_APPLICATION_CANCEL_V1","scope":"EXPO_ADMIN"}"""
+                                    }
+
+                                    else -> {
+                                        200 to
+                                            """{"expoId":"$EXPO","adminId":1,"permission":"APPLICATION_READ",""" +
+                                            """"policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
+                                    }
+                                }
                             }
 
                             path.endsWith("/preregister-session") || path.contains("/standard-registrations/") -> {
