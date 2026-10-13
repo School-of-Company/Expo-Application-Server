@@ -60,6 +60,7 @@ class ManagedParticipantHttpTests {
         linkBodies.clear()
         pendingPolicy = false
         missingPolicy = false
+        adminStatus = 200
     }
 
     @Test
@@ -233,6 +234,32 @@ class ManagedParticipantHttpTests {
         }
     }
 
+    @Test
+    fun `admin QR uses the confirmed ledger representative and rechecks cancellation`() {
+        mvc.perform(get(adminQrPath(2))).andExpect(status().isUnauthorized)
+        adminStatus = 403
+        mvc.perform(get(adminQrPath(2)).header("Authorization", "Bearer admin")).andExpect(status().isForbidden)
+        adminStatus = 200
+        assertEquals(0, qrCalls.get())
+        mvc
+            .perform(get(adminQrPath(2)).header("Authorization", "Bearer admin"))
+            .andExpect(status().isOk)
+            .andExpect(header().string("Cache-Control", "no-store"))
+            .andExpect(jsonPath("$.participantId").value(2))
+            .andExpect(jsonPath("$.code").value("private-code"))
+        assertEquals(1, qrCalls.get())
+        for (id in listOf(3L, 99L)) mvc.perform(get(adminQrPath(id)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(1, qrCalls.get())
+        duringQr = { cancellationDelivery(2, "ACQUIRING") }
+        mvc.perform(get(adminQrPath(2)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(2, qrCalls.get())
+        mvc.perform(get(adminQrPath(2)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(2, qrCalls.get())
+        mvc.perform(get(adminQrPath(0)).header("Authorization", "Bearer admin")).andExpect(status().isBadRequest)
+    }
+
+    private fun adminQrPath(id: Long) = "/application/admin/expos/$expo/participants/$id/qr"
+
     private fun qrPath(id: Long) = "/application/expos/$expo/participants/$id/qr"
 
     private fun cancellationDelivery(
@@ -267,6 +294,8 @@ class ManagedParticipantHttpTests {
         @Volatile private var pendingPolicy = false
 
         @Volatile private var missingPolicy = false
+
+        @Volatile private var adminStatus = 200
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
@@ -321,6 +350,12 @@ class ManagedParticipantHttpTests {
                                 """{"traineeId":$id,"created":false}"""
                             }
 
+                            path.endsWith("admin-access") -> {
+                                assertEquals("Bearer admin", exchange.requestHeaders.getFirst("Authorization"))
+                                responseStatus = adminStatus
+                                """{"expoId":"$expo","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
+                            }
+
                             path.endsWith("qr") -> {
                                 qrCalls.incrementAndGet()
                                 assertEquals("attendance-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
@@ -362,6 +397,7 @@ class ManagedParticipantHttpTests {
             }
             registry.add("application.attendance.url") { "http://127.0.0.1:${server.address.port}" }
             registry.add("application.attendance.internal-token") { "attendance-token" }
+            registry.add("application.registration.expo-internal-token") { "expo-token" }
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
         }
     }

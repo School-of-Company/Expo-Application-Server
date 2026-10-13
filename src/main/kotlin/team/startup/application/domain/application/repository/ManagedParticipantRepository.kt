@@ -21,6 +21,20 @@ class ManagedParticipantRepository(
             ),
         )
 
+    fun confirmedRepresentatives(
+        expoId: UUID,
+        participantId: Long,
+    ): List<Long> =
+        jdbc.query(
+            "SELECT DISTINCT representative_id FROM tb_preregister_application a WHERE expo_id = ? AND participant_id = ? " +
+                "AND status = 'CONFIRMED' AND NOT EXISTS(" +
+                "SELECT 1 FROM tb_owner_cancellation_delivery d WHERE d.expo_id = a.expo_id " +
+                "AND d.application_type = 'PREREGISTER' AND d.application_id = a.id::text AND d.action <> 'ABORT')",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            participantId,
+        )
+
     fun qrAvailable(
         expoId: UUID,
         participantId: Long,

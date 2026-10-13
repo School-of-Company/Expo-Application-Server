@@ -252,6 +252,69 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `관리자 참가자 검색은 권한 검증 뒤 User 원천 커서 페이지를 그대로 전달한다`() {
+        val path = "/application/admin/expos/$expoId/participants"
+        assertEquals(
+            401,
+            mvc
+                .perform(get("$path?q=chosen"))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(
+            403,
+            mvc
+                .perform(get("$path?q=chosen").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        assertTrue(userRequests.isEmpty())
+        expoStatus = 200
+        val response = mvc.perform(get("$path?q=chosen&size=5").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+        assertEquals(200, response.status)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(1, body["items"].size())
+        assertEquals(2L, body["items"][0]["participantId"].asLong())
+        assertEquals("010-1234-5678", body["items"][0]["notificationPhoneNumber"].asString())
+        assertTrue(body["nextCursor"].isNull)
+        assertTrue(userRequests.single().endsWith("cursor=0&size=5&q=chosen"))
+        for (query in listOf(
+            "",
+            "?q=",
+            "?q=chosen&size=101",
+            "?q=chosen&cursor=-1",
+            "?q=chosen&occupation=TEACHER",
+            "?q=a&q=b",
+        )) {
+            assertEquals(
+                400,
+                mvc
+                    .perform(get("$path$query").header("Authorization", "Bearer original-admin-jwt"))
+                    .andReturn()
+                    .response.status,
+                query,
+            )
+        }
+        assertEquals(
+            400,
+            mvc
+                .perform(get(path).param("q", " ").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        userBody = """{"items":[{"participantId":0}],"nextCursor":null}"""
+        assertEquals(
+            502,
+            mvc
+                .perform(get("$path?q=chosen").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+    }
+
+    @Test
     fun `관리자 원본 JWT와 현재 권한은 모든 개인정보 원천 조회 전에 검증한다`() {
         for (suffix in listOf("", "/summary", "/current-sessions")) {
             assertEquals(401, admin(suffix, null).status)
