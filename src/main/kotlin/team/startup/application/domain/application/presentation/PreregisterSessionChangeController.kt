@@ -14,10 +14,13 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
+import team.startup.application.domain.application.presentation.dto.AdoptPreregisterWaitingCapacityCommand
+import team.startup.application.domain.application.presentation.dto.AdoptPreregisterWaitingCapacityRequest
 import team.startup.application.domain.application.presentation.dto.CancelPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.PreparePreregisterSessionChangeCommand
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionKey
+import team.startup.application.domain.application.service.AdoptPreregisterWaitingCapacityService
 import team.startup.application.domain.application.service.CancelPreregisterSessionService
 import team.startup.application.domain.application.service.PreparePreregisterSessionChangeService
 import team.startup.application.domain.application.service.PurgePreregisterSessionsService
@@ -37,6 +40,7 @@ class PreregisterSessionChangeController(
     private val reconcile: ReconcilePreregisterSessionService,
     private val purge: PurgePreregisterSessionsService,
     private val cancel: CancelPreregisterSessionService,
+    private val adopt: AdoptPreregisterWaitingCapacityService,
 ) {
     @Schema(description = "신뢰된 서비스가 확인한 취소 대상 신청 ID 목록", example = """{"representativeId":123,"applicationIds":[123]}""")
     data class CancellationRequest(
@@ -94,6 +98,27 @@ class PreregisterSessionChangeController(
         @PathVariable expoId: UUID,
         @PathVariable sessionId: Long,
     ): Boolean = reconcile.execute(PreregisterSessionKey(expoId, sessionId))
+
+    @Operation(
+        summary = "신청 이력이 있는 회차의 대기 정원 명시 채택",
+        description = "#99 이전 신청 이력이 있는 회차는 채택 전까지 대기 접수를 하지 않습니다. expected가 Expo 현재 값과 다르면 409입니다.",
+    )
+    @ApiResponses(
+        value = [
+            ApiResponse(responseCode = "204", description = "채택 완료 또는 이미 같은 값"),
+            ApiResponse(responseCode = "404", description = "회차 없음"),
+            ApiResponse(responseCode = "409", description = "기대값 불일치, 변경 확인 중 또는 삭제된 회차"),
+            ApiResponse(responseCode = "502", description = "Expo 응답 계약 오류"),
+            ApiResponse(responseCode = "503", description = "Expo 연동 불가"),
+        ],
+    )
+    @PutMapping("/preregister-sessions/{sessionId}/waiting-capacity")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun adoptWaitingCapacity(
+        @PathVariable expoId: UUID,
+        @PathVariable sessionId: Long,
+        @Valid @RequestBody request: AdoptPreregisterWaitingCapacityRequest,
+    ) = adopt.execute(AdoptPreregisterWaitingCapacityCommand(expoId, sessionId, request.expected))
 
     @Operation(summary = "박람회 회차 원장 정리와 영구 삭제 표식")
     @ApiResponses(

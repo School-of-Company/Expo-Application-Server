@@ -45,6 +45,7 @@ application:
     internal-token: ${APPLICATION_ATTENDANCE_INTERNAL_TOKEN:}
   registration:
     enabled: ${APPLICATION_REGISTRATION_ENABLED:false}
+    waitlist-intake-enabled: ${APPLICATION_PREREGISTER_WAITLIST_INTAKE_ENABLED:false}
     expo-url: ${APPLICATION_REGISTRATION_EXPO_URL:}
     form-url: ${APPLICATION_REGISTRATION_FORM_URL:}
     user-url: ${APPLICATION_REGISTRATION_USER_URL:}

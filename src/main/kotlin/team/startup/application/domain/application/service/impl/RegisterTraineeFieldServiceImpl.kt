@@ -8,5 +8,7 @@ import team.startup.application.domain.application.service.RegistrationCommand
 class RegisterTraineeFieldServiceImpl(
     private val workflow: RegistrationWorkflow,
 ) : RegisterTraineeFieldService {
-    override fun execute(command: RegistrationCommand) = workflow.register(command, "TRAINEE", "FIELD")
+    override fun execute(command: RegistrationCommand) {
+        workflow.register(command, "TRAINEE", "FIELD")
+    }
 }

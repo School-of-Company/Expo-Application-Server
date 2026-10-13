@@ -23,7 +23,7 @@ class AdminPreregisterSummaryController(
         summary = "관리자 사전등록 고유 인원 집계",
         description =
             "대표자와 동행자를 각각 한 명으로 셉니다. 현재 확정 참가자만 고유 인원이며 취소 이력과 중복될 수 있습니다. " +
-                "대기는 현행 정책상 0명이고, User 확정 전 예약의 건수·신청 인원은 별도 필드입니다. 프로그램 신청·출석 인원은 포함하지 않습니다.",
+                "대기는 User 저장 전 일행 인원 합이고, User 확정 전 예약의 건수·신청 인원은 별도 필드입니다. 프로그램 신청·출석 인원은 포함하지 않습니다.",
         responses = [
             ApiResponse(responseCode = "200", description = "행사 및 회차별 사전등록 집계"),
             ApiResponse(responseCode = "401", description = "관리자 JWT 인증 실패"),

@@ -3,6 +3,7 @@ package team.startup.application.domain.application.service.impl
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.service.RegistrationCommand
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
@@ -36,7 +37,7 @@ class RegistrationWorkflow(
         command: RegistrationCommand,
         participantType: String,
         applicationType: String,
-    ) {
+    ): PreregisterRegistrationReceipt? {
         var request = command.request
         val expoId =
             try {
@@ -66,7 +67,7 @@ class RegistrationWorkflow(
         }
         val authenticatedCommand = command.copy(expoId = expoId, request = request)
         if (sessionRegistration) {
-            if (preregistration.resume(authenticatedCommand)) return
+            preregistration.resume(authenticatedCommand)?.let { return it.pendingOrNull() }
         }
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         val (started, finished) =
@@ -179,12 +180,15 @@ class RegistrationWorkflow(
                 region,
             )
         if (sessionRegistration) {
-            preregistration.register(authenticatedCommand, registration, 1 + companionKeys.size)
-            return
+            return preregistration.register(authenticatedCommand, registration, 1 + companionKeys.size).pendingOrNull()
         }
         val participant = gateway.participant(participantType, registration)
         if (participantType == "STANDARD") participant.groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
+        return null
     }
+
+    // Null keeps the existing 201 contract for confirmed registrations.
+    private fun PreregisterRegistrationReceipt?.pendingOrNull() = this?.takeIf { it.status != "CONFIRMED" }
 
     private fun validateCompanion(companion: JsonNode) {
         if (!companion.isObject) badRequest("동행자 답변은 JSON 객체여야 합니다.")

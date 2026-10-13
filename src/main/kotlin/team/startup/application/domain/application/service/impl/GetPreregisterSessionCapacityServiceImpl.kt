@@ -1,11 +1,13 @@
 package team.startup.application.domain.application.service.impl
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityQuery
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityResponse
+import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.GetPreregisterSessionCapacityService
 
@@ -13,6 +15,8 @@ import team.startup.application.domain.application.service.GetPreregisterSession
 class GetPreregisterSessionCapacityServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
+    private val reservations: PreregisterReservationRepository,
+    @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
 ) : GetPreregisterSessionCapacityService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(query: PreregisterSessionCapacityQuery): PreregisterSessionCapacityResponse {
@@ -24,13 +28,30 @@ class GetPreregisterSessionCapacityServiceImpl(
                 repository.readLock(query.expoId)
                 if (repository.expoDeleted(query.expoId)) conflict("삭제된 박람회입니다.")
                 val definition = ledger.current(query.expoId, query.sessionId, observation, persist = false)
+                val occupied = repository.occupied(query.expoId, query.sessionId)
+                val waiting = reservations.waitingApplicants(query.expoId, query.sessionId)
+                val waitingCapacity = definition.waitingCapacity
+                // New parties queue behind waiting ones, so no confirmed seat is offered while the queue is not empty.
                 val remaining =
-                    if (definition.closed) {
+                    if (definition.closed || waiting > 0) {
                         0
                     } else {
-                        (definition.capacity.toLong() - repository.occupied(query.expoId, query.sessionId)).coerceAtLeast(0).toInt()
+                        (definition.capacity.toLong() - occupied).coerceAtLeast(0).toInt()
                     }
-                PreregisterSessionCapacityResponse(query.sessionId, remaining, minOf(remaining, 5))
+                val waitingRemaining = ((waitingCapacity ?: 0) - waiting).coerceAtLeast(0).toInt()
+                val maxWaiting = if (definition.closed || !waitlistIntake) 0 else minOf(waitingRemaining, 5)
+                PreregisterSessionCapacityResponse(
+                    query.sessionId,
+                    remaining,
+                    minOf(remaining, 5),
+                    occupied,
+                    waiting,
+                    waitingCapacity,
+                    waitingRemaining,
+                    maxWaiting,
+                    if (waitingCapacity == null) "UNADOPTED" else "ADOPTED",
+                    observation?.waitingCapacity,
+                )
             },
         )
     }

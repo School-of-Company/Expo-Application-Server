@@ -11,6 +11,7 @@ import team.startup.application.domain.application.service.ReconcilePreregisterS
 class ReconcilePreregisterSessionServiceImpl(
     private val ledger: PreregisterSessionLedger,
     private val repository: PreregisterSessionRepository,
+    private val waitlist: PreregisterWaitlist,
 ) : ReconcilePreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: PreregisterSessionKey): Boolean {
@@ -21,14 +22,18 @@ class ReconcilePreregisterSessionServiceImpl(
                 repository.pending(command.expoId, command.sessionId)
             } ?: return true
         val observation = ledger.observe(command.expoId, command.sessionId)
-        return requireNotNull(
-            ledger.transactions.execute {
-                ledger.lock(command.expoId)
-                val currentPending = repository.pending(command.expoId, command.sessionId)
-                if (currentPending == null) return@execute true
-                if (currentPending != pending) return@execute false
-                ledger.reconcile(command.expoId, command.sessionId, observation)
-            },
-        )
+        val reconciled =
+            requireNotNull(
+                ledger.transactions.execute {
+                    ledger.lock(command.expoId)
+                    val currentPending = repository.pending(command.expoId, command.sessionId)
+                    if (currentPending == null) return@execute true
+                    if (currentPending != pending) return@execute false
+                    ledger.reconcile(command.expoId, command.sessionId, observation)
+                },
+            )
+        // Reopening a closed session can make waiting parties promotable again.
+        if (reconciled) waitlist.promoteQuietly(command.expoId, command.sessionId)
+        return reconciled
     }
 }

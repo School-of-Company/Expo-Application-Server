@@ -55,6 +55,10 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/{type}/{applicationId}/cancellation")
                     .permitAll()
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications/preregister-waitlist")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-waitlist/cancellation")
+                    .permitAll()
                     .requestMatchers(adminGroupMessages)
                     .permitAll()
                 if (swaggerEnabled) {

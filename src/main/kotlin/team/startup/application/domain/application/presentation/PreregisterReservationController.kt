@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController
 import team.startup.application.domain.application.presentation.dto.PreregisterReservationKey
 import team.startup.application.domain.application.service.GetPreregisterReservationService
 import team.startup.application.domain.application.service.RetryPreregisterReservationService
+import team.startup.application.domain.application.service.WithdrawPreregisterReservationService
 import java.util.UUID
 
 @RestController
@@ -26,6 +27,7 @@ import java.util.UUID
 class PreregisterReservationController(
     private val get: GetPreregisterReservationService,
     private val retry: RetryPreregisterReservationService,
+    private val withdraw: WithdrawPreregisterReservationService,
 ) {
     @ApiResponses(
         value = [
@@ -56,4 +58,22 @@ class PreregisterReservationController(
         @PathVariable expoId: UUID,
         @PathVariable requestId: String,
     ) = retry.execute(PreregisterReservationKey(expoId, requestId))
+
+    @Operation(
+        summary = "관리자 사전등록 대기 일행 전체 취소",
+        description = "WAITING 예약만 취소하고 대기 선두를 다시 확인합니다. 이미 취소된 대기는 204, 승급 처리 중이거나 대기가 아니면 409입니다.",
+    )
+    @ApiResponses(
+        value = [
+            ApiResponse(responseCode = "204", description = "대기 취소 완료"),
+            ApiResponse(responseCode = "404", description = "예약 없음"),
+            ApiResponse(responseCode = "409", description = "대기 상태가 아니거나 삭제된 행사"),
+        ],
+    )
+    @PostMapping("/withdrawal")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun withdraw(
+        @PathVariable expoId: UUID,
+        @PathVariable requestId: String,
+    ) = withdraw.execute(PreregisterReservationKey(expoId, requestId))
 }

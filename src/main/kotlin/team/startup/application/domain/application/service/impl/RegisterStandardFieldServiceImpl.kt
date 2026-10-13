@@ -8,5 +8,7 @@ import team.startup.application.domain.application.service.RegistrationCommand
 class RegisterStandardFieldServiceImpl(
     private val workflow: RegistrationWorkflow,
 ) : RegisterStandardFieldService {
-    override fun execute(command: RegistrationCommand) = workflow.register(command, "STANDARD", "FIELD")
+    override fun execute(command: RegistrationCommand) {
+        workflow.register(command, "STANDARD", "FIELD")
+    }
 }

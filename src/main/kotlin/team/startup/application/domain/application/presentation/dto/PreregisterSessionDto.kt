@@ -9,7 +9,6 @@ import org.hibernate.validator.constraints.CodePointLength
 import java.time.Instant
 import java.util.UUID
 
-@com.fasterxml.jackson.annotation.JsonIgnoreProperties("waitingCapacity")
 @Schema(description = "사전등록 회차 전체 정의")
 data class PreregisterSessionDefinition(
     @field:Positive val id: Long,
@@ -22,7 +21,18 @@ data class PreregisterSessionDefinition(
     @param:JsonProperty(required = true) val closed: Boolean,
     @field:Positive val revision: Long,
     val cancelEndedAt: Instant? = null,
+    @field:Schema(description = "회차별 대기 정원. 0이면 대기 미사용, null이면 Application에 적용되지 않음")
+    @field:jakarta.validation.constraints.PositiveOrZero
+    val waitingCapacity: Int? = null,
 )
+
+// Definitions stored before #99 have no waitingCapacity. Null means not adopted, so compare without it.
+internal fun PreregisterSessionDefinition.sameAs(other: PreregisterSessionDefinition?): Boolean =
+    other != null && this == if (waitingCapacity == null) other.copy(waitingCapacity = null) else other
+
+internal fun PreregisterSessionChangeRequest.sameAs(other: PreregisterSessionChangeRequest): Boolean =
+    copy(definition = null) == other.copy(definition = null) &&
+        (definition == other.definition || definition?.sameAs(other.definition) == true)
 
 enum class PreregisterChangeOperation { UPDATE, DELETE }
 
@@ -49,6 +59,38 @@ data class ApplyPreregisterSessionCommand(
     val participantIds: List<Long>,
 )
 
+@Schema(description = "사전등록 접수 상태. 확정은 201 무본문이고, 대기·처리 중만 202 본문으로 응답합니다.")
+data class PreregisterRegistrationReceipt(
+    @field:Schema(description = "CONFIRMED, WAITING 또는 PROCESSING", example = "WAITING") val status: String,
+    @field:Schema(description = "회차 ID", example = "1") val sessionId: Long,
+    @field:Schema(description = "대기 일행 순번(1부터). 대기가 아니면 null", example = "3") val position: Int?,
+)
+
+@Schema(description = "사전등록 회차 대기 정원 명시 채택. expected는 Expo의 현재 값과 같아야 합니다.")
+data class AdoptPreregisterWaitingCapacityRequest(
+    @field:jakarta.validation.constraints.PositiveOrZero val expected: Int,
+)
+
+data class AdoptPreregisterWaitingCapacityCommand(
+    val expoId: UUID,
+    val sessionId: Long,
+    val expected: Int,
+)
+
+data class OwnerPreregisterWaitlistCommand(
+    val expoId: UUID,
+    val participantSession: String,
+)
+
+@Schema(description = "참가자 세션의 검증 번호로 찾은 대기 일행. User 저장 전이므로 QR이 없습니다.")
+data class OwnerPreregisterWaitlist(
+    @field:Schema(description = "회차 ID", example = "1") val sessionId: Long,
+    @field:Schema(description = "대표자를 포함한 일행 인원", example = "3") val applicants: Int,
+    @field:Schema(description = "WAITING, 승급 뒤 User 저장 중인 PROCESSING, 회차 시작으로 승급이 끝난 PROMOTION_ENDED", example = "WAITING")
+    val status: String,
+    @field:Schema(description = "대기 일행 순번(1부터). WAITING이 아니면 null", example = "2") val position: Int?,
+)
+
 @Schema(description = "사전등록 신청 접수 결과", example = """{"id":123,"participantId":123,"sessionId":1,"status":"CONFIRMED"}""")
 data class PreregisterApplicationReceipt(
     val id: Long,
@@ -73,4 +115,4 @@ internal fun PreregisterSessionDefinition.isValidDefinition(): Boolean =
     id > 0 && revision > 0 && capacity > 0 &&
         title.isNotBlank() && title.codePointCount(0, title.length) <= 50 && place.isNotBlank() &&
         startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0 &&
-        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0)
+        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0) && (waitingCapacity == null || waitingCapacity >= 0)

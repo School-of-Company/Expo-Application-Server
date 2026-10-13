@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.RegistrationCommand
@@ -21,12 +22,14 @@ class PreregisterRegistrationWorkflow(
     private val gateway: RegistrationGateway,
     private val attendance: SessionAttendanceOutbox,
     private val mapper: ObjectMapper,
+    private val waitlist: PreregisterWaitlist,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
+    @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
 ) {
     private fun fingerprint(command: RegistrationCommand): String =
         mapper.writeValueAsString(command.copy(expoId = command.expoId.lowercase(), idempotencyKey = null))
 
-    fun resume(command: RegistrationCommand): Boolean {
+    fun resume(command: RegistrationCommand): PreregisterRegistrationReceipt? {
         val expoId = UUID.fromString(command.expoId)
         val fingerprint = fingerprint(command)
         val saved =
@@ -35,16 +38,47 @@ class PreregisterRegistrationWorkflow(
                 reservations.find(expoId, command.idempotencyKey, fingerprint)?.also {
                     if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
                 }
-            } ?: return false
-        recover(expoId, saved.requestId)
-        return true
+            } ?: return null
+        return deliver(expoId, saved.requestId)
+    }
+
+    // A promoted party was already accepted, so a pending User delivery is reported as PROCESSING rather than an error.
+    private fun deliver(
+        expoId: UUID,
+        requestId: String,
+    ): PreregisterRegistrationReceipt {
+        try {
+            recover(expoId, requestId)
+        } catch (ex: ResponseStatusException) {
+            if (ex is WaitlistWithdrawnException) throw ex
+            val current = ledger.transactions.execute { reservations.find(expoId, requestId, "") }
+            if (current?.state == "RESERVED" &&
+                current.queueSeq != null
+            ) {
+                return PreregisterRegistrationReceipt("PROCESSING", current.sessionId, null)
+            }
+            throw ex
+        }
+        return requireNotNull(
+            ledger.transactions.execute {
+                // A completed reservation can be purged right after delivery; that is still the confirmed 201.
+                val saved = reservations.find(expoId, requestId, "") ?: return@execute PreregisterRegistrationReceipt("CONFIRMED", 0, null)
+                when {
+                    saved.state == "COMPLETED" -> PreregisterRegistrationReceipt("CONFIRMED", saved.sessionId, null)
+                    saved.state == "WAITING" -> PreregisterRegistrationReceipt("WAITING", saved.sessionId, reservations.position(saved))
+                    saved.state == "RESERVED" -> PreregisterRegistrationReceipt("PROCESSING", saved.sessionId, null)
+                    saved.withdrawn -> throw WaitlistWithdrawnException()
+                    else -> conflict("신청 상태가 변경되었습니다.")
+                }
+            },
+        )
     }
 
     fun register(
         command: RegistrationCommand,
         request: ParticipantRegistration,
         applicants: Int,
-    ) {
+    ): PreregisterRegistrationReceipt {
         if (!attendanceEnabled) {
             throw ResponseStatusException(
                 HttpStatus.SERVICE_UNAVAILABLE,
@@ -71,25 +105,24 @@ class PreregisterRegistrationWorkflow(
                     }
                     val phone = request.phoneNumber.filter { it in '0'..'9' }
                     if (phone.isEmpty()) badSessionRequest("전화번호가 올바르지 않습니다.")
-                    if (reservations.samePhoneInUse(expoId, phone)) {
+                    if (reservations.samePhoneInUse(expoId, phone, waitlist.now())) {
                         conflict("대표자의 활성 신청 또는 복구 중인 신청이 있습니다.")
                     }
-                    if (definition.capacity.toLong() - repository.occupied(expoId, sessionId) < applicants) {
+                    // User requestId is global across expos and participant types; reserve a separate, stable UUID.
+                    val snapshot = request.copy(requestId = UUID.randomUUID().toString())
+                    val queued = reservations.waitingApplicants(expoId, sessionId)
+                    // New parties never overtake a waiting party, even when confirmed seats are free (#99 P3).
+                    if (queued == 0L && definition.capacity.toLong() - repository.occupied(expoId, sessionId) >= applicants) {
+                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants)
+                    } else if (waitlistIntake && waitlist.accepts(definition) && (definition.waitingCapacity ?: 0) - queued >= applicants) {
+                        reservations.insertWaiting(expoId, key, sessionId, fingerprint, snapshot, applicants)
+                    } else {
                         conflict("일행 전원을 수용할 수 없습니다.")
                     }
-                    // User requestId is global across expos and participant types; reserve a separate, stable UUID.
-                    reservations.insert(
-                        expoId,
-                        key,
-                        sessionId,
-                        fingerprint,
-                        request.copy(requestId = UUID.randomUUID().toString()),
-                        applicants,
-                    )
                     key
                 },
             )
-        recover(expoId, reserved)
+        return deliver(expoId, reserved)
     }
 
     fun recover(
@@ -122,7 +155,9 @@ class PreregisterRegistrationWorkflow(
                     }
                 },
             )
-        if (reservation.state == "COMPLETED") return
+        // Waiting parties are delivered to User only after promotion moves them back to RESERVED.
+        if (reservation.state == "COMPLETED" || reservation.state == "WAITING") return
+        if (reservation.withdrawn) throw WaitlistWithdrawnException()
         if (reservation.state == "REJECTED") {
             throw ResponseStatusException(
                 HttpStatus.valueOf(requireNotNull(reservation.errorStatus)),
@@ -154,6 +189,8 @@ class PreregisterRegistrationWorkflow(
                         false
                     }
                 if (completed == true) return
+                // A definite User rejection frees the seats.
+                if (ex is ParticipantSaveRejectedException) waitlist.promoteQuietly(expoId, reservation.sessionId)
                 throw ex
             }
         val failure =
