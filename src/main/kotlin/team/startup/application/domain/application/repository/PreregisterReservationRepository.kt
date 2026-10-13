@@ -18,6 +18,9 @@ data class PreregisterReservation(
     val result: ParticipantRegistrationResult?,
     val errorStatus: Int?,
     val attempts: Int,
+    // Non-null once the party entered the waitlist, including after promotion.
+    val queueSeq: Long? = null,
+    val withdrawn: Boolean = false,
 )
 
 @Repository
@@ -73,24 +76,134 @@ class PreregisterReservationRepository(
         jdbc
             .query(
                 "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? AND " +
-                    if (requestId != null) "request_id = ?" else "command = ? AND state = 'RESERVED'",
-                { rs, _ ->
-                    PreregisterReservation(
-                        expoId,
-                        rs.getString("request_id"),
-                        rs.getLong("session_id"),
-                        rs.getString("command"),
-                        mapper.readValue(rs.getString("user_request"), ParticipantRegistration::class.java),
-                        rs.getInt("applicants"),
-                        rs.getString("state"),
-                        rs.getString("result")?.let { mapper.readValue(it, ParticipantRegistrationResult::class.java) },
-                        rs.getObject("error_status", Int::class.javaObjectType),
-                        rs.getInt("attempts"),
-                    )
-                },
+                    if (requestId != null) "request_id = ?" else "command = ? AND state IN ('RESERVED', 'WAITING')",
+                { rs, _ -> reservation(rs) },
                 expoId,
                 requestId ?: command,
             ).singleOrNull()
+
+    private fun reservation(rs: java.sql.ResultSet) =
+        PreregisterReservation(
+            rs.getObject("expo_id", UUID::class.java),
+            rs.getString("request_id"),
+            rs.getLong("session_id"),
+            rs.getString("command"),
+            mapper.readValue(rs.getString("user_request"), ParticipantRegistration::class.java),
+            rs.getInt("applicants"),
+            rs.getString("state"),
+            rs.getString("result")?.let { mapper.readValue(it, ParticipantRegistrationResult::class.java) },
+            rs.getObject("error_status", Int::class.javaObjectType),
+            rs.getInt("attempts"),
+            rs.getObject("queue_seq", Long::class.javaObjectType),
+            rs.getObject("withdrawn_at") != null,
+        )
+
+    fun insertWaiting(
+        expoId: UUID,
+        requestId: String,
+        sessionId: Long,
+        command: String,
+        request: ParticipantRegistration,
+        applicants: Int,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, ?, ?, ?, ?, ?, 'WAITING', nextval('seq_preregister_waitlist'))",
+            expoId,
+            requestId,
+            sessionId,
+            command,
+            mapper.writeValueAsString(request),
+            applicants,
+        )
+    }
+
+    fun waitingApplicants(
+        expoId: UUID,
+        sessionId: Long,
+    ): Long =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT coalesce(sum(applicants), 0) FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND state = 'WAITING'",
+                Long::class.java,
+                expoId,
+                sessionId,
+            ),
+        )
+
+    fun waitingHead(
+        expoId: UUID,
+        sessionId: Long,
+    ): PreregisterReservation? =
+        jdbc
+            .query(
+                "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND state = 'WAITING' " +
+                    "ORDER BY queue_seq LIMIT 1",
+                { rs, _ -> reservation(rs) },
+                expoId,
+                sessionId,
+            ).singleOrNull()
+
+    fun position(reservation: PreregisterReservation): Int =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND state = 'WAITING' AND queue_seq <= ?",
+                Int::class.java,
+                reservation.expoId,
+                reservation.sessionId,
+                reservation.queueSeq,
+            ),
+        )
+
+    // Only open, not yet started sessions whose queue head fits the stored free seats can promote; the rest never need remote calls.
+    // ponytail: sessions after the PRE form end still match until they start; they cost one Form call per sweep.
+    fun promotableSessions(now: java.time.Instant): List<Pair<UUID, Long>> =
+        jdbc.query(
+            "SELECT r.expo_id, r.session_id FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
+                "ON st.expo_id = r.expo_id AND st.session_id = r.session_id " +
+                "WHERE r.state = 'WAITING' AND NOT st.deleted AND NOT (st.definition::jsonb ->> 'closed')::boolean " +
+                "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
+                "GROUP BY r.expo_id, r.session_id, st.definition " +
+                "HAVING (array_agg(r.applicants ORDER BY r.queue_seq))[1] <= (st.definition::jsonb ->> 'capacity')::bigint " +
+                "- (SELECT count(*) FROM tb_preregister_application a WHERE a.expo_id = r.expo_id AND a.session_id = r.session_id " +
+                "AND a.status = 'CONFIRMED') - (SELECT coalesce(sum(x.applicants), 0) FROM tb_preregister_reservation x " +
+                "WHERE x.expo_id = r.expo_id AND x.session_id = r.session_id AND x.state = 'RESERVED') " +
+                "ORDER BY min(r.queue_seq) LIMIT 100",
+            { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
+            java.sql.Timestamp.from(now),
+        )
+
+    // The phone index from V8 keeps owner lookup cheap; samePhoneInUse allows at most one such reservation.
+    fun waitlistedByPhone(
+        expoId: UUID,
+        phone: String,
+    ): PreregisterReservation? =
+        jdbc
+            .query(
+                "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
+                    "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                    "AND queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq DESC LIMIT 1",
+                { rs, _ -> reservation(rs) },
+                expoId,
+                phone,
+            ).singleOrNull()
+
+    fun promote(reservation: PreregisterReservation): Boolean =
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET state = 'RESERVED', attempts = 0, next_attempt_at = CURRENT_TIMESTAMP " +
+                "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            reservation.expoId,
+            reservation.requestId,
+        ) == 1
+
+    fun withdraw(reservation: PreregisterReservation): Boolean =
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP " +
+                "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            reservation.expoId,
+            reservation.requestId,
+        ) == 1
 
     fun insert(
         expoId: UUID,
@@ -111,20 +224,26 @@ class PreregisterReservationRepository(
         )
     }
 
+    // A waiting party stops holding the phone once its session started and it can never be promoted.
     fun samePhoneInUse(
         expoId: UUID,
         phone: String,
+        now: java.time.Instant,
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = ? " +
                     "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
-                    "AND (r.state = 'RESERVED' OR (r.state = 'COMPLETED' AND EXISTS(" +
+                    "AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND EXISTS(SELECT 1 FROM tb_preregister_session_state st " +
+                    "WHERE st.expo_id = r.expo_id AND st.session_id = r.session_id " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ?)) " +
+                    "OR (r.state = 'COMPLETED' AND EXISTS(" +
                     "SELECT 1 FROM tb_preregister_application a WHERE a.expo_id = r.expo_id " +
                     "AND a.representative_id = (r.result::jsonb ->> 'participantId')::bigint AND a.status = 'CONFIRMED'))))",
                 Boolean::class.java,
                 expoId,
                 phone,
+                java.sql.Timestamp.from(now),
             ),
         )
 

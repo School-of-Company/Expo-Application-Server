@@ -7,6 +7,7 @@ import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterChangeOperation
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.presentation.dto.sameAs
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import java.util.UUID
 
@@ -46,8 +47,12 @@ class PreregisterSessionLedger(
         ensureAvailable(expoId, sessionId)
         val remote = observation ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "회차를 찾을 수 없습니다.")
         val stored = repository.definition(expoId, sessionId)
-        if (stored != null && stored != remote) conflict("승인되지 않은 회차 정의 변경입니다.")
-        if (stored == null && persist) repository.saveDefinition(remote)
+        if (stored != null && !stored.sameAs(remote)) conflict("승인되지 않은 회차 정의 변경입니다.")
+        if (unadopted(expoId, sessionId, stored)) {
+            // Applications exist under the stored definition; the Expo value applies only after explicit adoption.
+            return remote.copy(waitingCapacity = null)
+        }
+        if (persist && stored != remote) repository.saveDefinition(remote)
         return remote
     }
 
@@ -61,10 +66,11 @@ class PreregisterSessionLedger(
         val (revision, request) = pending
         return when (request.operation) {
             PreregisterChangeOperation.UPDATE -> {
-                if (remote != request.definition) {
+                if (request.definition?.sameAs(remote) != true) {
                     false
                 } else {
-                    repository.saveDefinition(requireNotNull(remote))
+                    val keep = unadopted(expoId, sessionId, repository.definition(expoId, sessionId))
+                    repository.saveDefinition(requireNotNull(remote).let { if (keep) it.copy(waitingCapacity = null) else it })
                     repository.complete(expoId, sessionId, revision, false)
                     true
                 }
@@ -80,6 +86,13 @@ class PreregisterSessionLedger(
             }
         }
     }
+
+    // Sessions with applications stored before #99 keep no waiting capacity until explicit adoption.
+    private fun unadopted(
+        expoId: UUID,
+        sessionId: Long,
+        stored: PreregisterSessionDefinition?,
+    ): Boolean = stored != null && stored.waitingCapacity == null && repository.history(expoId, sessionId)
 }
 
 internal fun conflict(message: String): Nothing = throw ResponseStatusException(HttpStatus.CONFLICT, message)

@@ -42,6 +42,28 @@ class PreregisterMigrationTests {
                     assertEquals("WAITING", it.getString(1))
                 }
                 assertThrows(SQLException::class.java) { sql.execute("UPDATE tb_preregister_application SET status = 'WAITING'") }
+                // V17 keeps waiting parties as reservations with a queue position; withdrawal reuses terminal REJECTED.
+                val reservation =
+                    "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants, state, " +
+                        "queue_seq, withdrawn_at) VALUES ('00000000-0000-0000-0000-000000000034', ?, 1, '{}', '{}', 1, ?, ?, ?)"
+                connection.prepareStatement(reservation).use { insert ->
+                    fun attempt(
+                        key: String,
+                        state: String,
+                        queue: Long?,
+                        withdrawn: Boolean,
+                    ) {
+                        insert.setString(1, key)
+                        insert.setString(2, state)
+                        insert.setObject(3, queue)
+                        insert.setObject(4, if (withdrawn) java.sql.Timestamp(0) else null)
+                        insert.executeUpdate()
+                    }
+                    attempt("waiting", "WAITING", 1, false)
+                    attempt("withdrawn", "REJECTED", 2, true)
+                    assertThrows(SQLException::class.java) { attempt("unqueued", "WAITING", null, false) }
+                    assertThrows(SQLException::class.java) { attempt("withdrawn-reserved", "RESERVED", 3, true) }
+                }
             }
         }
     }

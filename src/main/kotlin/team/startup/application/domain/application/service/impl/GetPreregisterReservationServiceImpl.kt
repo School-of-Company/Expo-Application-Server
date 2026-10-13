@@ -25,6 +25,8 @@ class GetPreregisterReservationServiceImpl(
             saved.result?.groupParticipantIds.orEmpty(),
             saved.errorStatus,
             saved.attempts,
+            if (saved.state == "WAITING") reservations.position(saved) else null,
+            saved.withdrawn,
         )
     }
 }

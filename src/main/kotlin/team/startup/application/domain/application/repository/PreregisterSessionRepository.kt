@@ -28,8 +28,10 @@ class PreregisterSessionRepository(
             )
         val reservations =
             jdbc.queryForMap(
-                "SELECT count(*) AS requests, coalesce(sum(applicants), 0) AS applicants " +
-                    "FROM tb_preregister_reservation WHERE expo_id = ? AND state = 'RESERVED'",
+                "SELECT count(*) FILTER (WHERE state = 'RESERVED') AS requests, " +
+                    "coalesce(sum(applicants) FILTER (WHERE state = 'RESERVED'), 0) AS applicants, " +
+                    "coalesce(sum(applicants) FILTER (WHERE state = 'WAITING'), 0) AS waiting " +
+                    "FROM tb_preregister_reservation WHERE expo_id = ?",
                 expoId,
             )
         val sessions =
@@ -45,11 +47,45 @@ class PreregisterSessionRepository(
                     "(SELECT count(*) FROM tb_preregister_reservation r " +
                     " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'RESERVED') AS requests, " +
                     "(SELECT coalesce(sum(applicants), 0) FROM tb_preregister_reservation r " +
-                    " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'RESERVED') AS applicants " +
-                    "FROM sessions s ORDER BY s.session_id",
+                    " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'RESERVED') AS applicants, " +
+                    "w.waiting, w.parties, w.head, " +
+                    "(st.definition::jsonb ->> 'capacity')::bigint AS capacity, " +
+                    "(st.definition::jsonb ->> 'waitingCapacity')::int AS waiting_capacity, " +
+                    "(st.definition::jsonb ->> 'closed')::boolean AS closed, " +
+                    "(st.definition::jsonb ->> 'startedAt')::timestamptz <= CURRENT_TIMESTAMP AS started " +
+                    "FROM sessions s LEFT JOIN tb_preregister_session_state st ON st.expo_id = ? AND st.session_id = s.session_id " +
+                    "CROSS JOIN LATERAL (SELECT coalesce(sum(applicants), 0) AS waiting, count(*) AS parties, " +
+                    " (array_agg(applicants ORDER BY queue_seq))[1] AS head FROM tb_preregister_reservation r " +
+                    " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'WAITING') w " +
+                    "ORDER BY s.session_id",
                 { rs, _ ->
-                    AdminPreregisterSessionSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), 0, rs.getLong(4), rs.getLong(5))
+                    val occupied = rs.getLong(2) + rs.getLong(5)
+                    val head = rs.getObject(8, Int::class.javaObjectType)
+                    val free = rs.getObject(9, Long::class.javaObjectType)?.let { it - occupied }
+                    val blocked =
+                        when {
+                            head == null -> null
+                            rs.getBoolean(11) -> "CLOSED"
+                            rs.getBoolean(12) -> "SESSION_STARTED"
+                            free != null && head > free -> "HEAD_TOO_LARGE"
+                            else -> null
+                        }
+                    AdminPreregisterSessionSummary(
+                        rs.getLong(1),
+                        rs.getLong(2),
+                        rs.getLong(3),
+                        rs.getLong(6),
+                        rs.getLong(4),
+                        rs.getLong(5),
+                        rs.getLong(7),
+                        head,
+                        free,
+                        rs.getObject(10, Int::class.javaObjectType),
+                        blocked,
+                    )
                 },
+                expoId,
+                expoId,
                 expoId,
                 expoId,
                 expoId,
@@ -62,7 +98,7 @@ class PreregisterSessionRepository(
             expoId,
             (totals["confirmed"] as Number).toLong(),
             (totals["cancelled"] as Number).toLong(),
-            0,
+            (reservations["waiting"] as Number).toLong(),
             (reservations["requests"] as Number).toLong(),
             (reservations["applicants"] as Number).toLong(),
             sessions,

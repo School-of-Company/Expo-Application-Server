@@ -169,3 +169,19 @@ data class AdminProgramAttendanceSummary(
     val firstEntryTime: String?,
     val lastEntryTime: String?,
 )
+
+@Schema(description = "관리자 참가자 검색 조건. q는 User 이름 또는 번호 부분 일치")
+data class AdminParticipantSearchQuery(
+    @field:Size(min = 1, max = 50) val q: String? = null,
+    @field:Min(0) val cursor: Long = 0,
+    @field:Min(1) @field:Max(100) val size: Int = 20,
+) {
+    @get:AssertTrue(message = "q is required")
+    val isQueryValid: Boolean get() = !q.isNullOrBlank()
+}
+
+@Schema(description = "User 참가자 id 오름차순 커서 페이지")
+data class AdminParticipantPage(
+    val items: List<AdminParticipantDetail>,
+    val nextCursor: Long?,
+)

@@ -25,8 +25,12 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.GetOwnerApplicationsCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
+import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.global.security.InternalSecurityConfig
 import team.startup.application.global.security.InternalTokenVerifier
 import java.util.UUID
@@ -40,6 +44,10 @@ class OwnerApplicationHttpTests {
     @MockitoBean private lateinit var query: GetOwnerApplicationsService
 
     @MockitoBean private lateinit var cancel: CancelOwnerApplicationService
+
+    @MockitoBean private lateinit var waitlist: GetOwnerPreregisterWaitlistService
+
+    @MockitoBean private lateinit var withdraw: WithdrawOwnerPreregisterWaitlistService
 
     @Test
     fun `cookie is required and internal token or query session cannot replace it`() {
@@ -98,6 +106,41 @@ class OwnerApplicationHttpTests {
         mvc
             .perform(post("$PATH/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "owner")))
             .andExpect(status().isServiceUnavailable)
+    }
+
+    @Test
+    fun `waitlist lookup and withdrawal require the participant session and CSRF`() {
+        val owner = OwnerPreregisterWaitlistCommand(EXPO, "owner")
+        mvc.perform(get("$PATH/preregister-waitlist")).andExpect(status().isUnauthorized)
+        mvc
+            .perform(post("$PATH/preregister-waitlist/cancellation").cookie(Cookie("PARTICIPANT_SESSION", "owner")))
+            .andExpect(status().isForbidden)
+        mvc.perform(post("$PATH/preregister-waitlist/cancellation").with(csrf())).andExpect(status().isUnauthorized)
+        verifyNoInteractions(waitlist, withdraw)
+        `when`(waitlist.execute(owner)).thenReturn(OwnerPreregisterWaitlist(1, 3, "WAITING", 2))
+        val result =
+            mvc
+                .perform(get("$PATH/preregister-waitlist").cookie(Cookie("PARTICIPANT_SESSION", "owner")))
+                .andExpect(status().isOk)
+                .andReturn()
+        assertEquals("no-store", result.response.getHeader("Cache-Control"))
+        assertEquals(
+            tools.jackson.module.kotlin.jacksonObjectMapper().readTree(
+                """{"sessionId":1,"applicants":3,"status":"WAITING","position":2}""",
+            ),
+            tools.jackson.module.kotlin
+                .jacksonObjectMapper()
+                .readTree(result.response.contentAsString),
+        )
+        mvc
+            .perform(
+                post("$PATH/preregister-waitlist/cancellation")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
+                    .session(result.request.session as MockHttpSession)
+                    .header("X-CSRF-TOKEN", requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))),
+            ).andExpect(status().isNoContent)
+        verify(withdraw).execute(owner)
+        verifyNoInteractions(query, cancel)
     }
 
     companion object {

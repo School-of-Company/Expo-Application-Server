@@ -14,6 +14,7 @@ class PreregisterRecoveryScheduler(
     private val reservations: PreregisterReservationRepository,
     private val workflow: PreregisterRegistrationWorkflow,
     private val gateway: RegistrationGateway,
+    private val waitlist: PreregisterWaitlist,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -30,5 +31,14 @@ class PreregisterRecoveryScheduler(
             }
         }
         reservations.deliverCounts { expoId, participantId -> gateway.countStandard(expoId.toString(), participantId) }
+    }
+
+    // Safety net for promotions deferred by remote failures or boundaries observed after a cancellation.
+    @Scheduled(
+        fixedDelayString = "\${application.registration.waitlist-promotion-delay-ms:30000}",
+        initialDelayString = "\${application.registration.waitlist-promotion-delay-ms:30000}",
+    )
+    fun promote() {
+        reservations.promotableSessions(waitlist.now()).forEach { (expoId, sessionId) -> waitlist.promoteQuietly(expoId, sessionId) }
     }
 }

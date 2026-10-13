@@ -30,7 +30,7 @@ SMS는 자유 본문을 받는다. 현재 Client 호환을 위한 최소 변수�
 
 카카오는 Notification의 `/internal/admin-group-messages/config`가 활성화한 승인 템플릿만 선택할 수 있다. Application은 SMS 자동 대체를 항상 `false`로 전달한다. 실제 카카오 설정이 없으면 `enabled=false`, 빈 템플릿 목록이며 발송은 `422`다.
 
-Application은 전화번호와 문구를 저장하지 않는다. Notification 미리보기와 작업이 멱등 상태, 성공/실패/결과 불명, 재시도 금지를 소유한다. 서비스 간 경로에는 각 서비스의 `X-Internal-Token`이 필요하다.
+Application은 전화번호와 문구를 저장하지 않는다. Notification 미리보기와 작업이 멱등 상태, 성공/실패/결과 불명, 재시도 금지를 소유한다. 서비스 간 경로에는 각 서비스의 `X-Internal-Token`이 필요하다. 송신 토큰은 `APPLICATION_ADMIN_GROUP_MESSAGE_{EXPO,USER,NOTIFICATION}_INTERNAL_TOKEN`으로 대상마다 따로 설정하며 각각 Expo `EXPO_INTERNAL_TOKEN`, User `INTERNAL_TOKEN`, Notification `ADMIN_GROUP_MESSAGING_INTERNAL_TOKEN`과 같아야 한다. `APPLICATION_INTERNAL_TOKEN`으로 대체하지 않으며, URL이 설정된 대상의 토큰이 비어 있으면 기동이 실패한다.
 
 Notification 실제 HTTP 계약은 fake 공급자와 Redis를 띄운 뒤 다음 독립 Kotlin 검사로 확인한다. 이 검사는 설정, 미리보기 수량, 실행 멱등성, 완료 상태, 성공 건 재시도 금지를 실제 내부 경로에서 확인한다.
 

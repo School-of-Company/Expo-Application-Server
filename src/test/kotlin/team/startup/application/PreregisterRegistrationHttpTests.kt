@@ -514,7 +514,9 @@ class PreregisterRegistrationHttpTests {
         val available = capacity()
         assertEquals(20, available.get("remaining").intValue())
         assertEquals(5, available.get("maxApplicants").intValue())
-        assertFalse(available.has("waitingRemaining"))
+        // Waiting intake is disabled in this class: Expo's waiting capacity is reported but never offered.
+        assertEquals(99, available.get("appliedWaitingCapacity").intValue())
+        assertEquals(0, available.get("maxWaitingApplicants").intValue())
         assertEquals(0, count("tb_preregister_session_state"))
         capacity.set(2)
         assertEquals(2, capacity().get("maxApplicants").intValue())

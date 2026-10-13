@@ -18,4 +18,6 @@ data class PreregisterReservationStatus(
     val participantIds: List<Long>,
     val errorStatus: Int?,
     val attempts: Int,
+    @field:Schema(description = "대기 순번(1부터). WAITING이 아니면 null") val position: Int? = null,
+    @field:Schema(description = "대표자·관리자가 취소한 대기. User 409 거절과 구분") val withdrawn: Boolean = false,
 )
