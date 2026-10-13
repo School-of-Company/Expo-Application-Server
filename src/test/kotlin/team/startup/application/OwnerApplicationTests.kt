@@ -58,6 +58,7 @@ import team.startup.application.domain.application.service.OwnerCancellationGuar
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
+import team.startup.application.domain.application.service.impl.PreregisterWaitlist
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.domain.application.service.impl.SessionAttendanceOutbox
 import tools.jackson.databind.JsonNode
@@ -200,6 +201,7 @@ class OwnerApplicationTests {
                 context.getBean(CancelProgramSessionService::class.java),
                 DefaultListableBeanFactory().getBeanProvider(OwnerCancellationGuard::class.java),
                 TEST_CLOCK,
+                context.getBean(PreregisterWaitlist::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(cancelCommand("2")) }
         assertEquals("CONFIRMED", state(2))

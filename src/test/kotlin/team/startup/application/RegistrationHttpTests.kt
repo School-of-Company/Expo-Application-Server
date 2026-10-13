@@ -105,7 +105,10 @@ class RegistrationHttpTests {
                 "retry-auth",
                 "valid-session",
             )
-        `when`(preregistration.resume(command)).thenReturn(true)
+        `when`(preregistration.resume(command)).thenReturn(
+            team.startup.application.domain.application.presentation.dto
+                .PreregisterRegistrationReceipt("CONFIRMED", 1, null),
+        )
         mockMvc
             .perform(
                 post("/application/pre-standard/$EXPO_1")

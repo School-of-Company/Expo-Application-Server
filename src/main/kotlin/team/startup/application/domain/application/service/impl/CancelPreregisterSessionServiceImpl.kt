@@ -13,6 +13,7 @@ class CancelPreregisterSessionServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
     private val attendance: SessionAttendanceOutbox,
+    private val waitlist: PreregisterWaitlist,
 ) : CancelPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -27,27 +28,30 @@ class CancelPreregisterSessionServiceImpl(
             ledger.ensureAvailable(command.expoId, command.sessionId)
         }
         val observation = ledger.observe(command.expoId, command.sessionId)
-        return requireNotNull(
-            ledger.transactions.execute {
-                ledger.lock(command.expoId)
-                ledger.current(command.expoId, command.sessionId, observation)
-                val owned = repository.selectedOwned(command.expoId, command.sessionId, command.applicationIds)
-                if (owned.size != command.applicationIds.size ||
-                    owned.any {
-                        command.representativeId != null && it.second != command.representativeId
+        val cancelled =
+            requireNotNull(
+                ledger.transactions.execute {
+                    ledger.lock(command.expoId)
+                    ledger.current(command.expoId, command.sessionId, observation)
+                    val owned = repository.selectedOwned(command.expoId, command.sessionId, command.applicationIds)
+                    if (owned.size != command.applicationIds.size ||
+                        owned.any {
+                            command.representativeId != null && it.second != command.representativeId
+                        }
+                    ) {
+                        conflict("취소할 신청의 소속이 일치하지 않습니다.")
                     }
-                ) {
-                    conflict("취소할 신청의 소속이 일치하지 않습니다.")
-                }
-                val selected = owned.map { it.first }
-                val cancelled =
-                    selected.filter { it.status != "CANCELLED" }.map {
-                        repository.status(it.id, "CANCELLED")
-                        attendance.cancelled(command.expoId, it.participantId)
-                        it.copy(status = "CANCELLED")
-                    }
-                cancelled
-            },
-        )
+                    val selected = owned.map { it.first }
+                    val cancelled =
+                        selected.filter { it.status != "CANCELLED" }.map {
+                            repository.status(it.id, "CANCELLED")
+                            attendance.cancelled(command.expoId, it.participantId)
+                            it.copy(status = "CANCELLED")
+                        }
+                    cancelled
+                },
+            )
+        if (cancelled.isNotEmpty()) waitlist.promoteQuietly(command.expoId, command.sessionId)
+        return cancelled
     }
 }

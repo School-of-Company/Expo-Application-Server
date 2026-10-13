@@ -31,6 +31,7 @@ class CancelOwnerApplicationServiceImpl(
     private val cancelProgram: CancelProgramSessionService,
     private val guards: ObjectProvider<OwnerCancellationGuard>,
     private val clock: Clock,
+    private val waitlist: PreregisterWaitlist,
 ) : CancelOwnerApplicationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelOwnerApplicationCommand) {
@@ -73,5 +74,6 @@ class CancelOwnerApplicationServiceImpl(
                 permit.committed(cancellationRevision)
             }
         }
+        if (command.type == OwnerApplicationType.PREREGISTER) waitlist.promoteQuietly(command.expoId, original.sessionOrProgramId)
     }
 }

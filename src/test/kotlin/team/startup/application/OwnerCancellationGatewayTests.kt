@@ -29,6 +29,7 @@ import team.startup.application.domain.application.service.impl.AttendanceCancel
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
 import team.startup.application.domain.application.service.impl.OwnerCancellationGateway
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
+import team.startup.application.domain.application.service.impl.PreregisterWaitlist
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.domain.application.service.impl.SessionAttendanceOutbox
 import tools.jackson.databind.JsonNode
@@ -190,6 +191,7 @@ class OwnerCancellationGatewayTests {
                 mock(CancelProgramSessionService::class.java),
                 beans.getBeanProvider(OwnerCancellationGuard::class.java),
                 Clock.systemUTC(),
+                mock(PreregisterWaitlist::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(command) }
         verifyNoInteractions(ledger, outbox, cancellationAdapter)

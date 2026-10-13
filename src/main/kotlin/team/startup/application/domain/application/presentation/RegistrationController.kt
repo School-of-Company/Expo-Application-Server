@@ -17,12 +17,14 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.service.RegisterStandardFieldService
 import team.startup.application.domain.application.service.RegisterStandardPreService
 import team.startup.application.domain.application.service.RegisterTraineeFieldService
 import team.startup.application.domain.application.service.RegisterTraineePreService
 import team.startup.application.domain.application.service.RegistrationCommand
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
+import team.startup.application.domain.application.service.impl.WaitlistWithdrawnException
 
 @Schema(description = "박람회 참가자 등록 요청")
 data class RegistrationRequest(
@@ -50,6 +52,10 @@ class RegistrationController(
     fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("status" to 401, "code" to ex.code))
 
+    @ExceptionHandler(WaitlistWithdrawnException::class)
+    fun withdrawn(): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "WAITLIST_WITHDRAWN"))
+
     @Operation(
         summary = "연수자 사전 등록",
         responses = [
@@ -72,12 +78,16 @@ class RegistrationController(
 
     @Operation(
         summary = "일반 사전 등록",
+        description =
+            "일행 전체를 확정하거나, 확정석이 부족하고 대기 접수가 켜져 있으면 일행 전체를 대기로 받습니다. " +
+                "같은 Idempotency-Key 재시도는 대기를 새로 만들지 않고 현재 상태를 돌려줍니다.",
         responses = [
-            ApiResponse(responseCode = "201", description = "등록 완료"),
+            ApiResponse(responseCode = "201", description = "등록 완료(확정)"),
+            ApiResponse(responseCode = "202", description = "대기 접수(WAITING) 또는 승급 뒤 User 저장 중(PROCESSING). QR 없음"),
             ApiResponse(responseCode = "400", description = "입력 검증 또는 등록·폼 규칙 위반"),
             ApiResponse(responseCode = "401", description = "등록 비활성 시 인증 필요 또는 참가자 세션 인증 실패"),
             ApiResponse(responseCode = "404", description = "박람회, 폼 또는 회차 없음"),
-            ApiResponse(responseCode = "409", description = "중복 등록, 정원 또는 공급자 상태 충돌"),
+            ApiResponse(responseCode = "409", description = "중복 등록, 정원 또는 공급자 상태 충돌. 취소된 대기의 같은 키 재시도는 code WAITLIST_WITHDRAWN"),
             ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
             ApiResponse(responseCode = "503", description = "등록 비활성 또는 공급자 연동 불가"),
         ],
@@ -135,8 +145,8 @@ class RegistrationController(
         request: RegistrationRequest,
         key: String?,
         httpRequest: HttpServletRequest,
-        execute: (RegistrationCommand) -> Unit,
-    ): ResponseEntity<Void> {
+        execute: (RegistrationCommand) -> Any?,
+    ): ResponseEntity<Any> {
         if (!enabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "박람회 등록이 비활성화되었습니다.")
         val session =
             httpRequest.cookies
@@ -144,7 +154,8 @@ class RegistrationController(
                 .filter { it.name == sessionCookieName }
                 .singleOrNull()
                 ?.value
-        execute(RegistrationCommand(expoId, request, key, session))
+        val receipt = execute(RegistrationCommand(expoId, request, key, session))
+        if (receipt is PreregisterRegistrationReceipt) return ResponseEntity.status(HttpStatus.ACCEPTED).body(receipt)
         return ResponseEntity.status(HttpStatus.CREATED).build()
     }
 }
