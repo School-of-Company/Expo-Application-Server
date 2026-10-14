@@ -262,6 +262,32 @@ class ReportApplicationTargetHttpTests {
     }
 
     @Test
+    fun `보고 대상은 목록과 같은 복수 상태와 행사일 필터를 받고 단일 상태 문자열도 유지한다`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"A\",\"startedAt\":\"2026-10-13 09:00\"}' " +
+                "WHERE id IN (?, ?)",
+            first,
+            third,
+        )
+        assertEquals(
+            listOf(second, first).map(UUID::toString),
+            ids(json(create("{\"filter\":{\"status\":[\"CONFIRMED\",\"WAITING\"]}}"))),
+        )
+        assertEquals(listOf(first.toString()), ids(json(create("{\"filter\":{\"status\":\"CONFIRMED\"}}"))))
+        assertEquals(
+            listOf(third, first).map(UUID::toString),
+            ids(json(create("{\"filter\":{\"eventDate\":\"2026-10-13\"}}"))),
+        )
+        assertEquals(
+            listOf(first.toString()),
+            ids(json(create("{\"filter\":{\"eventDate\":\"2026-10-13\",\"status\":[\"CONFIRMED\",\"WAITING\"]}}"))),
+        )
+        listOf("{\"status\":[]}", "{\"status\":[\"OTHER\"]}", "{\"eventDate\":\"2026-13-01\"}").forEach {
+            assertEquals(400, create("{\"filter\":$it}").status, it)
+        }
+    }
+
+    @Test
     fun `기본 상태 전체와 양방향 시간 UUID 정렬 날짜 경계 및 리터럴 검색을 유지한다`() {
         assertEquals(listOf(third, second, first).map(UUID::toString), ids(json(create())))
         assertEquals(3, json(create("{\"filter\":{\"search\":\"%\"}}"))["totalElements"].asInt())

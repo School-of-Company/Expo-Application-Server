@@ -177,6 +177,24 @@ class AdminGroupMessageHttpTests {
     }
 
     @Test
+    fun `filtered scope uses ledger status and event date filters and rejects person filters it cannot apply`() {
+        val all = mapper.readTree(preview(filtered("CONFIRMED"), "공통 안내").contentAsString)["applicationCount"].asInt()
+        val scoped = """{"kind":"FILTERED","filter":{"status":["CONFIRMED","WAITING"],"eventDate":"2026-10-12","sort":"CREATED_ASC"}}"""
+        val response = preview(scoped, "공통 안내")
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(all, mapper.readTree(response.contentAsString)["applicationCount"].asInt())
+        val otherDay = preview("""{"kind":"FILTERED","filter":{"eventDate":"2026-10-13"}}""", "공통 안내")
+        assertEquals(201, otherDay.status, otherDay.contentAsString)
+        assertEquals(0, mapper.readTree(otherDay.contentAsString)["applicationCount"].asInt())
+        val sent = requests.size
+        listOf(""""q":"홍길동"""", """"occupation":"TEACHER"""").forEach {
+            val rejected = preview("""{"kind":"FILTERED","filter":{$it}}""", "공통 안내")
+            assertEquals(400, rejected.status, it)
+        }
+        assertEquals(sent, requests.size)
+    }
+
+    @Test
     fun `kakao cannot be previewed before an approved template provider is configured`() {
         val requestId = UUID.randomUUID()
         val response =

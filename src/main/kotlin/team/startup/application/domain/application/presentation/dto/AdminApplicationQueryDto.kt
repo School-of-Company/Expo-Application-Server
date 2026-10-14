@@ -8,11 +8,21 @@ import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
 import java.time.Instant
+import java.time.LocalDate
 import java.util.UUID
 
 enum class AdminApplicationStatus { CONFIRMED, WAITING, CANCELLED }
 
-enum class AdminApplicationSort { CREATED_ASC, CREATED_DESC }
+enum class AdminApplicationSort {
+    CREATED_ASC,
+    CREATED_DESC,
+    RECEIPT_ASC,
+    RECEIPT_DESC,
+    PROGRAM_ASC,
+    PROGRAM_DESC,
+    SESSION_ASC,
+    SESSION_DESC,
+}
 
 enum class AdminOccupation {
     KINDERGARTEN_STUDENT,
@@ -32,7 +42,8 @@ data class AdminApplicationQuery(
     @field:Positive val programId: Long? = null,
     val groupId: UUID? = null,
     val applicationId: UUID? = null,
-    val status: AdminApplicationStatus? = null,
+    @field:Schema(description = "쉼표로 여러 상태 지정 가능. 예: CONFIRMED,WAITING")
+    val status: List<AdminApplicationStatus>? = null,
     @field:Size(max = 200) val search: String? = null,
     val from: Instant? = null,
     val until: Instant? = null,
@@ -41,6 +52,8 @@ data class AdminApplicationQuery(
     val sort: AdminApplicationSort = AdminApplicationSort.CREATED_DESC,
     @field:Size(min = 1, max = 50) val q: String? = null,
     val occupation: AdminOccupation? = null,
+    @field:Schema(description = "제출 당시 회차 시작 일시(KST 로컬)의 날짜", example = "2026-10-12")
+    val eventDate: LocalDate? = null,
 ) {
     @get:AssertTrue(message = "q must not be blank")
     val isParticipantQueryValid: Boolean get() = q == null || q.isNotBlank()
@@ -55,6 +68,8 @@ data class AdminApplicationQuery(
 @Schema(description = "접수 시점의 정의·폼·답변과 상태 이력")
 data class AdminApplicationRow(
     val applicationId: UUID,
+    @field:Schema(description = "박람회별 1부터 증가하는 접수번호. 접수 커밋 순서이며 재사용하지 않음")
+    val receiptNumber: Long,
     val participantId: Long,
     val traineeId: Long?,
     val programType: ProgramSessionType,
