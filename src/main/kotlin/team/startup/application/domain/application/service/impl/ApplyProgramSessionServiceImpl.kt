@@ -59,6 +59,8 @@ class ApplyProgramSessionServiceImpl(
         if (occupation == null || occupation !in policy.allowedOccupations) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "신청 가능한 참가자 역할이 아닙니다.")
         }
+        if (!policy.channelsValid()) badGateway()
+        val channel = policy.channels?.let { policy.channelOf(occupation) ?: badGateway() }
         val provider =
             forms.ifAvailable
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 폼 조회 계약이 준비되지 않았습니다.")
@@ -89,11 +91,13 @@ class ApplyProgramSessionServiceImpl(
             )
         }
         waitlist.promote(definition, now)
-        val waitingCount = repository.waitingCount(definition)
+        // A channel never borrows another channel's vacancy; the session total still covers legacy rows without a channel.
+        val waitingCount = repository.waitingCount(definition, channel?.name)
         val waiting =
             ledger.confirmedCount(command.programType, command.programId) >= policy.capacity ||
+                (channel != null && repository.confirmedCount(definition, channel.name) >= channel.capacity) ||
                 waitingCount > 0
-        if (waiting && waitingCount >= policy.waitingCapacity) conflict("프로그램 대기 정원이 찼습니다.")
+        if (waiting && waitingCount >= (channel?.waitingCapacity ?: policy.waitingCapacity)) conflict("프로그램 대기 정원이 찼습니다.")
         val traineeId =
             if (command.programType == ProgramSessionType.TRAINING && !waiting) {
                 val id = gateway.resolveTrainee(command.expoId, command.participantId, trainingId)
@@ -136,12 +140,14 @@ class ApplyProgramSessionServiceImpl(
             trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = command.programId))
             operations.incrementVersion(traineeId)
         }
-        ledger.save(command, definition, form, receipt)
+        ledger.save(command, definition, form, receipt, channel?.name)
         repository.event(receipt.applicationId, receipt.status)
         return receipt
     }
 
     private fun conflict(message: String): Nothing = throw ProgramApplicationConflictException(message)
+
+    private fun badGateway(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 채널 정책을 확인할 수 없습니다.")
 
     private fun ensureNoLegacyGroup(
         command: ApplyProgramSessionCommand,

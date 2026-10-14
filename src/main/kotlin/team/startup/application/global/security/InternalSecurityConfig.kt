@@ -27,6 +27,8 @@ class InternalSecurityConfig(
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
         val internal = PathPatternRequestMatcher.withDefaults().matcher("/internal/**")
         val adminGroupMessages = PathPatternRequestMatcher.withDefaults().matcher("/application/expos/{expoId}/admin-group-messages/**")
+        // An anonymous counter has no session or credential for CSRF to protect.
+        val pageViews = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/application/expos/{expoId}/page-views")
         val registration =
             listOf(
                 "/application/{expoId}",
@@ -38,6 +40,7 @@ class InternalSecurityConfig(
             .csrf { csrf ->
                 csrf.ignoringRequestMatchers(internal)
                 csrf.ignoringRequestMatchers(adminGroupMessages)
+                csrf.ignoringRequestMatchers(pageViews)
                 if (registrationEnabled) csrf.ignoringRequestMatchers(*registration.toTypedArray())
             }.authorizeHttpRequests { requests ->
                 requests
@@ -60,6 +63,8 @@ class InternalSecurityConfig(
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-waitlist/cancellation")
                     .permitAll()
                     .requestMatchers(adminGroupMessages)
+                    .permitAll()
+                    .requestMatchers(pageViews)
                     .permitAll()
                 if (swaggerEnabled) {
                     requests

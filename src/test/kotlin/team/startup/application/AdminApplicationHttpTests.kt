@@ -218,6 +218,43 @@ class AdminApplicationHttpTests {
             expoId,
             expoId,
         )
+        val questions =
+            """[{"id":1,"title":"동행","order":0,"formType":"COMPANION","jsonData":{},""" +
+                """"otherJson":null,"dynamicFormType":"COMPANION"}]"""
+        val companions =
+            """[{"name":"A","occupation":"GENERAL","region":"OTHER"},{"name":" A ","occupation":"GENERAL","region":"OTHER"},""" +
+                """{"name":"B","occupation":"TEACHER","school":"S","region":"OTHER"}]"""
+
+        fun waiting(occupation: String?) =
+            mapper.writeValueAsString(
+                mapOf(
+                    "expoId" to expoId.toString(),
+                    "name" to "Waiting",
+                    "phoneNumber" to "01000000000",
+                    "informationJson" to if (occupation == null) "{}" else """{"동행":$companions}""",
+                    "personalInformationStatus" to true,
+                    "applicationType" to "PRE",
+                    "occupation" to occupation,
+                    "requestId" to UUID.randomUUID().toString(),
+                    "questions" to mapper.readTree(questions),
+                ),
+            )
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'wait-1', 1, '{}', ?, 3, 'WAITING', 1), (?, 'wait-2', 1, '{}', ?, 1, 'WAITING', 2)",
+            expoId,
+            waiting("PRE_SERVICE_TEACHER"),
+            expoId,
+            waiting(null),
+        )
+        participantIds = listOf(10L, 11L)
+        userBody =
+            """{"items":[""" +
+            listOf(10 to "\"TEACHER\"", 11 to "null").joinToString(",") { (id, occupation) ->
+                """{"participantId":$id,"name":"P","phoneNumber":null,"notificationPhoneNumber":null,"occupation":$occupation,""" +
+                    """"representativeId":10,"linkedTraineeId":null,"applicationType":"PRE","information":{}}"""
+            } + """],"nextCursor":null}"""
         val path = "/application/admin/expos/$expoId/preregistrations/summary"
         assertEquals(
             401,
@@ -241,8 +278,20 @@ class AdminApplicationHttpTests {
         val body = mapper.readTree(response.contentAsString)
         assertEquals(2, body["confirmedUniqueParticipants"].asInt())
         assertEquals(1, body["cancelledUniqueParticipants"].asInt())
-        assertEquals(0, body["waitingParticipants"].asInt())
+        assertEquals(4, body["waitingParticipants"].asInt())
         assertEquals(1, body["pendingReservations"].asInt())
+        val occupations =
+            body["occupations"].associate { row ->
+                row["occupation"].takeUnless { it.isNull }?.asString() to
+                    (row["confirmedParticipants"].asInt() to row["waitingParticipants"].asInt())
+            }
+        assertEquals(10, occupations.size)
+        assertEquals(1 to 1, occupations["TEACHER"])
+        assertEquals(0 to 1, occupations["PRE_SERVICE_TEACHER"])
+        assertEquals(0 to 1, occupations["GENERAL"])
+        assertEquals(1 to 1, occupations[null])
+        assertEquals(body["confirmedUniqueParticipants"].asInt(), occupations.values.sumOf { it.first })
+        assertEquals(body["waitingParticipants"].asInt(), occupations.values.sumOf { it.second })
         assertEquals(3, body["pendingApplicants"].asInt())
         assertEquals(2, body["sessions"].size())
         assertEquals(2, body["sessions"][0]["confirmedParticipants"].asInt())
@@ -679,7 +728,7 @@ class AdminApplicationHttpTests {
         transaction.executeWithoutResult {
             val query =
                 AdminApplicationQuery(
-                    status = team.startup.application.domain.application.presentation.dto.AdminApplicationStatus.CONFIRMED,
+                    status = listOf(team.startup.application.domain.application.presentation.dto.AdminApplicationStatus.CONFIRMED),
                 )
             val before = repository.summary(expoId, query)
             CompletableFuture
@@ -706,6 +755,71 @@ class AdminApplicationHttpTests {
         assertEquals(first.toString(), body["items"][0]["applicationId"].asString())
         assertEquals(second.toString(), mapper.readTree(read("$filter&page=1").contentAsString)["items"][0]["applicationId"].asString())
         assertEquals(2, mapper.readTree(read("$filter&page=99").contentAsString)["totalElements"].asInt())
+    }
+
+    @Test
+    fun `접수번호는 박람회별로 1부터 증가하며 롤백된 접수는 번호를 소비하지 않는다`() {
+        val numbers = mapper.readTree(read("?sort=RECEIPT_ASC").contentAsString)["items"].asIterable().map { it["receiptNumber"].asLong() }
+        assertEquals(listOf(1L, 2L, 3L), numbers)
+        assertThrows(Exception::class.java) {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                insert(UUID.randomUUID(), expoId, "CONFIRMED", program = 11)
+                error("rollback")
+            }
+        }
+        val next = UUID.randomUUID()
+        insert(next, expoId, "CONFIRMED", program = 12)
+        val body = mapper.readTree(read("?sort=RECEIPT_DESC&size=1").contentAsString)
+        assertEquals(next.toString(), body["items"][0]["applicationId"].asString())
+        assertEquals(4, body["items"][0]["receiptNumber"].asLong())
+        val other = UUID.randomUUID()
+        insert(UUID.randomUUID(), other, "CONFIRMED")
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT receipt_number FROM tb_program_session_application WHERE expo_id = ?", Long::class.java, other),
+        )
+        assertThrows(Exception::class.java) {
+            jdbc.update("UPDATE tb_program_session_application SET receipt_number = 1 WHERE id = ?", next)
+        }
+    }
+
+    @Test
+    fun `복수 상태와 행사일 필터 및 프로그램 회차 정렬은 목록과 집계에 같은 원장을 적용한다`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"B\",\"startedAt\":\"2026-10-13 09:00\"}' WHERE id = ?",
+            first,
+        )
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"A\",\"startedAt\":\"2026-10-13T10:00\"}' WHERE id = ?",
+            second,
+        )
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"C\",\"startedAt\":\"2026-10-12T08:00\"}' " +
+                "WHERE expo_id = ? AND status = 'CANCELLED'",
+            expoId,
+        )
+        val active = mapper.readTree(read("?status=CONFIRMED,WAITING").contentAsString)
+        assertEquals(2, active["totalElements"].asInt())
+        assertEquals(0, active["statusCounts"]["CANCELLED"].asInt())
+        assertEquals(active["statusCounts"], mapper.readTree(summary("?status=CONFIRMED,WAITING").contentAsString)["statusCounts"])
+        assertEquals(1, mapper.readTree(read("?status=CANCELLED").contentAsString)["totalElements"].asInt())
+
+        val day = mapper.readTree(read("?eventDate=2026-10-13&sort=SESSION_ASC").contentAsString)
+        assertEquals(listOf(first, second).map(UUID::toString), day["items"].asIterable().map { it["applicationId"].asString() })
+        assertEquals(2, mapper.readTree(summary("?eventDate=2026-10-13").contentAsString)["totalElements"].asInt())
+        assertEquals(0, mapper.readTree(read("?eventDate=2026-10-14").contentAsString)["totalElements"].asInt())
+
+        fun order(sort: String) =
+            mapper.readTree(read("?sort=$sort").contentAsString)["items"].asIterable().map {
+                it["definition"]["title"].asString()
+            }
+        assertEquals(listOf("C", "B", "A"), order("SESSION_ASC"))
+        assertEquals(listOf("A", "B", "C"), order("SESSION_DESC"))
+        assertEquals(listOf("A", "B", "C"), order("PROGRAM_ASC"))
+        assertEquals(listOf("C", "B", "A"), order("PROGRAM_DESC"))
+        listOf("status=CONFIRMED,OTHER", "eventDate=2026-13-01", "eventDate=20261013", "sort=NAME_ASC").forEach {
+            assertEquals(400, read("?$it").status, it)
+        }
     }
 
     @Test

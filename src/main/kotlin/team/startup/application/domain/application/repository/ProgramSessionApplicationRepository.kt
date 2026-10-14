@@ -136,12 +136,13 @@ class ProgramSessionApplicationRepository(
         definition: ProgramSessionDefinition,
         form: ProgramFormSnapshot,
         receipt: ProgramSessionReceipt,
+        channel: String?,
     ) {
         jdbc.update(
             "INSERT INTO tb_program_session_application " +
                 "(id, expo_id, program_type, program_id, group_id, participant_id, trainee_id, status, " +
-                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, channel) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?)",
             receipt.applicationId,
             UUID.fromString(command.expoId),
             command.programType.name,
@@ -155,6 +156,7 @@ class ProgramSessionApplicationRepository(
             form.version,
             mapper.writeValueAsString(form.questions),
             mapper.writeValueAsString(command.answers),
+            channel,
         )
         jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, ?)", receipt.applicationId, receipt.status)
         jdbc.update(

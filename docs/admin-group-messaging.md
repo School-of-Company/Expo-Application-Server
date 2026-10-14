@@ -20,7 +20,7 @@ Application은 Client가 전달한 관리자 Bearer JWT를 Expo의 `GET /interna
 {"kind":"FILTERED","filter":{"programType":"STANDARD","status":"CONFIRMED","sort":"CREATED_ASC"}}
 ```
 
-`FILTERED`는 화면 페이지가 아니라 같은 관리자 원장 필터의 현재 전체 결과이며 최대 5,000건이다. 실행과 재시도 요청은 미리보기와 같은 `source`, 64자리 소문자 SHA-256 `targetFingerprint`, 새 UUID `idempotencyKey`를 보낸다. Application은 현재 권한, 신청 상태, 참가자 이름, 대표자 번호, 렌더링 결과를 다시 계산한다. 하나라도 달라지면 `409`로 새 미리보기를 요구한다.
+`FILTERED`는 화면 페이지가 아니라 같은 관리자 원장 필터의 현재 전체 결과이며 최대 5,000건이다. `status`는 단일 문자열 또는 배열(`["CONFIRMED","WAITING"]`)이고 `eventDate`(제출 당시 회차 시작일, KST)를 받는다. 사람 필터 `q`·`occupation`은 적용할 수 없어 `400`이므로, 사람으로 좁힌 목록은 `SELECTED`로 보낸다. 실행과 재시도 요청은 미리보기와 같은 `source`, 64자리 소문자 SHA-256 `targetFingerprint`, 새 UUID `idempotencyKey`를 보낸다. Application은 현재 권한, 신청 상태, 참가자 이름, 대표자 번호, 렌더링 결과를 다시 계산한다. 하나라도 달라지면 `409`로 새 미리보기를 요구한다.
 
 미리보기의 `applicationCount`는 중복 제거 전 현재 신청 원장 행 수, `recipientCount`는 발송 가능한 정규화 수신번호 수, `messageCount`는 발송 가능한 개별 문구 수다. `targetCount`와 `sendableCount`는 Notification 내부 계약 호환 필드이며 선택 신청 수로 해석하지 않는다. 누락 대상 수는 `missingCount`로 별도 제공한다.
 

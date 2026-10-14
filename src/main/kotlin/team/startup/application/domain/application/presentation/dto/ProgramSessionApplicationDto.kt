@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation.dto
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Positive
@@ -22,6 +23,34 @@ data class ProgramSessionPolicy(
     val cancelEndedAt: Instant,
     val promotionEndedAt: Instant,
     val groupId: UUID? = null,
+    // Absent means one capacity for the whole session; omitted when null so stored receipts and snapshots stay byte-identical.
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    val channels: List<ProgramSessionChannel>? = null,
+) {
+    fun channelOf(occupation: String): ProgramSessionChannel? = channels?.firstOrNull { occupation in it.allowedOccupations }
+
+    // Expo's contract: disjoint occupations whose union and capacity totals equal the session values.
+    fun channelsValid(): Boolean {
+        val channels = channels ?: return true
+        val occupations = channels.flatMap { it.allowedOccupations }
+        val names = channels.map { it.name.trim() }
+        return channels.isNotEmpty() && names.none { it.isEmpty() || it.length > 50 } && names.toSet().size == names.size &&
+            channels.none { it.capacity <= 0 || it.waitingCapacity < 0 || it.allowedOccupations.isEmpty() } &&
+            occupations.size == occupations.toSet().size && occupations.toSet() == allowedOccupations &&
+            channels.sumOf { it.capacity.toLong() } == capacity.toLong() &&
+            channels.sumOf { it.waitingCapacity.toLong() } == waitingCapacity.toLong()
+    }
+
+    // Channel names and occupations decide where existing applications are counted.
+    fun channelLayout(): Set<Pair<String, Set<String>>>? = channels?.map { it.name to it.allowedOccupations }?.toSet()
+}
+
+@Schema(description = "회차 신청 채널. 채널마다 정원·대기 정원을 따로 쓰고 빈자리를 다른 채널과 나누지 않음")
+data class ProgramSessionChannel(
+    val name: String,
+    val allowedOccupations: Set<String>,
+    val capacity: Int,
+    val waitingCapacity: Int,
 )
 
 @Schema(description = "프로그램 회차 전체 정의")

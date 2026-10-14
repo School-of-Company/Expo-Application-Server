@@ -8,6 +8,7 @@ import team.startup.application.domain.application.presentation.dto.AdminPreregi
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
 
@@ -104,6 +105,20 @@ class PreregisterSessionRepository(
             sessions,
         )
     }
+
+    fun confirmedParticipantIds(expoId: UUID): List<Long> =
+        jdbc.query(
+            "SELECT DISTINCT participant_id FROM tb_preregister_application WHERE expo_id = ? AND status = 'CONFIRMED' ORDER BY participant_id",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+        )
+
+    fun waitingRegistrations(expoId: UUID): List<ParticipantRegistration> =
+        jdbc.query(
+            "SELECT user_request FROM tb_preregister_reservation WHERE expo_id = ? AND state = 'WAITING'",
+            { rs, _ -> mapper.readValue(rs.getString(1), ParticipantRegistration::class.java) },
+            expoId,
+        )
 
     fun lock(expoId: UUID) {
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
