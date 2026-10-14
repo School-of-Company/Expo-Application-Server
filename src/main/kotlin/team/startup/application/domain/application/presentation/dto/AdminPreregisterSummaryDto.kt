@@ -12,6 +12,19 @@ data class AdminPreregisterSummary(
     val pendingReservations: Long,
     val pendingApplicants: Long,
     val sessions: List<AdminPreregisterSessionSummary>,
+    @field:Schema(
+        description =
+            "직업별 확정·대기 인원. 모든 직업과 미분류(occupation=null)를 항상 포함합니다. " +
+                "확정은 User 참가자 직업, 대기는 User 저장 전 신청 스냅샷 직업이며 User 확정 전 예약은 포함하지 않습니다.",
+    )
+    val occupations: List<AdminPreregisterOccupationSummary> = emptyList(),
+)
+
+@Schema(description = "직업별 사전등록 인원. 직업군(예: 교원·예비교사) 묶음은 클라이언트가 합산합니다.")
+data class AdminPreregisterOccupationSummary(
+    @field:Schema(description = "직업. null이면 직업 답변이 없거나 User 직업이 비어 있음") val occupation: AdminOccupation?,
+    val confirmedParticipants: Long,
+    val waitingParticipants: Long,
 )
 
 @Schema(description = "회차별 확정·취소 고유 참가자, User 확정 전 예약 건수·좌석 수와 대기 상태")
