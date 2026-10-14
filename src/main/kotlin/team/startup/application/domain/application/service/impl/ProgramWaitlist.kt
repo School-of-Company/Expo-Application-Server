@@ -60,28 +60,40 @@ class ProgramWaitlist(
             return
         }
         if (isDeleted(definition)) return
-        val remaining = policy.capacity - ledger.confirmedCount(definition.programType, definition.id)
-        if (remaining <= 0) return
         // shortcut: 승급당 최대 10명으로 원격 호출 잠금을 제한한다. 일괄 연결 API가 제공되면 교체한다.
-        for (entry in repository.waiting(definition, minOf(remaining.toInt(), 10))) {
-            val traineeId =
-                if (definition.programType ==
-                    ProgramSessionType.TRAINING
-                ) {
-                    promotionTrainee(definition, entry) ?: return
+        var budget = 10
+        // 채널마다 따로 FIFO로 승급한다. 다른 채널의 빈자리는 쓰지 않고, 회차 합계 정원도 함께 지킨다.
+        channels@ for (channel in policy.channels ?: listOf(null)) {
+            val remaining =
+                minOf(
+                    policy.capacity - ledger.confirmedCount(definition.programType, definition.id),
+                    channel?.let { (it.capacity - repository.confirmedCount(definition, it.name)).toLong() } ?: Long.MAX_VALUE,
+                    budget.toLong(),
+                )
+            if (remaining <= 0) continue
+            for (entry in repository.waiting(definition, remaining.toInt(), channel?.name)) {
+                val traineeId =
+                    if (definition.programType ==
+                        ProgramSessionType.TRAINING
+                    ) {
+                        promotionTrainee(definition, entry) ?: continue@channels
+                    } else {
+                        null
+                    }
+                val promotionTime = now()
+                if (!promotionTime.isBefore(policy.applicationEndedAt) || !promotionTime.isBefore(policy.promotionEndedAt)) return
+                if (traineeId != null) {
+                    operations.lockVersion(traineeId)
+                    trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
+                    operations.incrementVersion(traineeId)
                 } else {
-                    null
+                    standards.saveAndFlush(
+                        StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id),
+                    )
                 }
-            val promotionTime = now()
-            if (!promotionTime.isBefore(policy.applicationEndedAt) || !promotionTime.isBefore(policy.promotionEndedAt)) return
-            if (traineeId != null) {
-                operations.lockVersion(traineeId)
-                trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
-                operations.incrementVersion(traineeId)
-            } else {
-                standards.saveAndFlush(StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id))
+                repository.transition(entry.id, "CONFIRMED", traineeId)
+                budget--
             }
-            repository.transition(entry.id, "CONFIRMED", traineeId)
         }
     }
 

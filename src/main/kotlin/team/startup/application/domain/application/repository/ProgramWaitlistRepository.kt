@@ -54,29 +54,54 @@ class ProgramWaitlistRepository(
                 id,
             ).singleOrNull()
 
+    // A null channel means the whole session; channel sessions never hold NULL-channel active rows (see PrepareProgramChange).
     fun waiting(
         definition: ProgramSessionDefinition,
         limit: Int,
+        channel: String? = null,
     ): List<Entry> =
         jdbc.query(
             "SELECT id, participant_id, trainee_id, status, expo_id, program_type, program_id, questions_snapshot, answers_snapshot " +
                 "FROM tb_program_session_application " +
-                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'WAITING' ORDER BY created_at, id LIMIT ?",
+                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'WAITING' " +
+                "AND (CAST(? AS text) IS NULL OR channel = ?) " +
+                "ORDER BY created_at, id LIMIT ?",
             entryMapper,
             UUID.fromString(definition.expoId),
             definition.programType.name,
             definition.id,
+            channel,
+            channel,
             limit,
         )
 
-    fun waitingCount(definition: ProgramSessionDefinition): Int =
+    fun waitingCount(
+        definition: ProgramSessionDefinition,
+        channel: String? = null,
+    ): Int = count(definition, "WAITING", channel)
+
+    fun confirmedCount(
+        definition: ProgramSessionDefinition,
+        channel: String,
+    ): Int = count(definition, "CONFIRMED", channel)
+
+    private fun count(
+        definition: ProgramSessionDefinition,
+        status: String,
+        channel: String?,
+    ): Int =
         requireNotNull(
             jdbc.queryForObject(
-                "SELECT count(*) FROM tb_program_session_application WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'WAITING'",
+                "SELECT count(*) FROM tb_program_session_application " +
+                    "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = ? " +
+                    "AND (CAST(? AS text) IS NULL OR channel = ?)",
                 Int::class.java,
                 UUID.fromString(definition.expoId),
                 definition.programType.name,
                 definition.id,
+                status,
+                channel,
+                channel,
             ),
         )
 
