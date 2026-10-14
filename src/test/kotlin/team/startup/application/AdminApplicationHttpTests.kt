@@ -218,6 +218,43 @@ class AdminApplicationHttpTests {
             expoId,
             expoId,
         )
+        val questions =
+            """[{"id":1,"title":"동행","order":0,"formType":"COMPANION","jsonData":{},""" +
+                """"otherJson":null,"dynamicFormType":"COMPANION"}]"""
+        val companions =
+            """[{"name":"A","occupation":"GENERAL","region":"OTHER"},{"name":" A ","occupation":"GENERAL","region":"OTHER"},""" +
+                """{"name":"B","occupation":"TEACHER","school":"S","region":"OTHER"}]"""
+
+        fun waiting(occupation: String?) =
+            mapper.writeValueAsString(
+                mapOf(
+                    "expoId" to expoId.toString(),
+                    "name" to "Waiting",
+                    "phoneNumber" to "01000000000",
+                    "informationJson" to if (occupation == null) "{}" else """{"동행":$companions}""",
+                    "personalInformationStatus" to true,
+                    "applicationType" to "PRE",
+                    "occupation" to occupation,
+                    "requestId" to UUID.randomUUID().toString(),
+                    "questions" to mapper.readTree(questions),
+                ),
+            )
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'wait-1', 1, '{}', ?, 3, 'WAITING', 1), (?, 'wait-2', 1, '{}', ?, 1, 'WAITING', 2)",
+            expoId,
+            waiting("PRE_SERVICE_TEACHER"),
+            expoId,
+            waiting(null),
+        )
+        participantIds = listOf(10L, 11L)
+        userBody =
+            """{"items":[""" +
+            listOf(10 to "\"TEACHER\"", 11 to "null").joinToString(",") { (id, occupation) ->
+                """{"participantId":$id,"name":"P","phoneNumber":null,"notificationPhoneNumber":null,"occupation":$occupation,""" +
+                    """"representativeId":10,"linkedTraineeId":null,"applicationType":"PRE","information":{}}"""
+            } + """],"nextCursor":null}"""
         val path = "/application/admin/expos/$expoId/preregistrations/summary"
         assertEquals(
             401,
@@ -241,8 +278,20 @@ class AdminApplicationHttpTests {
         val body = mapper.readTree(response.contentAsString)
         assertEquals(2, body["confirmedUniqueParticipants"].asInt())
         assertEquals(1, body["cancelledUniqueParticipants"].asInt())
-        assertEquals(0, body["waitingParticipants"].asInt())
+        assertEquals(4, body["waitingParticipants"].asInt())
         assertEquals(1, body["pendingReservations"].asInt())
+        val occupations =
+            body["occupations"].associate { row ->
+                row["occupation"].takeUnless { it.isNull }?.asString() to
+                    (row["confirmedParticipants"].asInt() to row["waitingParticipants"].asInt())
+            }
+        assertEquals(10, occupations.size)
+        assertEquals(1 to 1, occupations["TEACHER"])
+        assertEquals(0 to 1, occupations["PRE_SERVICE_TEACHER"])
+        assertEquals(0 to 1, occupations["GENERAL"])
+        assertEquals(1 to 1, occupations[null])
+        assertEquals(body["confirmedUniqueParticipants"].asInt(), occupations.values.sumOf { it.first })
+        assertEquals(body["waitingParticipants"].asInt(), occupations.values.sumOf { it.second })
         assertEquals(3, body["pendingApplicants"].asInt())
         assertEquals(2, body["sessions"].size())
         assertEquals(2, body["sessions"][0]["confirmedParticipants"].asInt())
