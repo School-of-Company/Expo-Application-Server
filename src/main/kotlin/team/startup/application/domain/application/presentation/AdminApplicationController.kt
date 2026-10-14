@@ -46,7 +46,8 @@ class AdminApplicationController(
         summary = "내부 프로그램 회차 접수 원장 조회",
         description =
             "내부 경로는 내부 토큰, 관리자 경로는 원본 Bearer JWT의 Expo 현재 APPLICATION_READ 검증이 필요합니다. " +
-                "search는 제출 당시 제목, q는 User 이름/번호, occupation은 원본 직업 코드입니다. from 포함/until 제외. " +
+                "search는 제출 당시 제목, q는 User 이름/번호, occupation은 원본 직업 코드입니다. from 포함/until 제외(신청 시각). " +
+                "status는 쉼표로 여러 개, eventDate는 제출 당시 회차 시작일(KST)입니다. receiptNumber는 박람회별 접수번호입니다. " +
                 "동일 필터의 목록/전체 건수/상태 집계 및 applicationId 상세/이력을 반환합니다. participant.information은 User 현재 등록 답변입니다. " +
                 "관리자 목록은 User 참가자가 하나라도 누락되면 전체 502로 실패하며 원장 스냅샷은 보존합니다. participant=null 성공으로 대체하지 않습니다.",
     )
@@ -133,6 +134,7 @@ class AdminApplicationController(
                 "search",
                 "q",
                 "occupation",
+                "eventDate",
                 "from",
                 "until",
                 "page",

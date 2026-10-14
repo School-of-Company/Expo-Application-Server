@@ -679,7 +679,7 @@ class AdminApplicationHttpTests {
         transaction.executeWithoutResult {
             val query =
                 AdminApplicationQuery(
-                    status = team.startup.application.domain.application.presentation.dto.AdminApplicationStatus.CONFIRMED,
+                    status = listOf(team.startup.application.domain.application.presentation.dto.AdminApplicationStatus.CONFIRMED),
                 )
             val before = repository.summary(expoId, query)
             CompletableFuture
@@ -706,6 +706,71 @@ class AdminApplicationHttpTests {
         assertEquals(first.toString(), body["items"][0]["applicationId"].asString())
         assertEquals(second.toString(), mapper.readTree(read("$filter&page=1").contentAsString)["items"][0]["applicationId"].asString())
         assertEquals(2, mapper.readTree(read("$filter&page=99").contentAsString)["totalElements"].asInt())
+    }
+
+    @Test
+    fun `접수번호는 박람회별로 1부터 증가하며 롤백된 접수는 번호를 소비하지 않는다`() {
+        val numbers = mapper.readTree(read("?sort=RECEIPT_ASC").contentAsString)["items"].asIterable().map { it["receiptNumber"].asLong() }
+        assertEquals(listOf(1L, 2L, 3L), numbers)
+        assertThrows(Exception::class.java) {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                insert(UUID.randomUUID(), expoId, "CONFIRMED", program = 11)
+                error("rollback")
+            }
+        }
+        val next = UUID.randomUUID()
+        insert(next, expoId, "CONFIRMED", program = 12)
+        val body = mapper.readTree(read("?sort=RECEIPT_DESC&size=1").contentAsString)
+        assertEquals(next.toString(), body["items"][0]["applicationId"].asString())
+        assertEquals(4, body["items"][0]["receiptNumber"].asLong())
+        val other = UUID.randomUUID()
+        insert(UUID.randomUUID(), other, "CONFIRMED")
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT receipt_number FROM tb_program_session_application WHERE expo_id = ?", Long::class.java, other),
+        )
+        assertThrows(Exception::class.java) {
+            jdbc.update("UPDATE tb_program_session_application SET receipt_number = 1 WHERE id = ?", next)
+        }
+    }
+
+    @Test
+    fun `복수 상태와 행사일 필터 및 프로그램 회차 정렬은 목록과 집계에 같은 원장을 적용한다`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"B\",\"startedAt\":\"2026-10-13 09:00\"}' WHERE id = ?",
+            first,
+        )
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"A\",\"startedAt\":\"2026-10-13T10:00\"}' WHERE id = ?",
+            second,
+        )
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = '{\"title\":\"C\",\"startedAt\":\"2026-10-12T08:00\"}' " +
+                "WHERE expo_id = ? AND status = 'CANCELLED'",
+            expoId,
+        )
+        val active = mapper.readTree(read("?status=CONFIRMED,WAITING").contentAsString)
+        assertEquals(2, active["totalElements"].asInt())
+        assertEquals(0, active["statusCounts"]["CANCELLED"].asInt())
+        assertEquals(active["statusCounts"], mapper.readTree(summary("?status=CONFIRMED,WAITING").contentAsString)["statusCounts"])
+        assertEquals(1, mapper.readTree(read("?status=CANCELLED").contentAsString)["totalElements"].asInt())
+
+        val day = mapper.readTree(read("?eventDate=2026-10-13&sort=SESSION_ASC").contentAsString)
+        assertEquals(listOf(first, second).map(UUID::toString), day["items"].asIterable().map { it["applicationId"].asString() })
+        assertEquals(2, mapper.readTree(summary("?eventDate=2026-10-13").contentAsString)["totalElements"].asInt())
+        assertEquals(0, mapper.readTree(read("?eventDate=2026-10-14").contentAsString)["totalElements"].asInt())
+
+        fun order(sort: String) =
+            mapper.readTree(read("?sort=$sort").contentAsString)["items"].asIterable().map {
+                it["definition"]["title"].asString()
+            }
+        assertEquals(listOf("C", "B", "A"), order("SESSION_ASC"))
+        assertEquals(listOf("A", "B", "C"), order("SESSION_DESC"))
+        assertEquals(listOf("A", "B", "C"), order("PROGRAM_ASC"))
+        assertEquals(listOf("C", "B", "A"), order("PROGRAM_DESC"))
+        listOf("status=CONFIRMED,OTHER", "eventDate=2026-13-01", "eventDate=20261013", "sort=NAME_ASC").forEach {
+            assertEquals(400, read("?$it").status, it)
+        }
     }
 
     @Test
