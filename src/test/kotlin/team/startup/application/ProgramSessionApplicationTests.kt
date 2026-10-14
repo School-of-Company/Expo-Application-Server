@@ -105,6 +105,9 @@ class ProgramSessionApplicationTests {
         linkCalls.set(0)
         linkRequests.clear()
         occupation = "TEACHER"
+        occupations = emptyMap()
+        allowed = "[\"TEACHER\"]"
+        channels = null
         closed = false
         expired = false
         badExpo = false
@@ -1653,6 +1656,119 @@ class ProgramSessionApplicationTests {
         }
     }
 
+    @Test
+    fun `channels keep separate seats and waiting and promote FIFO without borrowing another channel's vacancy`() {
+        useChannels()
+        (3L..5L).forEach(::addParticipant)
+        occupations = mapOf(1L to "TEACHER", 2L to "TEACHER", 3L to "GENERAL", 4L to "GENERAL", 5L to "TEACHER")
+        val teacher = service.execute(command())
+        val teacherWaiting = service.execute(command(participant = 2))
+        val general = service.execute(command(participant = 3))
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 5)) }
+        val generalWaiting = service.execute(command(participant = 4))
+        val receipts = listOf(teacher, teacherWaiting, general, generalWaiting)
+        assertEquals(listOf("CONFIRMED", "WAITING", "CONFIRMED", "WAITING"), receipts.map { it.status })
+        assertEquals(listOf("교원", "교원", "일반", "일반"), receipts.map { column("channel", it.applicationId) })
+        assertEquals(teacherWaiting, service.execute(command(participant = 2)))
+        cancel(general.applicationId)
+        assertEquals("CONFIRMED", column("status", generalWaiting.applicationId))
+        assertEquals("WAITING", column("status", teacherWaiting.applicationId))
+        cancel(teacher.applicationId)
+        assertEquals("CONFIRMED", column("status", teacherWaiting.applicationId))
+    }
+
+    @Test
+    fun `channel policy changes never reclassify existing applications and shrink each channel only to its own rows`() {
+        useChannels()
+        service.execute(command())
+        service.execute(command(participant = 2))
+        val teacherWaiting = { p: tools.jackson.databind.node.ObjectNode -> p.path("channels")[0].asObject() }
+        assertEquals(409, propose { it.remove("channels") })
+        assertEquals(409, propose { teacherWaiting(it).put("name", "교사") })
+        assertEquals(
+            409,
+            propose {
+                teacherWaiting(it).put("waitingCapacity", 0)
+                it.path("channels")[1].asObject().put("waitingCapacity", 2)
+            },
+        )
+        assertEquals(400, propose { teacherWaiting(it).put("capacity", 2) })
+        assertEquals(400, propose { teacherWaiting(it).put("allowedOccupations", "TEACHER") })
+        change {
+            teacherWaiting(it).put("capacity", 2)
+            it.put("capacity", 3)
+        }
+        reconcile()
+        assertEquals(
+            0L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `channels are introduced only once the session has no applications`() {
+        val first = service.execute(command())
+        val introduce = { p: tools.jackson.databind.node.ObjectNode ->
+            p.set("allowedOccupations", mapper.readTree("""["TEACHER","GENERAL"]"""))
+            p.put("capacity", 2)
+            p.put("waitingCapacity", 2)
+            p.set("channels", mapper.readTree(CHANNELS))
+            Unit
+        }
+        assertEquals(409, propose(introduce))
+        cancel(first.applicationId)
+        change(update = introduce)
+        occupations = mapOf(2L to "GENERAL")
+        assertEquals("일반", column("channel", service.execute(command(participant = 2)).applicationId))
+    }
+
+    @Test
+    fun `channel sessions stop promotion after the deadline and reject a channel policy that breaks Expo's contract`() {
+        useChannels()
+        addParticipant(3)
+        occupations = mapOf(1L to "TEACHER", 2L to "TEACHER", 3L to "TEACHER")
+        val boundary = Instant.parse("2026-10-12T10:00:00Z")
+        promotionEnd = boundary
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        testClock.current = boundary
+        cancel(confirmed.applicationId)
+        reconcile()
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        channels = """[{"name":"교원","allowedOccupations":["TEACHER"],"capacity":2,"waitingCapacity":2}]"""
+        assertEquals(
+            502,
+            assertThrows(ResponseStatusException::class.java) { service.execute(command(participant = 3)) }.statusCode.value(),
+        )
+    }
+
+    private fun useChannels() {
+        allowed = """["TEACHER","GENERAL"]"""
+        capacity = 2
+        waitingCapacity = 2
+        channels = CHANNELS
+    }
+
+    private fun column(
+        name: String,
+        id: UUID,
+    ): String? = jdbc.queryForObject("SELECT $name FROM tb_program_session_application WHERE id = ?", String::class.java, id)
+
+    private fun propose(update: (tools.jackson.databind.node.ObjectNode) -> Unit): Int {
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", revision + 1)
+        update(next.path("policy").asObject())
+        return mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andReturn()
+            .response.status
+    }
+
     private fun addParticipant(id: Long) {
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) VALUES (?, 1, 1, ?, 'CONFIRMED')",
@@ -1708,6 +1824,8 @@ class ProgramSessionApplicationTests {
         capacity = next.path("policy").path("capacity").asInt()
         waitingCapacity = next.path("policy").path("waitingCapacity").asInt()
         promotionEnd = Instant.parse(next.path("policy").path("promotionEndedAt").stringValue())
+        allowed = next.path("policy").path("allowedOccupations").toString()
+        channels = next.path("policy").get("channels")?.toString()
     }
 
     private fun command(
@@ -1781,6 +1899,9 @@ class ProgramSessionApplicationTests {
         private const val EXPO = "aaaaaaaa-0000-0000-0000-000000000043"
         private const val FORM = "00000000-0000-0000-0000-000000000001"
         private const val GROUP = "00000000-0000-0000-0000-000000000002"
+        private const val CHANNELS =
+            """[{"name":"교원","allowedOccupations":["TEACHER"],"capacity":1,"waitingCapacity":1},""" +
+                """{"name":"일반","allowedOccupations":["GENERAL"],"capacity":1,"waitingCapacity":1}]"""
         private const val REAL_FIELDS =
             """[{"id":101,"title":"Question","formType":"DROPDOWN","requiredStatus":true,""" +
                 """"jsonData":{"a":"First","b":"Second"},"otherJson":null,"dynamicFormType":"DEFAULT"}]"""
@@ -1840,6 +1961,12 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var occupation = "TEACHER"
 
+        @Volatile private var occupations = mapOf<Long, String>()
+
+        @Volatile private var allowed = "[\"TEACHER\"]"
+
+        @Volatile private var channels: String? = null
+
         @Volatile private var closed = false
 
         @Volatile private var expired = false
@@ -1891,7 +2018,7 @@ class ProgramSessionApplicationTests {
                                             .path("participantIds")
                                             .get(0)
                                             .asLong()
-                                    """[{"participantId":$id,"name":"Person","occupation":${occupationResponse ?: "\"$occupation\""},"representative":true}]"""
+                                    """[{"participantId":$id,"name":"Person","occupation":${occupationResponse ?: "\"${occupations[id] ?: occupation}\""},"representative":true}]"""
                                 }
                             }
 
@@ -1985,7 +2112,9 @@ class ProgramSessionApplicationTests {
             type: String,
         ): String {
             val response =
-                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"$GROUP","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":["TEACHER"],"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed}}"""
+                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"$GROUP","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
+                    ",\"channels\":$it"
+                } ?: ""}}}"""
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
                 val json = ObjectMapper().readTree(response).asObject()
                 json.putNull("policy")

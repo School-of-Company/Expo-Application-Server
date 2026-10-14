@@ -47,7 +47,8 @@ class PrepareProgramChangeServiceImpl(
                         (policy.groupId != null && policy.groupId != next.groupId) ||
                         !policy.applicationStartedAt.isBefore(policy.applicationEndedAt) ||
                         policy.cancelEndedAt.isBefore(policy.applicationStartedAt) ||
-                        policy.promotionEndedAt.isBefore(policy.applicationStartedAt)
+                        policy.promotionEndedAt.isBefore(policy.applicationStartedAt) ||
+                        !policy.channelsValid()
                     ) {
                         badRequest()
                     }
@@ -79,6 +80,17 @@ class PrepareProgramChangeServiceImpl(
                 (next?.policy != null && (next.policy.capacity < confirmed || next.policy.waitingCapacity < waiting))
             ) {
                 conflict()
+            }
+            // Existing applications are never reclassified: with any history the channel layout is frozen,
+            // and each channel may only shrink down to its own confirmed and waiting rows.
+            next?.policy?.let { policy ->
+                if ((active > 0 || confirmed > 0) && policy.channelLayout() != old.policy?.channelLayout()) conflict()
+                if (policy.channels.orEmpty().any {
+                        it.capacity < repository.confirmedCount(old, it.name) || it.waitingCapacity < repository.waitingCount(old, it.name)
+                    }
+                ) {
+                    conflict()
+                }
             }
             repository.stage(old, next, command.changeId)
             if (next == null) {
