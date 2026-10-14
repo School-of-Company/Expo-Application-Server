@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.presentation.dto
 
 import com.fasterxml.jackson.annotation.JsonAnySetter
+import com.fasterxml.jackson.annotation.JsonFormat
 import com.fasterxml.jackson.annotation.JsonIgnore
 import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
@@ -10,6 +11,7 @@ import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
 import java.time.Instant
+import java.time.LocalDate
 import java.util.UUID
 
 abstract class StrictReportTargetRequest {
@@ -26,13 +28,17 @@ data class ReportApplicationFilter(
     val programId: Long? = null,
     val groupId: UUID? = null,
     val applicationId: UUID? = null,
-    val status: AdminApplicationStatus? = null,
+    @param:JsonFormat(with = [JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY])
+    @field:Schema(description = "단일 상태 문자열 또는 상태 배열. 예: [\"CONFIRMED\",\"WAITING\"]")
+    @field:Size(min = 1)
+    val status: List<AdminApplicationStatus>? = null,
     val search: String? = null,
     val from: Instant? = null,
     val until: Instant? = null,
     val sort: AdminApplicationSort = AdminApplicationSort.CREATED_DESC,
     @field:Size(min = 1, max = 50) val q: String? = null,
     val occupation: AdminOccupation? = null,
+    val eventDate: LocalDate? = null,
 ) : StrictReportTargetRequest() {
     @get:Valid
     @get:JsonIgnore
@@ -50,6 +56,7 @@ data class ReportApplicationFilter(
                 sort = sort,
                 q = q,
                 occupation = occupation,
+                eventDate = eventDate,
             )
 
     @get:AssertTrue(message = "search must not be blank")

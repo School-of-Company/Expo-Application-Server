@@ -48,7 +48,7 @@ class AdminApplicationQueryRepository(
             }
         parameters["limit"] = query.size
         parameters["offset"] = query.page.toLong() * query.size
-        val direction = if (query.sort == AdminApplicationSort.CREATED_ASC) "ASC" else "DESC"
+        val direction = if (query.sort.name.endsWith("_ASC")) "ASC" else "DESC"
         val sessions =
             jdbc.query(
                 "SELECT a.program_type, a.program_id, a.group_id, $aggregates " +
@@ -137,7 +137,7 @@ class AdminApplicationQueryRepository(
         filter("program", query.programId, "a.program_id = :program")
         filter("group", query.groupId, "a.group_id = :group")
         filter("id", query.applicationId, "a.id = :id")
-        filter("status", query.status?.name, "a.status = :status")
+        filter("status", query.status?.map { it.name }, "a.status IN (:status)")
         filter(
             "search",
             query.search?.trim()?.takeIf { it.isNotEmpty() },
@@ -145,6 +145,8 @@ class AdminApplicationQueryRepository(
         )
         filter("from", query.from?.let(java.sql.Timestamp::from), "a.created_at >= :from")
         filter("until", query.until?.let(java.sql.Timestamp::from), "a.created_at < :until")
+        // Expo stores session times as KST local "yyyy-MM-ddTHH:mm" or "yyyy-MM-dd HH:mm"; the first 10 characters are the date.
+        filter("eventDate", query.eventDate?.toString(), "left(a.definition_snapshot->>'startedAt', 10) = :eventDate")
         return conditions.joinToString(" AND ") to parameters
     }
 
@@ -157,18 +159,18 @@ class AdminApplicationQueryRepository(
     ): List<AdminApplicationRow> {
         parameters["limit"] = limit
         parameters["offset"] = offset
-        val direction = if (sort == AdminApplicationSort.CREATED_ASC) "ASC" else "DESC"
         return jdbc.query(
             "SELECT a.*, COALESCE((SELECT jsonb_agg(" +
                 "jsonb_build_object('id', h.id, 'status', h.status, 'createdAt', h.created_at) " +
                 "ORDER BY h.created_at, h.id) FROM tb_program_session_history h " +
                 "WHERE h.application_id = a.id), '[]'::jsonb) AS history " +
                 "FROM tb_program_session_application a WHERE $where " +
-                "ORDER BY a.created_at $direction, a.id $direction LIMIT :limit OFFSET :offset",
+                "ORDER BY ${order(sort)} LIMIT :limit OFFSET :offset",
             parameters,
         ) { rs, _ ->
             AdminApplicationRow(
                 rs.getObject("id", UUID::class.java),
+                rs.getLong("receipt_number"),
                 rs.getLong("participant_id"),
                 rs.getObject("trainee_id", Long::class.javaObjectType),
                 ProgramSessionType.valueOf(rs.getString("program_type")),
@@ -187,5 +189,28 @@ class AdminApplicationQueryRepository(
                 ),
             )
         }
+    }
+
+    private fun order(sort: AdminApplicationSort): String {
+        val direction = if (sort.name.endsWith("_ASC")) "ASC" else "DESC"
+        val key =
+            when (sort) {
+                AdminApplicationSort.RECEIPT_ASC, AdminApplicationSort.RECEIPT_DESC -> {
+                    "a.receipt_number $direction, "
+                }
+
+                AdminApplicationSort.PROGRAM_ASC, AdminApplicationSort.PROGRAM_DESC -> {
+                    "a.definition_snapshot->>'title' $direction NULLS LAST, a.program_type $direction, a.program_id $direction, "
+                }
+
+                AdminApplicationSort.SESSION_ASC, AdminApplicationSort.SESSION_DESC -> {
+                    "replace(a.definition_snapshot->>'startedAt', 'T', ' ') $direction NULLS LAST, a.program_type $direction, a.program_id $direction, "
+                }
+
+                AdminApplicationSort.CREATED_ASC, AdminApplicationSort.CREATED_DESC -> {
+                    ""
+                }
+            }
+        return "${key}a.created_at $direction, a.id $direction"
     }
 }
