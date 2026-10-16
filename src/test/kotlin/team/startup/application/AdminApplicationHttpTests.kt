@@ -770,6 +770,22 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `current sessions accept all Expo session time formats`() {
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        val session = page["items"][0].asObject()
+        for ((start, end) in listOf(
+            "2026-10-12 09:00" to "2026-10-12 10:00",
+            "2026-10-12T09:00" to "2026-10-12T10:00",
+            "2026-10-12T09:00:00+09:00" to "2026-10-12T10:00:00+09:00",
+        )) {
+            session.put("startedAt", start)
+            session.put("endedAt", end)
+            expoBody = mapper.writeValueAsString(page)
+            assertEquals(200, read("/current-sessions").status)
+        }
+    }
+
+    @Test
     fun `admin snapshot venue stays historical while current session venue changes independently`() {
         jdbc.update(
             "UPDATE tb_program_session_application SET definition_snapshot = " +

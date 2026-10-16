@@ -7,6 +7,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ProgramPromotionCheck
 import team.startup.application.domain.application.presentation.dto.ProgramPromotionEvent
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
@@ -80,7 +81,7 @@ class ProgramPromotionGateway(
             programName = label(program, "title"),
             startedAt = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             endedAt = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            location = program.get("location")?.takeUnless { it.isNull }?.let { label(program, "location") },
+            location = program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
             applicationLookupUrl =
                 program.get("applicationLookupUrl")?.takeUnless { it.isNull }?.let {
                     val url = it.takeIf { value -> value.isString }?.stringValue() ?: invalid()
@@ -132,7 +133,7 @@ class ProgramPromotionGateway(
         field: String,
     ): String {
         val value = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
-        if (value.isBlank() || value.length > 100 ||
+        if (value.isBlank() || value.codePointCount(0, value.length) > 255 ||
             value.any {
                 Character.isISOControl(it) ||
                     Character.getType(it) in
@@ -149,7 +150,7 @@ class ProgramPromotionGateway(
         field: String,
     ): OffsetDateTime =
         try {
-            OffsetDateTime.parse(node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid())
+            ExpoProgramTime.parse(node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid())
         } catch (_: Exception) {
             invalid()
         }

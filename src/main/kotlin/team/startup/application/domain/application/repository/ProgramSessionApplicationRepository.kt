@@ -12,12 +12,10 @@ import team.startup.application.domain.application.presentation.dto.ProgramFormS
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.time.Instant
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
@@ -202,13 +200,9 @@ class ProgramSessionApplicationRepository(
     private fun sessionTime(value: String?): Instant {
         if (value.isNullOrBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 운영 시간이 제공되지 않았습니다.")
         return try {
-            OffsetDateTime.parse(value).toInstant()
-        } catch (_: DateTimeParseException) {
-            try {
-                LocalDateTime.parse(value).atZone(ZoneId.of("Asia/Seoul")).toInstant()
-            } catch (ex: DateTimeParseException) {
-                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간이 올바르지 않습니다.", ex)
-            }
+            ExpoProgramTime.parse(value).toInstant()
+        } catch (ex: DateTimeParseException) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간이 올바르지 않습니다.", ex)
         }
     }
 

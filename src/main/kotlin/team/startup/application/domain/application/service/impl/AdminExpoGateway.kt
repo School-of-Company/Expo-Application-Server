@@ -12,10 +12,10 @@ import team.startup.application.domain.application.presentation.dto.AdminExpoAcc
 import team.startup.application.domain.application.presentation.dto.AdminExpoHistoryPage
 import team.startup.application.domain.application.presentation.dto.AdminExpoHistoryQuery
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.time.LocalDateTime
 import java.util.UUID
 
 @Component
@@ -160,7 +160,10 @@ class AdminExpoGateway(
                         it["title"].isString && it["revision"].isIntegralNumber && it["revision"].canConvertToLong() &&
                             it["revision"].asLong() > 0,
                     )
-                    require(LocalDateTime.parse(it["startedAt"].asString()) < LocalDateTime.parse(it["endedAt"].asString()))
+                    require(
+                        ExpoProgramTime.parse(it["startedAt"].asString()).toInstant() <
+                            ExpoProgramTime.parse(it["endedAt"].asString()).toInstant(),
+                    )
                     require(
                         (query.programType == null || type == query.programType) &&
                             (query.programId == null || it["id"].asLong() == query.programId) &&
