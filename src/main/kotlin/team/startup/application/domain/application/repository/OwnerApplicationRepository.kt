@@ -89,7 +89,7 @@ class OwnerApplicationRepository(
             )
         val preregister =
             named.query(
-                "SELECT a.id::text, a.participant_id, a.session_id AS program_id, a.status, " +
+                "SELECT a.id::text, a.participant_id, a.session_id AS program_id, a.status, NULL::text AS snapshot_place, " +
                     "r.user_request::jsonb -> 'questions' AS questions, r.user_request::jsonb ->> 'informationJson' AS answers, " +
                     "(SELECT jsonb_agg(t.status ORDER BY t.id) FROM tb_preregister_transition t " +
                     "WHERE t.application_id = a.id) AS history " +
@@ -103,6 +103,7 @@ class OwnerApplicationRepository(
         val programs =
             named.query(
                 "SELECT a.id::text, a.participant_id, a.program_id, a.program_type, a.status, " +
+                    "a.definition_snapshot->>'place' AS snapshot_place, " +
                     "a.questions_snapshot AS questions, a.answers_snapshot AS answers, " +
                     "(SELECT jsonb_agg(h.status ORDER BY h.id) FROM tb_program_session_history h " +
                     "WHERE h.application_id = a.id) AS history " +
@@ -133,6 +134,7 @@ class OwnerApplicationRepository(
                 (0 until nodes.size()).map { OwnerApplicationHistory(nodes.get(it).stringValue()) }
             } ?: emptyList(),
             cancellationBlockedReason = if (status == "CANCELLED") "CANCELLED" else "EXTERNAL_CONTRACT_REQUIRED",
+            snapshotPlace = rs.getString("snapshot_place")?.takeIf { it.isNotBlank() },
         )
     }
 

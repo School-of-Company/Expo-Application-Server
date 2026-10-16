@@ -11,6 +11,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.ParticipantQrResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
@@ -167,7 +168,9 @@ class RegistrationGateway(
                     ) {
                         invalidProgramResponse()
                     }
-                if (owner != canonicalExpo || definition.programType != type || definition.id !in ids || definition.revision <= 0) {
+                if (owner != canonicalExpo || definition.programType != type || definition.id !in ids || definition.revision <= 0 ||
+                    !definition.hasValidPlace()
+                ) {
                     invalidProgramResponse()
                 }
                 if (!existing && definition.pendingRevision != null) {

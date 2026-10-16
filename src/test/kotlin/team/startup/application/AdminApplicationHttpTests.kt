@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -766,6 +767,26 @@ class AdminApplicationHttpTests {
         assertEquals("saved", saved["answers"]["1"].asString())
         assertEquals("CONFIRMED", saved["history"][0]["status"].asString())
         assertTrue(saved["participant"].isNull)
+    }
+
+    @Test
+    fun `admin snapshot venue stays historical while current session venue changes independently`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = " +
+                "jsonb_set(definition_snapshot, '{place}', to_jsonb(CAST(? AS text))) WHERE id = ?",
+            "Original room",
+            first,
+        )
+
+        fun snapshot() = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]["definition"]
+        assertEquals("Original room", snapshot()["place"].asString())
+        val current = mapper.readTree(admin("/current-sessions").contentAsString).asObject()
+        current["items"][0].asObject().put("place", "Current room")
+        expoBody = mapper.writeValueAsString(current)
+        assertEquals("Current room", mapper.readTree(read("/current-sessions").contentAsString)["items"][0]["place"].asString())
+        assertEquals("Original room", snapshot()["place"].asString())
+        jdbc.update("UPDATE tb_program_session_application SET definition_snapshot = definition_snapshot - 'place' WHERE id = ?", first)
+        assertFalse(snapshot().has("place"))
     }
 
     @Test

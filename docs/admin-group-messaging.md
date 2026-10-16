@@ -26,6 +26,14 @@ Application은 Client가 전달한 관리자 Bearer JWT를 Expo의 `GET /interna
 
 SMS는 자유 본문을 받는다. 현재 Client 호환을 위한 최소 변수는 `{이름}`, `{프로그램}`, `{일시}`, `{장소}`, `{상태}`다. 이 이름과 일정 문자열 형식은 최종 운영 정책으로 확정된 것이 아니다. Application이 저장한 신청 시점 프로그램 스냅샷에 값이 없으면 임의 값을 만들지 않고 `TEMPLATE_DATA_MISSING`으로 미리보기에 표시한다. 특히 현재 프로그램 스냅샷에 장소가 없을 수 있다.
 
+회차 장소(#127)는 [Expo #124 / PR #127](https://github.com/School-of-Company/Expo-Expo-Server/pull/127)의 `place: String?` 계약을 사용한다. 공급자는 최대 255 유니코드 문자와 앞뒤 공백 제거를 보장하며, 미입력은 null이다. Application은 정의·승인 payload·신청 스냅샷에 이 값을 보존하고 기존 revision/전체 정의 비교를 유지한다. 과거 JSON에는 필드가 없어도 되며 null 필드는 새로 직렬화하지 않는다. 기존 신청 스냅샷은 장소 변경이나 승급 시 덮어쓰지 않는다.
+
+소유자 신청 응답의 `place`는 Expo 현재 장소, `snapshotPlace`는 신청 당시 장소다. 현재 프로그램이 삭제되면 현재 장소는 null이며 과거 장소로 대체하지 않는다. 관리자 원장의 `definition.place`는 신청 당시 장소이고, 최신 장소는 기존 `current-sessions`의 `items[].place`로 조회한다. 행사 전체 장소·사전등록 장소로 대체하지 않는다. 장소 미입력의 화면 문구 `장소 추후 안내`는 Client 표시 규칙이며 저장·문자 데이터가 아니다.
+
+기존 안내는 신청 당시 장소를 사용한다. 화면의 최신 장소 정책을 문자에 임의 적용하지 않으며 새 템플릿 변수, 자동 재발송, 실제 발송을 추가하지 않는다. `place` absent/null/공백은 없는 값이고 장소가 필요한 안내는 기존 누락 처리, 장소가 필요 없는 안내는 기존 처리를 유지한다. 장소를 포함한 스냅샷이나 렌더링 결과가 달라지면 fingerprint가 바뀌어 새 미리보기가 필요하다. 카카오 장소는 Notification이 내려준 승인 `variableMapping.location`에만 연결한다. [Notification #28](https://github.com/School-of-Company/Expo-Notification-Server/issues/28)의 승인 설정·실제 발송 확인은 별도 선행 조건이다.
+
+Expo PR #127과 Application #127은 배포 전 내부 정의 조회·변경 승인 호환성을 함께 확인해야 한다. Application 수용 코드를 먼저 배포한 뒤 Expo 장소 쓰기를 활성화한다. 다른 Application 작업의 정의 DTO/보호 로직(#125/#126), 소유자·관리자 조회/이력(#123/#124)와 겹칠 수 있으므로 먼저 병합된 변경을 반영하고 회귀 검증한다. 자세한 작업 상태와 검증 결과는 워크스페이스 코멘트에 남긴다.
+
 알려진 변수가 하나라도 있는 SMS는 신청별 개인 안내로 처리해 같은 대표자 번호의 다른 참가자와 신청 내용을 모두 보존한다. 알려진 변수가 없는 SMS는 공통 안내로 처리해 숫자만 남긴 같은 대표자 번호당 한 건만 만든다. 일반과 연수 모두 신청 원장의 `participantId`를 User의 일반 참가자로 조회하고 `representativeId ?: participantId` 참가자의 `phoneNumber`만 수신 번호로 쓴다. 개인 번호나 `notificationPhoneNumber` fallback은 대표자 번호를 대신하지 않는다.
 
 카카오는 Notification의 `/internal/admin-group-messages/config`가 활성화한 승인 템플릿만 선택할 수 있다. Application은 SMS 자동 대체를 항상 `false`로 전달한다. 실제 카카오 설정이 없으면 `enabled=false`, 빈 템플릿 목록이며 발송은 `422`다.

@@ -15,6 +15,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
@@ -39,7 +40,15 @@ class GetOwnerApplicationsServiceImpl(
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: GetOwnerApplicationsCommand): OwnerApplicationsResponse {
         val party = gateway.managedParty(command.expoId, command.sessionId)
-        val applications = requireNotNull(reads.execute { repository.applications(command.expoId, party) })
+        val stored = requireNotNull(reads.execute { repository.applications(command.expoId, party) })
+        val definitions =
+            stored
+                .filter { it.type != OwnerApplicationType.PREREGISTER }
+                .groupBy { ProgramSessionType.valueOf(it.type.name) }
+                .flatMap { (type, items) ->
+                    gateway.programDefinitions(command.expoId.toString(), type, items.map { it.sessionOrProgramId }, existing = true)
+                }.associateBy { it.programType.name to it.id }
+        val applications = stored.map { it.copy(place = definitions[it.type.name to it.sessionOrProgramId]?.place) }
         if (!attendanceEnabled) return OwnerApplicationsResponse(party.participants, applications)
         val observations =
             applications.filter { it.applied }.map { it.participantId }.distinct().associateWith { participantId ->

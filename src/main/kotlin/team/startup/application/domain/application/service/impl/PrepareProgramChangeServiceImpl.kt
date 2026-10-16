@@ -6,6 +6,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.PrepareProgramChangeCommand
+import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
@@ -34,11 +35,11 @@ class PrepareProgramChangeServiceImpl(
         for (mutation in mutations) {
             val old = requireNotNull(mutation.previous)
             if (UUID.fromString(old.expoId) != command.expoId || old.revision <= 0 || old.id <= 0) badRequest()
-            if (old.pendingRevision != null || old.revision == Long.MAX_VALUE) badRequest()
+            if (old.pendingRevision != null || old.revision == Long.MAX_VALUE || !old.hasValidPlace()) badRequest()
             mutation.definition?.let { next ->
                 if (next.expoId != old.expoId || next.programType != old.programType || next.id != old.id ||
                     next.revision != old.revision + 1 ||
-                    next.pendingRevision != null
+                    next.pendingRevision != null || !next.hasValidPlace()
                 ) {
                     badRequest()
                 }

@@ -67,7 +67,13 @@ data class ProgramSessionDefinition(
     val startedAt: String? = null,
     val endedAt: String? = null,
     val category: String? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    @field:Schema(description = "회차 장소. 미입력은 null이며 행사·사전등록 장소로 대체하지 않음")
+    val place: String? = null,
 )
+
+internal fun ProgramSessionDefinition.hasValidPlace(): Boolean =
+    place == null || (place.isNotBlank() && place == place.trim() && place.codePointCount(0, place.length) <= 255)
 
 @Schema(description = "프로그램 회차 신청 요청")
 data class ApplyProgramSessionRequest(

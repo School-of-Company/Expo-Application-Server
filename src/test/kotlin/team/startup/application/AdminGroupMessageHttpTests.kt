@@ -303,6 +303,66 @@ class AdminGroupMessageHttpTests {
         slowNotification = false
     }
 
+    @Test
+    fun `venue rendering keeps separate application snapshot values for standard and training sessions`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = " +
+                "jsonb_set(definition_snapshot, '{place}', to_jsonb(CAST(? AS text))) WHERE id = ?",
+            "연수실",
+            training,
+        )
+        val response = preview(selected(standard, training), "{프로그램}|{장소}")
+        assertEquals(201, response.status, response.contentAsString)
+        val targets = requests.last()["targets"]
+        assertEquals(listOf("프로그램1|강의실", "프로그램5|연수실"), (0 until targets.size()).map { targets[it]["content"].stringValue() })
+        assertEquals(0, calls.count { it == "notification-job" })
+    }
+
+    @Test
+    fun `legacy absent null and blank snapshot venues stay missing without a display fallback`() {
+        listOf("{}", """{"place":null}""", """{"place":"   "}""").forEach { definition ->
+            jdbc.update(
+                "UPDATE tb_program_session_application SET definition_snapshot = CAST(? AS jsonb) WHERE id = ?",
+                definition,
+                standard,
+            )
+            val response = preview(selected(standard), "{장소}")
+            assertEquals(201, response.status, response.contentAsString)
+            val target = requests.last()["targets"][0]
+            assertEquals("TEMPLATE_DATA_MISSING", target["missingReason"].stringValue())
+            assertFalse(target.has("content"))
+            assertFalse(target.has("recipientPhone"))
+            assertEquals(201, preview(selected(standard), "공통 안내").status)
+            assertEquals("공통 안내", requests.last()["targets"][0]["content"].stringValue())
+        }
+    }
+
+    @Test
+    fun `changed snapshot venue invalidates preview fingerprint before any job is sent`() {
+        val scope = selected(standard)
+        val first = mapper.readTree(preview(scope, "{장소}").contentAsString)
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = " +
+                "jsonb_set(definition_snapshot, '{place}', to_jsonb(CAST(? AS text))) WHERE id = ?",
+            "변경된 스냅샷",
+            standard,
+        )
+        val second = mapper.readTree(preview(scope, "{장소}").contentAsString)
+        assertEquals("변경된 스냅샷", requests.last()["targets"][0]["content"].stringValue())
+        assertFalse(first["targetFingerprint"] == second["targetFingerprint"])
+        val response =
+            mvc
+                .perform(
+                    post("$base/previews/${first["previewId"].stringValue()}/jobs")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(execution(first["targetFingerprint"].stringValue(), scope, "{장소}")),
+                ).andReturn()
+                .response
+        assertEquals(409, response.status, response.contentAsString)
+        assertEquals(0, calls.count { it == "notification-job" })
+    }
+
     private fun insert(
         id: UUID,
         participantId: Long,

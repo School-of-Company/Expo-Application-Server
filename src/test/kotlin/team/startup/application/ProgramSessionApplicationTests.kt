@@ -138,6 +138,78 @@ class ProgramSessionApplicationTests {
         delayedLinkParticipant = null
         title = "Session"
         unavailableLookup = null
+        places = emptyMap()
+    }
+
+    @Test
+    fun `standard and training venues survive snapshots and approved revision changes without rewriting history`() {
+        for (type in ProgramSessionType.entries) {
+            reset()
+            capacity = 2
+            places = mapOf("1" to "Room A", "2" to "Room B")
+            val first = service.execute(command(type = type))
+            val sibling = service.execute(command(program = 2, participant = 2, type = type))
+
+            fun snapshot(id: UUID) =
+                jdbc.queryForObject(
+                    "SELECT definition_snapshot->>'place' FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    id,
+                )
+            assertEquals("Room A", snapshot(first.applicationId))
+            assertEquals("Room B", snapshot(sibling.applicationId))
+            addParticipant(3)
+            places = places + ("1" to "Room C")
+            assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3, type = type)) }
+            places = places + ("1" to "Room A")
+            val previous = mapper.readTree(definition("1", type.name))
+            val next = previous.deepCopy().asObject()
+            next.put("revision", 2)
+            next.put("place", "Room C")
+            mvc
+                .perform(
+                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                ).andExpect(status().isNoContent)
+            places = places + ("1" to "Room C")
+            revision = 2
+            val latest = service.execute(command(participant = 3, type = type))
+            assertEquals("Room C", snapshot(latest.applicationId))
+            assertEquals("Room A", snapshot(first.applicationId))
+            assertEquals(first, service.execute(command(type = type)))
+        }
+    }
+
+    @Test
+    fun `legacy definitions omit place and supplier venue length uses Unicode code points`() {
+        service.execute(command())
+        assertEquals(
+            false,
+            jdbc.queryForObject(
+                "SELECT jsonb_exists(definition_snapshot, 'place') FROM tb_program_session_application",
+                Boolean::class.java,
+            ),
+        )
+        for (type in ProgramSessionType.entries) {
+            reset()
+            places = mapOf("1" to "😀".repeat(255))
+            service.execute(command(type = type))
+            assertEquals(
+                "😀".repeat(255),
+                jdbc.queryForObject("SELECT definition_snapshot->>'place' FROM tb_program_session_application", String::class.java),
+            )
+            for (invalid in listOf("", "   ", " Room ", "😀".repeat(256))) {
+                places = mapOf("1" to invalid)
+                assertEquals(
+                    HttpStatus.BAD_GATEWAY,
+                    assertThrows(ResponseStatusException::class.java) {
+                        service.execute(command(participant = 2, type = type))
+                    }.statusCode,
+                )
+            }
+        }
     }
 
     @Test
@@ -2277,6 +2349,8 @@ class ProgramSessionApplicationTests {
                 start()
             }
 
+        @Volatile private var places: Map<String, String?> = emptyMap()
+
         private fun definition(
             id: String,
             type: String,
@@ -2289,6 +2363,13 @@ class ProgramSessionApplicationTests {
                 val json = ObjectMapper().readTree(response).asObject()
                 json.putNull("policy")
                 return json.toString()
+            }
+            if (places.containsKey(id)) {
+                return ObjectMapper()
+                    .readTree(response)
+                    .asObject()
+                    .put("place", places[id])
+                    .toString()
             }
             return response
         }
