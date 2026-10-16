@@ -110,18 +110,25 @@ class ProgramWaitlistRepository(
         )
 
     fun checkDefinition(definition: ProgramSessionDefinition) {
-        if (definition.pendingRevision != null) conflict("프로그램 정책 변경 중입니다.")
         jdbc
             .query(
-                "SELECT COALESCE(pending_definition, definition), deleted FROM tb_program_session_state " +
+                "SELECT definition, pending_definition, deleted FROM tb_program_session_state " +
                     "WHERE expo_id = ? AND program_type = ? AND program_id = ?",
-                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) to rs.getBoolean(2) },
+                { rs, _ ->
+                    Triple(
+                        mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java),
+                        rs.getString(2)?.let { mapper.readValue(it, ProgramSessionDefinition::class.java) },
+                        rs.getBoolean(3),
+                    )
+                },
                 UUID.fromString(definition.expoId),
                 definition.programType.name,
                 definition.id,
             ).singleOrNull()
-            ?.let { (expected, deleted) ->
-                if (deleted || expected != definition) conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+            ?.let { (current, pending, deleted) ->
+                if (deleted || definition.copy(pendingRevision = null) !in listOf(current, pending)) {
+                    conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+                }
             }
     }
 

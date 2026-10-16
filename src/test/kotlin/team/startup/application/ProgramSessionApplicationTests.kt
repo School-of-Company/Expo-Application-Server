@@ -2942,6 +2942,32 @@ class ProgramSessionApplicationTests {
         assertEquals("PRE_REGISTRATION", column("admission_route", pre.applicationId))
     }
 
+    @Test
+    fun `split seats allow current and prepared definition reads while rejecting unrelated revisions`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        val current = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        change {
+            it.put("capacity", 4)
+            it.put("onsiteCapacity", 3)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":3"
+        val prepared = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        transactions.execute {
+            context.getBean(ProgramSessionApplicationRepository::class.java).lockCapacityReads(listOf(current))
+            repository.checkDefinition(current.copy(pendingRevision = prepared.revision))
+            repository.checkDefinition(prepared)
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                repository.checkDefinition(prepared.copy(revision = prepared.revision + 1))
+            }
+        }
+        pending = true
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(participant = 2)) }
+        assertEquals(409, error.statusCode.value())
+    }
+
     private fun applied(
         participant: Long,
         value: Boolean,
