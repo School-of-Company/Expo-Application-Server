@@ -114,6 +114,8 @@ class ProgramSessionApplicationTests {
         pending = false
         formMode = "valid"
         formQuestions = QUESTIONS
+        realFields = REAL_FIELDS
+        groups = emptyMap()
         sessionResponse = null
         occupationResponse = null
         missingProgram = null
@@ -317,6 +319,89 @@ class ProgramSessionApplicationTests {
             ).andExpect(status().isNoContent)
         assertEquals("CANCELLED", jdbc.queryForObject("SELECT status FROM tb_program_session_application", String::class.java))
         assertEquals(1, linkCalls.get())
+    }
+
+    @Test
+    fun `eligible teacher companion sharing the representative phone applies to training through the real form contract`() {
+        // #122: representative 1 is GENERAL; companions 9 and 10 are teachers reached through the representative's session phone.
+        addParticipant(9)
+        addParticipant(10)
+        occupations = mapOf(1L to "GENERAL", 9L to "TEACHER", 10L to "TEACHER")
+        capacity = 2
+        formMode = "real"
+        realFields =
+            """[{"id":30,"title":"동의","formType":"CHECKBOX","requiredStatus":true,""" +
+            """"jsonData":{},"otherJson":null,"dynamicFormType":"DEFAULT"}]"""
+
+        fun apply(
+            participant: Long,
+            key: String,
+            program: Long = 1,
+        ) = mvc.perform(
+            post("/application/expos/$EXPO/program-sessions/TRAINING/$program/applications")
+                .with(csrf())
+                .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                .header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"participantId":$participant,"formVersion":1,"answers":{"30":true}}"""),
+        )
+
+        val created =
+            apply(9, "teacher")
+                .andExpect(status().isCreated)
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.participantId").value(9))
+                .andExpect(jsonPath("$.traineeId").value(509))
+                .andReturn()
+        val applicationId = mapper.readTree(created.response.contentAsString).path("applicationId").stringValue()
+        assertEquals(mapper.readTree("""{"expoId":"$EXPO","participantId":9,"trainingId":null}"""), mapper.readTree(linkRequests.single()))
+        apply(9, "teacher").andExpect(status().isCreated).andExpect(jsonPath("$.applicationId").value(applicationId))
+        assertEquals(1, linkCalls.get())
+        apply(9, "teacher-again").andExpect(status().isConflict).andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+        apply(1, "general").andExpect(status().isForbidden).andExpect(jsonPath("$.code").value("PARTICIPANT_INELIGIBLE"))
+        apply(10, "companion").andExpect(status().isCreated).andExpect(jsonPath("$.traineeId").value(510))
+        assertEquals(
+            listOf(509L, 510L),
+            jdbc.queryForList(
+                "SELECT trainee_id FROM tb_training_program_application WHERE training_program_id = 1 ORDER BY trainee_id",
+                Long::class.java,
+            ),
+        )
+        assertEquals(
+            applicationId,
+            jdbc.queryForObject("SELECT id::text FROM tb_program_session_application WHERE trainee_id = 509", String::class.java),
+        )
+        mvc
+            .perform(get("/internal/program-applications/training/1/trainees/509").header("X-Internal-Token", "test-token"))
+            .andExpect(jsonPath("$.applied").value(true))
+
+        groups = mapOf("2" to "00000000-0000-0000-0000-000000000003")
+        apply(9, "other-training", program = 2).andExpect(status().isCreated).andExpect(jsonPath("$.traineeId").value(509))
+        assertEquals(
+            2L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_training_program_application WHERE trainee_id = 509", Long::class.java),
+        )
+
+        addParticipant(11)
+        occupations = occupations + (11L to "TEACHER")
+        apply(11, "full").andExpect(status().isConflict).andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+        cancel(UUID.fromString(applicationId))
+        mvc
+            .perform(get("/internal/program-applications/training/1/trainees/509").header("X-Internal-Token", "test-token"))
+            .andExpect(jsonPath("$.applied").value(false))
+        closed = true
+        apply(11, "closed").andExpect(status().isConflict)
+        assertEquals(3, linkCalls.get())
+    }
+
+    @Test
+    fun `User trainee link conflict is distinguishable from local conflicts and writes nothing`() {
+        linkRejections = mapOf(1L to 409)
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
+        assertEquals(HttpStatus.CONFLICT, error.statusCode)
+        assertEquals("연수자 연결이 거부되었습니다.", error.reason)
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_training_program_application"))
     }
 
     @Test
@@ -2053,6 +2138,10 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var formQuestions = QUESTIONS
 
+        @Volatile private var realFields = REAL_FIELDS
+
+        @Volatile private var groups = mapOf<String, String>()
+
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
@@ -2068,7 +2157,7 @@ class ProgramSessionApplicationTests {
 
                             path == "/internal/forms/by-id/$FORM" -> {
                                 """{"id":"$FORM","expoId":"$EXPO","purpose":"PROGRAM","version":1,"participantType":null,""" +
-                                    """"startDate":"2020-01-01T00:00:00Z","endDate":"2100-01-01T00:00:00Z","dynamicForm":$REAL_FIELDS}"""
+                                    """"startDate":"2020-01-01T00:00:00Z","endDate":"2100-01-01T00:00:00Z","dynamicForm":$realFields}"""
                             }
 
                             path.endsWith("participant-sessions/resolve") -> {
@@ -2187,7 +2276,7 @@ class ProgramSessionApplicationTests {
             type: String,
         ): String {
             val response =
-                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"$GROUP","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
+                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"${groups[id] ?: GROUP}","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
                     ",\"channels\":$it"
                 } ?: ""}}}"""
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
