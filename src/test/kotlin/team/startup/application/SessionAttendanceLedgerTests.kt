@@ -8,6 +8,7 @@ import org.mockito.Mockito.`when`
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.bean.override.mockito.MockitoBean
@@ -25,6 +26,7 @@ import java.time.Instant
 import java.util.UUID
 
 @SpringBootTest(properties = ["eureka.client.enabled=false"])
+@Import(PermissiveCancellationGuard::class)
 @Testcontainers
 class SessionAttendanceLedgerTests {
     @Autowired private lateinit var apply: ApplyPreregisterSessionService
@@ -75,11 +77,11 @@ class SessionAttendanceLedgerTests {
     @Test
     fun `확정자 일부 취소는 DELETE만 저장하고 반복 취소는 보내지 않는다`() {
         val receipt = apply.execute(command(1, 2, 3, 4, 5))
-        val cancellation = CancelPreregisterSessionCommand(expo, 1, 1, listOf(receipt[0].id, receipt[3].id))
+        val cancellation = CancelPreregisterSessionCommand(expo, 1, 1, listOf(receipt[1].id, receipt[3].id))
         cancel.execute(cancellation)
-        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:1", "DELETE:4"), pending())
+        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2", "DELETE:4"), pending())
         cancel.execute(cancellation)
-        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:1", "DELETE:4"), pending())
+        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2", "DELETE:4"), pending())
     }
 
     @Test

@@ -102,7 +102,15 @@ class AdminOperationsHttpTests {
                 ),
             )
         jdbc.execute(
-            "TRUNCATE tb_program_session_application, tb_program_session_state, tb_standard_program_application, tb_training_program_application, tb_owner_cancellation_delivery CASCADE",
+            "TRUNCATE tb_program_session_application, tb_program_session_state, tb_standard_program_application, tb_training_program_application, tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE",
+        )
+        // Promotion requires the waiting participant's confirmed preregistration (#117).
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expo)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED')",
+            expo,
+            expo,
         )
         insert(application, 1, "CONFIRMED")
         insert(waiting, 2, "WAITING")

@@ -13,6 +13,13 @@ interface OwnerCancellationGuard {
         party: OwnerApplicationParty,
     ): Permit
 
+    // Internal (admin) preregister cancellation: no owner token, so User admin status and the Attendance admin guard replace phone checks.
+    fun acquireAdmin(
+        command: CancelOwnerApplicationCommand,
+        participantId: Long,
+        sessionId: Long,
+    ): Permit
+
     interface Permit : AutoCloseable {
         val linkedTraineeId: Long?
 

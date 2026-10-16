@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.dao.InvalidDataAccessApiUsageException
 import org.springframework.http.MediaType
@@ -51,6 +52,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 @SpringBootTest(properties = ["eureka.client.enabled=false"])
+@Import(PermissiveCancellationGuard::class)
 @AutoConfigureMockMvc
 @Testcontainers
 class PreregisterSessionPersistenceTests {
@@ -189,10 +191,11 @@ class PreregisterSessionPersistenceTests {
     @Test
     fun `cancellation only frees seats and repeat cannot cancel new application`() {
         val receipt = apply.execute(command(1, 2))
-        val cancellation = CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[0].id))
+        // The representative is cancelled with (and after) its companion.
+        val cancellation = CancelPreregisterSessionCommand(expoId, 1, 1, receipt.map { it.id })
         val changed = cancel.execute(cancellation)
-        assertEquals(listOf(1L), changed.map { it.participantId })
-        assertEquals(listOf("CANCELLED"), changed.map { it.status })
+        assertEquals(listOf(1L, 2L), changed.map { it.participantId })
+        assertEquals(listOf("CANCELLED", "CANCELLED"), changed.map { it.status })
         val new = apply.execute(command(1)).single()
         assertEquals("CONFIRMED", new.status)
         assertTrue(new.id > receipt.last().id)
@@ -223,7 +226,7 @@ class PreregisterSessionPersistenceTests {
         definition = definition.copy(startedAt = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
         publish(definition)
         val receipt = apply.execute(command(1, 2))
-        assertEquals(1, cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, listOf(receipt[0].id))).size)
+        assertEquals(1, cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, listOf(receipt[1].id))).size)
         assertEquals(1L, repository.occupied(expoId, 1))
         assertEquals("CONFIRMED", apply.execute(command(3)).single().status)
     }
@@ -306,8 +309,7 @@ class PreregisterSessionPersistenceTests {
         publish(closed)
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
         assertConflict { apply.execute(command(4)) }
-        val confirmed = repository.active(expoId, 1)!!
-        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(confirmed.id)))
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, repository.applications(expoId, 1).map { it.id }))
         assertTrue(repository.active(expoId, 1) == null)
         val opened = closed.copy(closed = false, revision = 3)
         prepare.execute(change(opened, false))
@@ -615,7 +617,7 @@ class PreregisterSessionPersistenceTests {
             expoId,
         )
         assertEquals(2L, repository.occupied(expoId, 1))
-        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[0].id)))
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(receipt[1].id)))
         assertEquals(1L, repository.occupied(expoId, 1))
     }
 
