@@ -99,7 +99,8 @@ class ApplyProgramSessionServiceImpl(
                 waitingCount > 0
         if (waiting && waitingCount >= (channel?.waitingCapacity ?: policy.waitingCapacity)) conflict("프로그램 대기 정원이 찼습니다.")
         val traineeId =
-            if (command.programType == ProgramSessionType.TRAINING && !waiting) {
+            // Waiting entries get the same legacy-group check; a conflicting head would otherwise stall FIFO promotion (#116).
+            if (command.programType == ProgramSessionType.TRAINING) {
                 val id = gateway.resolveTrainee(command.expoId, command.participantId, trainingId)
                 // The ID is known only after acceptance; never wait behind a legacy replace holding the trainee lock.
                 if (!trainings.tryLockTrainee(id)) conflict("연수 신청 변경 중입니다. 같은 멱등 키로 재시도해 주세요.")
@@ -130,7 +131,7 @@ class ApplyProgramSessionServiceImpl(
                 UUID.randomUUID(),
                 command.programId,
                 command.participantId,
-                traineeId,
+                traineeId.takeUnless { waiting },
                 if (waiting) "WAITING" else "CONFIRMED",
             )
         if (!waiting && traineeId == null) {
