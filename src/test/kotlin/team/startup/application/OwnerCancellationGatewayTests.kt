@@ -22,8 +22,10 @@ import team.startup.application.domain.application.presentation.dto.OwnerCancell
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.CancelProgramSessionService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
@@ -190,6 +192,8 @@ class OwnerCancellationGatewayTests {
                 beans.getBeanProvider(OwnerCancellationGuard::class.java),
                 Clock.systemUTC(),
                 mock(PreregisterWaitlist::class.java),
+                mock(StudentGuardianBatchRepository::class.java),
+                mock(CancelStudentGuardianApplicationService::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(command) }
         verifyNoInteractions(ledger, outbox, cancellationAdapter)

@@ -8,10 +8,13 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
+import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import java.time.Clock
 import java.util.UUID
@@ -26,12 +29,18 @@ class CancelOwnerApplicationServiceImpl(
     private val guards: ObjectProvider<OwnerCancellationGuard>,
     private val clock: Clock,
     private val waitlist: PreregisterWaitlist,
+    private val guardianBatches: StudentGuardianBatchRepository,
+    private val guardianCancellation: CancelStudentGuardianApplicationService,
 ) : CancelOwnerApplicationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelOwnerApplicationCommand) {
         val party = gateway.managedParty(command.expoId, command.sessionId)
         val original =
             owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
+        if (command.type != OwnerApplicationType.PREREGISTER && guardianBatches.batchId(UUID.fromString(original.applicationId)) != null) {
+            guardianCancellation.execute(CancelStudentGuardianApplicationCommand(command.expoId, UUID.fromString(original.applicationId), sessionId = command.sessionId))
+            return
+        }
         val guard =
             guards.ifAvailable ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "소유권·입장·출석·취소 기한 보호 계약이 준비되지 않았습니다.")
         guard.recover(command)

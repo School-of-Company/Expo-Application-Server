@@ -115,6 +115,30 @@ class ProductionOwnerCancellationGuard(
         )
     }
 
+    override fun acquireAdminProgram(
+        command: CancelOwnerApplicationCommand,
+        participantId: Long,
+        programId: Long,
+    ): OwnerCancellationGuard.Permit {
+        require(command.type != OwnerApplicationType.PREREGISTER)
+        lateinit var before: AdminCancellationParticipantStatus
+        return guarded(
+            command,
+            participantId,
+            prepare = {
+                before = participants.status(command.expoId, participantId)
+                if (before.entered) throw ResponseStatusException(HttpStatus.CONFLICT, "이미 입장한 참가자입니다.")
+                before.linkedTraineeId to deadlines.program(command.expoId, command.type, programId)
+            },
+            acquire = { id ->
+                attendance.acquireAdmin(command.expoId, participantId, id)
+                if (participants.status(command.expoId, participantId) != before) {
+                    throw ResponseStatusException(HttpStatus.CONFLICT, "취소 보호 중 참가자 상태가 변경되었습니다.")
+                }
+            },
+        )
+    }
+
     // prepare checks the participant before the remote guard and returns (linkedTraineeId, cancelEndedAt).
     private fun guarded(
         command: CancelOwnerApplicationCommand,

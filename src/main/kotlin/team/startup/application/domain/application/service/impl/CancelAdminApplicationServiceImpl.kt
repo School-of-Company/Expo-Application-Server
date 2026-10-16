@@ -11,13 +11,16 @@ import team.startup.application.domain.application.presentation.dto.AdminCancell
 import team.startup.application.domain.application.presentation.dto.CancelAdminApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
+import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.CancelAdminApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import java.time.Clock
 import java.util.UUID
 
@@ -36,11 +39,17 @@ class CancelAdminApplicationServiceImpl(
     private val transactions: TransactionTemplate,
     private val clock: Clock,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
+    private val guardianBatches: StudentGuardianBatchRepository,
+    private val guardianCancellation: CancelStudentGuardianApplicationService,
 ) : CancelAdminApplicationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelAdminApplicationCommand): AdminCancellationResult {
         val access = expo.requireCancelAccess(command.expoId, command.authorization)
         val original = target(command)
+        if (guardianBatches.batchId(original.id) != null) {
+            guardianCancellation.execute(CancelStudentGuardianApplicationCommand(command.expoId, original.id, authorization = command.authorization))
+            return AdminCancellationResult(command.applicationId)
+        }
         val type = OwnerApplicationType.valueOf(original.key.programType.name)
         val deliveryCommand = CancelOwnerApplicationCommand(command.expoId, "", type, command.applicationId.toString())
         recovery.recover(deliveryCommand)
