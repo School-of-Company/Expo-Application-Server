@@ -128,6 +128,7 @@ class OwnerApplicationTests {
         traineeId = null
         closedPermits.set(0)
         adminGuards.clear()
+        currentDefinition = definition
     }
 
     @Test
@@ -162,6 +163,46 @@ class OwnerApplicationTests {
         failure(HttpStatus.NOT_FOUND) { cancel.execute(cancelCommand("invalid", OwnerApplicationType.STANDARD)) }
         failure(HttpStatus.NOT_FOUND) { cancel.execute(cancelCommand(own.applicationId.toString(), OwnerApplicationType.TRAINING)) }
         assertEquals(0, closedPermits.get())
+    }
+
+    @Test
+    fun `owner venue is current while application venue snapshot stays immutable and legacy missing stays absent`() {
+        currentDefinition = definition.copy(place = "Room A")
+        val receipt = applyProgram.execute(programCommand())
+        currentDefinition = definition.copy(revision = 2, place = "Room B")
+
+        fun item() =
+            query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications.single {
+                it.applicationId == receipt.applicationId.toString()
+            }
+        assertEquals("Room B", item().place)
+        assertEquals("Room A", item().snapshotPlace)
+        currentDefinition = currentDefinition.copy(place = null)
+        assertEquals(null, item().place)
+        assertEquals("Room A", item().snapshotPlace)
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = definition_snapshot - 'place' WHERE id = ?",
+            receipt.applicationId,
+        )
+        currentDefinition = currentDefinition.copy(place = "Room C")
+        assertEquals("Room C", item().place)
+        assertEquals(null, item().snapshotPlace)
+        val response =
+            mvc
+                .perform(get("/application/expos/$EXPO/my-applications").cookie(Cookie("PARTICIPANT_SESSION", "session")))
+                .andExpect(status().isOk)
+                .andReturn()
+                .response
+        val program = mapper.readTree(response.contentAsString)["applications"].single { it["type"].asString() == "STANDARD" }
+        assertEquals("Room C", program["place"].asString())
+        assertTrue(
+            query
+                .execute(GetOwnerApplicationsCommand(EXPO, "session"))
+                .applications
+                .filter {
+                    it.type == OwnerApplicationType.PREREGISTER
+                }.all { it.place == null && it.snapshotPlace == null },
+        )
     }
 
     @Test
@@ -723,6 +764,8 @@ class OwnerApplicationTests {
             )
         private const val REPRESENTATIVE = """{"participantId":1,"name":"Owner","occupation":"TEACHER","representative":true}"""
 
+        @Volatile private var currentDefinition = definition
+
         @Volatile private var sessionStatus = 200
 
         @Volatile private var sessionBody: String? = null
@@ -776,11 +819,11 @@ class OwnerApplicationTests {
                             }
 
                             path.contains("standard-programs/") -> {
-                                ObjectMapper().writeValueAsString(definition)
+                                ObjectMapper().writeValueAsString(currentDefinition)
                             }
 
                             path.endsWith("training-programs/batch") -> {
-                                ObjectMapper().writeValueAsString(listOf(definition.copy(programType = ProgramSessionType.TRAINING)))
+                                ObjectMapper().writeValueAsString(listOf(currentDefinition.copy(programType = ProgramSessionType.TRAINING)))
                             }
 
                             path.endsWith("resolve-or-create-by-participant") -> {

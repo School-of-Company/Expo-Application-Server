@@ -54,6 +54,10 @@ data class OwnerApplicationItem(
     @field:Schema(description = "현재 취소 가능 여부", example = "false") val cancellable: Boolean = false,
     @field:Schema(description = "취소 불가 사유", example = "EXTERNAL_CONTRACT_REQUIRED")
     val cancellationBlockedReason: String = "EXTERNAL_CONTRACT_REQUIRED",
+    @field:Schema(description = "현재 프로그램 회차 장소. 미입력·삭제된 회차·사전등록은 null")
+    val place: String? = null,
+    @field:Schema(description = "신청 당시 프로그램 회차 장소. 기존 스냅샷에 없거나 사전등록이면 null")
+    val snapshotPlace: String? = null,
 )
 
 @Schema(description = "인증된 대표자의 참가자와 신청 목록")
