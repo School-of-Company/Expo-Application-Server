@@ -112,6 +112,146 @@ class AdminApplicationHttpTests {
 
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
 
+    @Test
+    fun `사전등록 원장은 참가자 행과 예약 일행을 구분하고 검색 선택 전체 대상이 일치한다`() {
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CANCELLED')",
+            expoId,
+            expoId,
+            expoId,
+        )
+        val snapshot =
+            """{"name":"Waiting","phoneNumber":"010-3333-4444",""" +
+                """"informationJson":"{\"companion\":[{\"name\":\"Child\"}]}","questions":[]}"""
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq, withdrawn_at) " +
+                "VALUES (?, 'wait', 1, '{}', ?, 2, 'WAITING', 1, NULL), " +
+                "(?, 'withdrawn', 1, '{}', ?, 2, 'REJECTED', 2, CURRENT_TIMESTAMP), " +
+                "(?, 'pending', 1, '{}', ?, 2, 'RESERVED', NULL, NULL), " +
+                "(?, 'completed', 1, '{}', ?, 2, 'COMPLETED', NULL, NULL)",
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+        )
+        participantIds = listOf(1L, 2L, 3L)
+        val path = "/application/admin/expos/$expoId/preregistrations"
+
+        fun readLedger(query: String = "") =
+            mvc.perform(get(path + query).header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+
+        fun targets(body: String) =
+            mvc
+                .perform(
+                    post(
+                        "$path/targets",
+                    ).header("Authorization", "Bearer original-admin-jwt").contentType(MediaType.APPLICATION_JSON).content(body),
+                ).andReturn()
+                .response
+        val response = readLedger()
+        assertEquals(200, response.status, response.contentAsString)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val page = mapper.readTree(response.contentAsString)
+        assertEquals(6, page["totalElements"].asInt())
+        val rows = page["items"].toList()
+        assertEquals(1, rows.first { it["participantId"].asLong() == 2L }["representativeId"].asInt())
+        val waiting = rows.single { it["status"].asString() == "WAITING" }
+        assertTrue(waiting["participantId"].isNull)
+        assertEquals(2, waiting["applicants"].asInt())
+        assertEquals("Waiting", waiting["reservation"]["name"].asString())
+        val detail = readLedger("/detail?key=RESERVATION:$expoId:wait")
+        assertEquals(waiting, mapper.readTree(detail.contentAsString))
+        val filtered = readLedger("?q=chosen&status=CONFIRMED,CANCELLED&sessionId=1")
+        assertEquals(1, mapper.readTree(filtered.contentAsString)["totalElements"].asInt())
+        val selection = targets("""{"kind":"FILTERED","filter":{"q":"chosen","status":["CONFIRMED","CANCELLED"],"sessionId":1}}""")
+        assertEquals(200, selection.status, selection.contentAsString)
+        val selected = mapper.readTree(selection.contentAsString)
+        assertEquals(mapper.readTree(filtered.contentAsString)["items"], selected["items"])
+        assertEquals(false, selected["messagingSupported"].asBoolean())
+        assertEquals(false, selected["reportSupported"].asBoolean())
+        val key = selected["items"][0]["key"].asString()
+        assertEquals(selected["items"], mapper.readTree(targets("""{"kind":"SELECTED","keys":["$key"]}""").contentAsString)["items"])
+        userStatus = 503
+        val waitingSearch = readLedger("?status=WAITING&q=33334444")
+        assertEquals(200, waitingSearch.status)
+        assertEquals(2, mapper.readTree(waitingSearch.contentAsString)["items"][0]["applicants"].asInt())
+        userStatus = 200
+        assertEquals(0, mapper.readTree(readLedger("?q=missing").contentAsString)["totalElements"].asInt())
+        assertEquals(1, mapper.readTree(readLedger("?size=1&page=1").contentAsString)["items"].size())
+        assertEquals(404, readLedger("/detail?key=APPLICATION:$expoId:999999999").status)
+        assertEquals(404, targets("""{"kind":"SELECTED","keys":["$first"]}""").status)
+        assertEquals(404, targets("""{"kind":"SELECTED","keys":["RESERVATION:${UUID.randomUUID()}:wait"]}""").status)
+        assertEquals(400, targets("""{"kind":"FILTERED","filter":{"programType":"STANDARD"}}""").status)
+        assertEquals(400, targets("""{"kind":"SELECTED","keys":["$key","$key"]}""").status)
+        assertEquals(400, targets("""{"kind":"FILTERED","filter":{"page":1}}""").status)
+        assertEquals(400, readLedger("?programType=STANDARD").status)
+        assertEquals(400, readLedger("?q=a&q=b").status)
+        assertEquals(400, readLedger("?size=101").status)
+        val other = "/application/admin/expos/${UUID.randomUUID()}/preregistrations"
+        assertEquals(
+            404,
+            mvc
+                .perform(get("$other/detail?key=$key").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(403, readLedger().status)
+        assertEquals(403, targets("""{"kind":"FILTERED","filter":{}}""").status)
+    }
+
+    @Test
+    fun `사전등록 검색 전체 상한과 삭제 행사 및 원천 누락을 성공으로 바꾸지 않는다`() {
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "SELECT ?, 'bulk-' || n, 1, '{}', '{\"name\":\"Waiting\",\"phoneNumber\":\"01011112222\"}', 1, 'WAITING', n " +
+                "FROM generate_series(1, 5001) n",
+            expoId,
+        )
+        val path = "/application/admin/expos/$expoId/preregistrations"
+        val tooMany =
+            mvc
+                .perform(
+                    post("$path/targets")
+                        .header("Authorization", "Bearer original-admin-jwt")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"kind":"FILTERED","filter":{"status":"WAITING"}}"""),
+                ).andReturn()
+                .response
+        assertEquals(422, tooMany.status, tooMany.contentAsString)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 999999, 999999, 'CONFIRMED')",
+            expoId,
+        )
+        val missing = mvc.perform(get("$path?status=CONFIRMED").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+        assertEquals(502, missing.status)
+        jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", expoId)
+        assertEquals(
+            409,
+            mvc
+                .perform(get(path).header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+    }
+
     private fun summary(query: String = "") = read("/summary$query")
 
     private fun admin(
