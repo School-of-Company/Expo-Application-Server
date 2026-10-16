@@ -553,7 +553,18 @@ class ProgramSessionApplicationTests {
         val receipt = batchService.execute(request)
         assertEquals(3, receipt.applications.size)
         assertTrue(receipt.applications.all { it.application.status == "CONFIRMED" && !it.reused })
-        assertEquals(3L, count(if (type == ProgramSessionType.STANDARD) "tb_standard_program_application" else "tb_training_program_application"))
+        assertEquals(
+            3L,
+            count(
+                if (type ==
+                    ProgramSessionType.STANDARD
+                ) {
+                    "tb_standard_program_application"
+                } else {
+                    "tb_training_program_application"
+                },
+            ),
+        )
         assertEquals(2L, count("tb_program_guardian_link"))
         assertEquals(3L, count("tb_program_session_event"))
         assertEquals(receipt, batchService.execute(request.copy(sessionId = "renewed-session")))
@@ -600,34 +611,65 @@ class ProgramSessionApplicationTests {
         val guardian = original.applications.single { it.application.participantId == 3L }.application
         val extra = batchService.execute(guardianBatch(2, key = "extra", reuse = true))
         assertEquals(guardian, extra.applications.single { it.reused }.application)
-        assertEquals("WAITING", extra.applications.single { !it.reused }.application.status)
+        assertEquals(
+            "WAITING",
+            extra.applications
+                .single { !it.reused }
+                .application.status,
+        )
         assertEquals(3L, count("tb_program_session_application"))
         assertEquals(2L, count("tb_standard_program_application"))
-        cancelGuardianStudent(original.applications.single { it.application.participantId == 1L }.application.applicationId)
+        cancelGuardianStudent(
+            original.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId,
+        )
         applied(1, false)
         applied(2, true)
         applied(3, true)
         assertEquals(2L, count("tb_standard_program_application"))
-        cancelGuardianStudent(extra.applications.single { !it.reused }.application.applicationId)
+        cancelGuardianStudent(
+            extra.applications
+                .single { !it.reused }
+                .application.applicationId,
+        )
         assertEquals(0L, count("tb_standard_program_application"))
-        assertEquals(3L, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CANCELLED'", Long::class.java))
+        assertEquals(
+            3L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CANCELLED'", Long::class.java),
+        )
     }
 
     @Test
     fun `guardian only cancellation and attendance protected final cancellation cannot leave orphan students`() {
         enableGuardianPolicy(3, 0)
         val result = batchService.execute(guardianBatch(1, 2))
-        val guardian = result.applications.single { it.application.participantId == 3L }.application.applicationId
+        val guardian =
+            result.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
         assertThrows(ProgramApplicationConflictException::class.java) { cancelGuardianStudent(guardian) }
-        cancelGuardianStudent(result.applications.single { it.application.participantId == 1L }.application.applicationId)
+        cancelGuardianStudent(
+            result.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId,
+        )
         assertEquals(2L, count("tb_standard_program_application"))
         protectedParticipants = setOf(3)
         assertThrows(ResponseStatusException::class.java) {
-            cancelGuardianStudent(result.applications.single { it.application.participantId == 2L }.application.applicationId)
+            cancelGuardianStudent(
+                result.applications
+                    .single { it.application.participantId == 2L }
+                    .application.applicationId,
+            )
         }
         assertEquals(2L, count("tb_standard_program_application"))
         protectedParticipants = emptySet()
-        cancelGuardianStudent(result.applications.single { it.application.participantId == 2L }.application.applicationId)
+        cancelGuardianStudent(
+            result.applications
+                .single { it.application.participantId == 2L }
+                .application.applicationId,
+        )
         assertEquals(0L, count("tb_standard_program_application"))
     }
 
@@ -636,12 +678,18 @@ class ProgramSessionApplicationTests {
         enableGuardianPolicy(3, 0)
         val request = guardianBatch(1, 2)
         val badForm = request.request.participants.map { if (it.participantId == 2L) it.copy(answers = mapper.readTree("{}")) else it }
-        assertThrows(ResponseStatusException::class.java) { batchService.execute(request.copy(request = request.request.copy(participants = badForm))) }
+        assertThrows(ResponseStatusException::class.java) {
+            batchService.execute(request.copy(request = request.request.copy(participants = badForm)))
+        }
         managedIds = listOf(1, 3)
         assertThrows(ResponseStatusException::class.java) { batchService.execute(request) }
         managedIds = listOf(1, 2, 3)
         assertThrows(ResponseStatusException::class.java) {
-            batchService.execute(request.copy(request = StudentGuardianBatchRequest(listOf(StudentGuardianSubmission(3, 1, mapper.readTree("{}"))), emptyList())))
+            batchService.execute(
+                request.copy(
+                    request = StudentGuardianBatchRequest(listOf(StudentGuardianSubmission(3, 1, mapper.readTree("{}"))), emptyList()),
+                ),
+            )
         }
         guardianPolicy = false
         assertEquals(503, assertThrows(ResponseStatusException::class.java) { batchService.execute(request) }.statusCode.value())
@@ -656,7 +704,14 @@ class ProgramSessionApplicationTests {
         val request = guardianBatch(1, 2)
         try {
             assertThrows(DataIntegrityViolationException::class.java) { batchService.execute(request) }
-            listOf("tb_program_guardian_batch", "tb_program_guardian_member", "tb_program_guardian_link", "tb_program_session_application", "tb_program_session_receipt", "tb_standard_program_application").forEach {
+            listOf(
+                "tb_program_guardian_batch",
+                "tb_program_guardian_member",
+                "tb_program_guardian_link",
+                "tb_program_session_application",
+                "tb_program_session_receipt",
+                "tb_standard_program_application",
+            ).forEach {
                 assertEquals(0L, count(it), it)
             }
         } finally {
@@ -675,22 +730,36 @@ class ProgramSessionApplicationTests {
             )
         }
         assertEquals(3L, count("tb_training_program_application"))
-        assertEquals(3L, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java))
+        assertEquals(
+            3L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java),
+        )
     }
 
     @Test
     fun `failed last student cancellation rolls back guardian cancellation seats and both events`() {
         enableGuardianPolicy(2, 0)
         val receipt = batchService.execute(guardianBatch(1))
-        val student = receipt.applications.single { it.application.participantId == 1L }.application.applicationId
-        val guardian = receipt.applications.single { it.application.participantId == 3L }.application.applicationId
-        jdbc.execute("ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_cancel_failure CHECK (application_id <> '$guardian' OR status <> 'CANCELLED')")
+        val student =
+            receipt.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
+        val guardian =
+            receipt.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
+        jdbc.execute(
+            "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_cancel_failure CHECK (application_id <> '$guardian' OR status <> 'CANCELLED')",
+        )
         try {
             assertThrows(DataIntegrityViolationException::class.java) { cancelGuardianStudent(student) }
             assertEquals(2L, count("tb_standard_program_application"))
             assertEquals(2L, count("tb_program_session_history"))
             assertEquals(2L, count("tb_program_session_event"))
-            assertEquals(2L, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java))
+            assertEquals(
+                2L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java),
+            )
         } finally {
             jdbc.execute("ALTER TABLE tb_program_session_history DROP CONSTRAINT test_guardian_cancel_failure")
         }
@@ -705,14 +774,26 @@ class ProgramSessionApplicationTests {
         val single = service.execute(command(participant = 4))
         guardianPolicy = true
         val receipt = batchService.execute(guardianBatch(1, 2))
-        val guardian = receipt.applications.single { it.application.participantId == 3L }.application.applicationId
-        jdbc.execute("ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_promotion_failure CHECK (application_id <> '$guardian' OR status <> 'CONFIRMED')")
+        val guardian =
+            receipt.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
+        jdbc.execute(
+            "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_promotion_failure CHECK (application_id <> '$guardian' OR status <> 'CONFIRMED')",
+        )
         try {
             assertThrows(jakarta.servlet.ServletException::class.java) {
-                mvc.perform(post("/internal/program-session-applications/${single.applicationId}/cancellation").header("X-Internal-Token", "test-token"))
+                mvc.perform(
+                    post(
+                        "/internal/program-session-applications/${single.applicationId}/cancellation",
+                    ).header("X-Internal-Token", "test-token"),
+                )
             }
             assertEquals(1L, count("tb_standard_program_application"))
-            assertEquals(3L, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java))
+            assertEquals(
+                3L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+            )
             assertEquals(4L, count("tb_program_session_history"))
             assertEquals(4L, count("tb_program_session_event"))
         } finally {
@@ -729,12 +810,18 @@ class ProgramSessionApplicationTests {
         val start = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(2)
         try {
-            val results = listOf(2L, 4L).map { id ->
-                pool.submit<String> {
-                    assertTrue(start.await(10, TimeUnit.SECONDS))
-                    batchService.execute(guardianBatch(id, key = "add-$id", reuse = true)).applications.single { !it.reused }.application.status
+            val results =
+                listOf(2L, 4L).map { id ->
+                    pool.submit<String> {
+                        assertTrue(start.await(10, TimeUnit.SECONDS))
+                        batchService
+                            .execute(
+                                guardianBatch(id, key = "add-$id", reuse = true),
+                            ).applications
+                            .single { !it.reused }
+                            .application.status
+                    }
                 }
-            }
             start.countDown()
             assertEquals(setOf("CONFIRMED", "WAITING"), results.map { it.get(30, TimeUnit.SECONDS) }.toSet())
         } finally {
@@ -749,13 +836,37 @@ class ProgramSessionApplicationTests {
     fun `batch public route requires csrf and a participant session`() {
         val path = "/application/expos/$EXPO/program-sessions/STANDARD/1/application-batches"
         val body = mapper.writeValueAsString(guardianBatch(1, 2).request)
-        mvc.perform(post(path).cookie(Cookie("PARTICIPANT_SESSION", "session")).header("Idempotency-Key", "http").contentType(MediaType.APPLICATION_JSON).content(body))
-            .andExpect(status().isForbidden)
-        mvc.perform(post(path).with(csrf()).header("Idempotency-Key", "http").contentType(MediaType.APPLICATION_JSON).content(body))
-            .andExpect(status().isUnauthorized)
+        mvc
+            .perform(
+                post(
+                    path,
+                ).cookie(
+                    Cookie("PARTICIPANT_SESSION", "session"),
+                ).header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isForbidden)
+        mvc
+            .perform(
+                post(path)
+                    .with(csrf())
+                    .header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isUnauthorized)
         enableGuardianPolicy(3, 0)
-        mvc.perform(post(path).with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")).header("Idempotency-Key", "http").contentType(MediaType.APPLICATION_JSON).content(body))
-            .andExpect(status().isCreated)
+        mvc
+            .perform(
+                post(
+                    path,
+                ).with(
+                    csrf(),
+                ).cookie(
+                    Cookie("PARTICIPANT_SESSION", "session"),
+                ).header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isCreated)
     }
 
     @Test
@@ -763,7 +874,9 @@ class ProgramSessionApplicationTests {
         enableGuardianPolicy(1, 3)
         val first = batchService.execute(guardianBatch(1))
         assertTrue(first.applications.all { it.application.status == "WAITING" })
-        assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(2, key = "extra", reuse = true)) }
+        assertThrows(
+            ProgramApplicationConflictException::class.java,
+        ) { batchService.execute(guardianBatch(2, key = "extra", reuse = true)) }
         guardianPolicy = false
         change { it.put("capacity", 2) }
         reconcile()
@@ -777,8 +890,12 @@ class ProgramSessionApplicationTests {
     fun `direct cancellation cannot bypass guardian links and policy off keeps the single route`() {
         enableGuardianPolicy(2, 0)
         val first = batchService.execute(guardianBatch(1))
-        mvc.perform(post("/internal/program-session-applications/${first.applications.first().application.applicationId}/cancellation").header("X-Internal-Token", "test-token"))
-            .andExpect(status().isConflict)
+        mvc
+            .perform(
+                post(
+                    "/internal/program-session-applications/${first.applications.first().application.applicationId}/cancellation",
+                ).header("X-Internal-Token", "test-token"),
+            ).andExpect(status().isConflict)
         assertEquals(2L, count("tb_standard_program_application"))
         reset()
         assertEquals("CONFIRMED", service.execute(command()).status)
@@ -788,29 +905,34 @@ class ProgramSessionApplicationTests {
     fun `concurrent cancellation and extra student never leave an active guardian without students`() {
         enableGuardianPolicy(3, 1)
         val first = batchService.execute(guardianBatch(1))
-        val student = first.applications.single { it.application.participantId == 1L }.application.applicationId
+        val student =
+            first.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
         val start = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(2)
         try {
-            val cancellation = pool.submit<String> {
-                assertTrue(start.await(10, TimeUnit.SECONDS))
-                try {
-                    cancelGuardianStudent(student)
-                    "cancelled"
-                } catch (_: ProgramApplicationConflictException) {
-                    "retry"
+            val cancellation =
+                pool.submit<String> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    try {
+                        cancelGuardianStudent(student)
+                        "cancelled"
+                    } catch (_: ProgramApplicationConflictException) {
+                        "retry"
+                    }
                 }
-            }
-            val addition = pool.submit<String> {
-                assertTrue(start.await(10, TimeUnit.SECONDS))
-                try {
-                    batchService.execute(guardianBatch(2, key = "race", reuse = true))
-                    "added"
-                } catch (exception: ResponseStatusException) {
-                    assertEquals(400, exception.statusCode.value())
-                    "guardian-cancelled"
+            val addition =
+                pool.submit<String> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    try {
+                        batchService.execute(guardianBatch(2, key = "race", reuse = true))
+                        "added"
+                    } catch (exception: ResponseStatusException) {
+                        assertEquals(400, exception.statusCode.value())
+                        "guardian-cancelled"
+                    }
                 }
-            }
             start.countDown()
             val cancelled = cancellation.get(30, TimeUnit.SECONDS)
             val added = addition.get(30, TimeUnit.SECONDS)
@@ -821,7 +943,8 @@ class ProgramSessionApplicationTests {
         assertEquals(
             0L,
             jdbc.queryForObject(
-                "SELECT count(*) FROM tb_program_guardian_link l JOIN tb_program_session_application s ON s.id = l.student_application_id " +
+                "SELECT count(*) FROM tb_program_guardian_link l " +
+                    "JOIN tb_program_session_application s ON s.id = l.student_application_id " +
                     "JOIN tb_program_session_application g ON g.id = l.guardian_application_id " +
                     "WHERE s.status <> 'CANCELLED' AND g.status = 'CANCELLED'",
                 Long::class.java,
@@ -839,13 +962,23 @@ class ProgramSessionApplicationTests {
         )
     }
 
-    private fun enableGuardianPolicy(seats: Int, queue: Int) {
+    private fun enableGuardianPolicy(
+        seats: Int,
+        queue: Int,
+    ) {
         guardianPolicy = true
         capacity = seats
         waitingCapacity = queue
         managedIds = listOf(1, 2, 3, 4, 5)
         listOf(3L, 4L, 5L).forEach(::addParticipant)
-        occupations = mapOf(1L to "ELEMENTARY_STUDENT", 2L to "ELEMENTARY_STUDENT", 3L to "PARENT", 4L to "ELEMENTARY_STUDENT", 5L to "ELEMENTARY_STUDENT")
+        occupations =
+            mapOf(
+                1L to "ELEMENTARY_STUDENT",
+                2L to "ELEMENTARY_STUDENT",
+                3L to "PARENT",
+                4L to "ELEMENTARY_STUDENT",
+                5L to "ELEMENTARY_STUDENT",
+            )
         allowed = "[\"ELEMENTARY_STUDENT\",\"PARENT\"]"
     }
 
@@ -856,7 +989,9 @@ class ProgramSessionApplicationTests {
         type: ProgramSessionType = ProgramSessionType.STANDARD,
     ): ApplyStudentGuardianBatchCommand =
         ApplyStudentGuardianBatchCommand(
-            ProgramSessionKey(UUID.fromString(EXPO), type, 1), "session", key,
+            ProgramSessionKey(UUID.fromString(EXPO), type, 1),
+            "session",
+            key,
             StudentGuardianBatchRequest(
                 students.map { StudentGuardianSubmission(it, 1, mapper.readTree("""{"101":"a"}""")) } +
                     StudentGuardianSubmission(3, if (reuse) null else 1, if (reuse) null else mapper.readTree("""{"101":"b"}""")),
@@ -2421,38 +2556,64 @@ class ProgramSessionApplicationTests {
     @TestConfiguration
     class Forms {
         @Bean
-        fun guardianEligibility(): StudentGuardianEligibilityProvider = object : StudentGuardianEligibilityProvider {
-            override fun validate(query: StudentGuardianEligibilityQuery) {
-                if (!guardianPolicy) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
-                if (query.links.any { it.studentId !in setOf(1L, 2L, 4L, 5L) || it.guardianId != 3L }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-            }
+        fun guardianEligibility(): StudentGuardianEligibilityProvider =
+            object : StudentGuardianEligibilityProvider {
+                override fun validate(query: StudentGuardianEligibilityQuery) {
+                    if (!guardianPolicy) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
+                    if (query.links.any {
+                            it.studentId !in
+                                setOf(
+                                    1L,
+                                    2L,
+                                    4L,
+                                    5L,
+                                ) || it.guardianId != 3L
+                        }
+                    ) {
+                        throw ResponseStatusException(HttpStatus.FORBIDDEN)
+                    }
+                }
 
-            override fun validateSingle(command: ApplyProgramSessionCommand) {
-                if (guardianPolicy) throw ProgramApplicationConflictException("동반 정책은 배치 접수가 필요합니다.")
+                override fun validateSingle(command: ApplyProgramSessionCommand) {
+                    if (guardianPolicy) throw ProgramApplicationConflictException("동반 정책은 배치 접수가 필요합니다.")
+                }
             }
-        }
 
         @Bean
         @Primary
-        fun guardianCancellationGuard(): OwnerCancellationGuard = object : OwnerCancellationGuard {
-            override fun acquire(command: CancelOwnerApplicationCommand, participantId: Long, party: OwnerApplicationParty): OwnerCancellationGuard.Permit {
-                if (party.participants.none { it.participantId == participantId }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
-                return permit(participantId)
-            }
+        fun guardianCancellationGuard(): OwnerCancellationGuard =
+            object : OwnerCancellationGuard {
+                override fun acquire(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    party: OwnerApplicationParty,
+                ): OwnerCancellationGuard.Permit {
+                    if (party.participants.none { it.participantId == participantId }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+                    return permit(participantId)
+                }
 
-            override fun acquireAdmin(command: CancelOwnerApplicationCommand, participantId: Long, sessionId: Long): OwnerCancellationGuard.Permit = permit(participantId)
+                override fun acquireAdmin(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    sessionId: Long,
+                ): OwnerCancellationGuard.Permit = permit(participantId)
 
-            override fun acquireAdminProgram(command: CancelOwnerApplicationCommand, participantId: Long, programId: Long): OwnerCancellationGuard.Permit = permit(participantId)
+                override fun acquireAdminProgram(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    programId: Long,
+                ): OwnerCancellationGuard.Permit = permit(participantId)
 
-            private fun permit(participantId: Long): OwnerCancellationGuard.Permit {
-                if (participantId in protectedParticipants) throw ResponseStatusException(HttpStatus.CONFLICT)
-                return object : OwnerCancellationGuard.Permit {
-                    override val linkedTraineeId = participantId + 500
-                    override val cancelEndedAt = cancelEnd
-                    override fun close() {}
+                private fun permit(participantId: Long): OwnerCancellationGuard.Permit {
+                    if (participantId in protectedParticipants) throw ResponseStatusException(HttpStatus.CONFLICT)
+                    return object : OwnerCancellationGuard.Permit {
+                        override val linkedTraineeId = participantId + 500
+                        override val cancelEndedAt = cancelEnd
+
+                        override fun close() {}
+                    }
                 }
             }
-        }
 
         @Bean
         @Primary
@@ -2614,9 +2775,10 @@ class ProgramSessionApplicationTests {
                             }
 
                             path.endsWith("standard-participants/managed") -> {
-                                val people = managedIds.joinToString(",") { id ->
-                                    """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L}}"""
-                                }
+                                val people =
+                                    managedIds.joinToString(",") { id ->
+                                        """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L}}"""
+                                    }
                                 """{"registered":true,"participants":[$people]}"""
                             }
 

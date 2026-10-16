@@ -32,15 +32,16 @@ class StudentGuardianBatchRepository(
         command: ApplyStudentGuardianBatchCommand,
         owner: Long,
     ): Pair<Boolean, StudentGuardianBatchReceipt>? =
-        jdbc.query(
-            "SELECT command = CAST(? AS jsonb), receipt FROM tb_program_guardian_batch " +
-                "WHERE expo_id = ? AND representative_id = ? AND idempotency_key = ?",
-            { rs, _ -> rs.getBoolean(1) to mapper.readValue(rs.getString(2), StudentGuardianBatchReceipt::class.java) },
-            snapshot(command),
-            command.key.expoId,
-            owner,
-            command.idempotencyKey,
-        ).singleOrNull()
+        jdbc
+            .query(
+                "SELECT command = CAST(? AS jsonb), receipt FROM tb_program_guardian_batch " +
+                    "WHERE expo_id = ? AND representative_id = ? AND idempotency_key = ?",
+                { rs, _ -> rs.getBoolean(1) to mapper.readValue(rs.getString(2), StudentGuardianBatchReceipt::class.java) },
+                snapshot(command),
+                command.key.expoId,
+                owner,
+                command.idempotencyKey,
+            ).singleOrNull()
 
     private fun snapshot(command: ApplyStudentGuardianBatchCommand): String =
         mapper.writeValueAsString(mapOf("key" to command.key, "request" to command.request))
@@ -51,7 +52,8 @@ class StudentGuardianBatchRepository(
         receipt: StudentGuardianBatchReceipt,
     ) {
         jdbc.update(
-            "INSERT INTO tb_program_guardian_batch (id, expo_id, program_type, program_id, representative_id, idempotency_key, command, receipt) " +
+            "INSERT INTO tb_program_guardian_batch " +
+                "(id, expo_id, program_type, program_id, representative_id, idempotency_key, command, receipt) " +
                 "VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))",
             receipt.batchId,
             command.key.expoId,
@@ -90,54 +92,65 @@ class StudentGuardianBatchRepository(
     }
 
     fun batchId(applicationId: UUID): UUID? =
-        jdbc.query("SELECT batch_id FROM tb_program_guardian_member WHERE application_id = ?", { rs, _ -> rs.getObject(1, UUID::class.java) }, applicationId)
-            .singleOrNull()
+        jdbc
+            .query(
+                "SELECT batch_id FROM tb_program_guardian_member WHERE application_id = ?",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+                applicationId,
+            ).singleOrNull()
 
     fun members(batchId: UUID): List<ProgramWaitlistRepository.Entry> =
-        jdbc.query(
-            "SELECT application_id FROM tb_program_guardian_member WHERE batch_id = ? ORDER BY application_id",
-            { rs, _ -> rs.getObject(1, UUID::class.java) },
-            batchId,
-        ).mapNotNull(applications::entry)
+        jdbc
+            .query(
+                "SELECT application_id FROM tb_program_guardian_member WHERE batch_id = ? ORDER BY application_id",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+                batchId,
+            ).mapNotNull(applications::entry)
 
     fun active(
         key: ProgramSessionKey,
         participantId: Long,
     ): ProgramWaitlistRepository.Entry? =
-        jdbc.query(
-            "SELECT id FROM tb_program_session_application WHERE expo_id = ? AND program_type = ? AND program_id = ? " +
-                "AND participant_id = ? AND status <> 'CANCELLED'",
-            { rs, _ -> rs.getObject(1, UUID::class.java) },
-            key.expoId,
-            key.programType.name,
-            key.programId,
-            participantId,
-        ).singleOrNull()?.let(applications::entry)
+        jdbc
+            .query(
+                "SELECT id FROM tb_program_session_application WHERE expo_id = ? AND program_type = ? AND program_id = ? " +
+                    "AND participant_id = ? AND status <> 'CANCELLED'",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+                key.expoId,
+                key.programType.name,
+                key.programId,
+                participantId,
+            ).singleOrNull()
+            ?.let(applications::entry)
 
     fun confirmedPreregister(
         key: ProgramSessionKey,
         participantId: Long,
     ): Boolean =
-        jdbc.query(
-            "SELECT id FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CONFIRMED' FOR SHARE",
-            { rs, _ -> rs.getLong(1) },
-            key.expoId,
-            participantId,
-        ).isNotEmpty()
+        jdbc
+            .query(
+                "SELECT id FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CONFIRMED' FOR SHARE",
+                { rs, _ -> rs.getLong(1) },
+                key.expoId,
+                participantId,
+            ).isNotEmpty()
 
     fun guardian(student: UUID): UUID? =
-        jdbc.query(
-            "SELECT guardian_application_id FROM tb_program_guardian_link WHERE student_application_id = ?",
-            { rs, _ -> rs.getObject(1, UUID::class.java) },
-            student,
-        ).singleOrNull()
+        jdbc
+            .query(
+                "SELECT guardian_application_id FROM tb_program_guardian_link WHERE student_application_id = ?",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+                student,
+            ).singleOrNull()
 
     fun students(guardian: UUID): List<ProgramWaitlistRepository.Entry> =
-        jdbc.query(
-            "SELECT student_application_id FROM tb_program_guardian_link WHERE guardian_application_id = ?",
-            { rs, _ -> rs.getObject(1, UUID::class.java) },
-            guardian,
-        ).mapNotNull(applications::entry).filter { it.status != "CANCELLED" }
+        jdbc
+            .query(
+                "SELECT student_application_id FROM tb_program_guardian_link WHERE guardian_application_id = ?",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+                guardian,
+            ).mapNotNull(applications::entry)
+            .filter { it.status != "CANCELLED" }
 
     fun links(entries: List<ProgramWaitlistRepository.Entry>): List<StudentGuardianLink> =
         entries.mapNotNull { entry ->
@@ -152,7 +165,11 @@ class StudentGuardianBatchRepository(
 
     fun definition(id: UUID): ProgramSessionDefinition =
         mapper.readValue(
-            jdbc.queryForObject("SELECT definition_snapshot::text FROM tb_program_session_application WHERE id = ?", String::class.java, id),
+            jdbc.queryForObject(
+                "SELECT definition_snapshot::text FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                id,
+            ),
             ProgramSessionDefinition::class.java,
         )
 }

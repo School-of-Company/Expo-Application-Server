@@ -47,7 +47,14 @@ class StudentGuardianBatchPromotion(
         val channel = batches.channel(head.id)
         if (members.any { batches.channel(it.id) != channel } ||
             ledger.confirmedCount(definition.programType, definition.id) + members.size > policy.capacity ||
-            (channel != null && applications.confirmedCount(definition, channel) + members.size > policy.channels.orEmpty().single { it.name == channel }.capacity)
+            (
+                channel != null &&
+                    applications.confirmedCount(definition, channel) + members.size >
+                    policy.channels
+                        .orEmpty()
+                        .single { it.name == channel }
+                        .capacity
+            )
         ) {
             return 0
         }
@@ -67,21 +74,29 @@ class StudentGuardianBatchPromotion(
                 val saved = batches.definition(entry.id)
                 if (saved.groupId != definition.groupId) return 0
                 if (definition.programType == ProgramSessionType.TRAINING) {
-                    trainees[entry.participantId] = gateway.resolveTrainee(definition.expoId, entry.participantId, programTrainingId(entry.questions, entry.answers))
+                    trainees[entry.participantId] =
+                        gateway.resolveTrainee(definition.expoId, entry.participantId, programTrainingId(entry.questions, entry.answers))
                 } else {
-                    val existing = gateway.programDefinitions(
-                        definition.expoId, definition.programType,
-                        standards.findAllByParticipantId(entry.participantId).map { it.standardProgramId }, existing = true,
-                    )
+                    val existing =
+                        gateway.programDefinitions(
+                            definition.expoId,
+                            definition.programType,
+                            standards.findAllByParticipantId(entry.participantId).map { it.standardProgramId },
+                            existing = true,
+                        )
                     if (existing.any { it.groupId == definition.groupId }) return 0
                 }
             }
             if (trainees.values.toSet().size != trainees.size) return 0
             for (trainee in trainees.values.sorted()) {
                 if (!trainings.tryLockTrainee(trainee)) return 0
-                val existing = gateway.programDefinitions(
-                    definition.expoId, definition.programType, trainings.findAllByTraineeId(trainee).map { it.trainingProgramId }, existing = true,
-                )
+                val existing =
+                    gateway.programDefinitions(
+                        definition.expoId,
+                        definition.programType,
+                        trainings.findAllByTraineeId(trainee).map { it.trainingProgramId },
+                        existing = true,
+                    )
                 if (existing.any { it.groupId == definition.groupId }) return 0
             }
         } catch (_: ResponseStatusException) {

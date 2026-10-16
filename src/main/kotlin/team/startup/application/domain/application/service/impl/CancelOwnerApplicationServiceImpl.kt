@@ -38,7 +38,13 @@ class CancelOwnerApplicationServiceImpl(
         val original =
             owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         if (command.type != OwnerApplicationType.PREREGISTER && guardianBatches.batchId(UUID.fromString(original.applicationId)) != null) {
-            guardianCancellation.execute(CancelStudentGuardianApplicationCommand(command.expoId, UUID.fromString(original.applicationId), sessionId = command.sessionId))
+            guardianCancellation.execute(
+                CancelStudentGuardianApplicationCommand(
+                    command.expoId,
+                    UUID.fromString(original.applicationId),
+                    sessionId = command.sessionId,
+                ),
+            )
             return
         }
         val guard =

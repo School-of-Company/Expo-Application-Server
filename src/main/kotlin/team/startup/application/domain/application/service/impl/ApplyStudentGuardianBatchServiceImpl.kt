@@ -46,7 +46,8 @@ class ApplyStudentGuardianBatchServiceImpl(
         val ids = request.participants.map { it.participantId }
         val students = request.links.map { it.studentId }
         val guardians = request.links.map { it.guardianId }.toSet()
-        if (command.key.programId <= 0 || command.sessionId.isBlank() || command.idempotencyKey.isBlank() || command.idempotencyKey.length > 200 ||
+        if (command.key.programId <= 0 || command.sessionId.isBlank() ||
+            command.idempotencyKey.isBlank() || command.idempotencyKey.length > 200 ||
             request.links.isEmpty() || ids.any { it <= 0 } || ids.toSet().size != ids.size || students.toSet().size != students.size ||
             students.any { it in guardians } || (students.toSet() + guardians) != ids.toSet()
         ) {
@@ -69,7 +70,11 @@ class ApplyStudentGuardianBatchServiceImpl(
         val occupations = ids.associateWith { id -> party.participants.single { it.participantId == id }.occupation }
         if (occupations.values.any { it == null || it !in policy.allowedOccupations }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val channels = occupations.mapValues { (_, occupation) -> policy.channels?.let { policy.channelOf(requireNotNull(occupation)) } }
-        if (channels.values.map { it?.name }.distinct().size > 1) {
+        if (channels.values
+                .map { it?.name }
+                .distinct()
+                .size > 1
+        ) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "서로 다른 채널의 묶음 FIFO 계약이 필요합니다.")
         }
         val channel = channels.values.first()
@@ -80,7 +85,13 @@ class ApplyStudentGuardianBatchServiceImpl(
             conflict("연결 학생과 확정된 보호자만 재사용할 수 있습니다.")
         }
         provider.validate(
-            StudentGuardianEligibilityQuery(definition, ids.toSet(), request.links, StudentGuardianValidationPhase.SUBMISSION, existing.keys),
+            StudentGuardianEligibilityQuery(
+                definition,
+                ids.toSet(),
+                request.links,
+                StudentGuardianValidationPhase.SUBMISSION,
+                existing.keys,
+            ),
         )
         val newItems = request.participants.filter { it.participantId !in existing }
         if (request.participants.any { it.participantId in existing && (it.formVersion != null || it.answers != null) } ||
@@ -88,26 +99,44 @@ class ApplyStudentGuardianBatchServiceImpl(
         ) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "신규 참가자는 폼이 필요하고 재사용 보호자의 폼은 생략해야 합니다.")
         }
-        val commands = newItems.associate { item ->
-            item.participantId to ApplyProgramSessionCommand(
-                command.key.expoId.toString(), command.key.programType, command.key.programId, item.participantId,
-                requireNotNull(item.formVersion), requireNotNull(item.answers), command.sessionId, "guardian-batch:$batchId",
-            )
-        }
-        val formProvider = forms.ifAvailable ?: unavailable()
-        val snapshots = newItems.associate { item ->
-            val form = formProvider.loadAndValidate(definition.expoId, policy.formId, requireNotNull(item.formVersion), requireNotNull(item.answers))
-            if (form.expoId != definition.expoId || form.id != policy.formId || form.purpose != "PROGRAM" || form.version != item.formVersion) {
-                conflict("프로그램 폼 또는 버전이 변경되었습니다.")
+        val commands =
+            newItems.associate { item ->
+                item.participantId to
+                    ApplyProgramSessionCommand(
+                        command.key.expoId.toString(),
+                        command.key.programType,
+                        command.key.programId,
+                        item.participantId,
+                        requireNotNull(item.formVersion),
+                        requireNotNull(item.answers),
+                        command.sessionId,
+                        "guardian-batch:$batchId",
+                    )
             }
-            item.participantId to form
-        }
+        val formProvider = forms.ifAvailable ?: unavailable()
+        val snapshots =
+            newItems.associate { item ->
+                val form =
+                    formProvider.loadAndValidate(
+                        definition.expoId,
+                        policy.formId,
+                        requireNotNull(item.formVersion),
+                        requireNotNull(item.answers),
+                    )
+                if (form.expoId != definition.expoId || form.id != policy.formId ||
+                    form.purpose != "PROGRAM" || form.version != item.formVersion
+                ) {
+                    conflict("프로그램 폼 또는 버전이 변경되었습니다.")
+                }
+                item.participantId to form
+            }
         waitlist.lock(definition)
         repository.observe(definition)
         if (existing.any { (id, entry) -> batches.active(command.key, id) != entry }) conflict("재사용 보호자 신청이 변경되었습니다.")
         if (waitlist.isDeleted(definition)) conflict("삭제된 프로그램입니다.")
         val now = waitlist.now()
-        if (policy.closed || policy.capacity <= 0 || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
+        if (policy.closed || policy.capacity <= 0 || now.isBefore(policy.applicationStartedAt) ||
+            !now.isBefore(policy.applicationEndedAt) ||
             snapshots.values.any { now.isBefore(it.startedAt) || !now.isBefore(it.endedAt) }
         ) {
             conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
@@ -116,10 +145,13 @@ class ApplyStudentGuardianBatchServiceImpl(
             val individual = requireNotNull(commands[item.participantId])
             if (ledger.activeInGroup(individual, definition.groupId)) conflict("같은 묶음에 활성 신청이 있습니다.")
             if (command.key.programType == ProgramSessionType.STANDARD) {
-                val definitions = gateway.programDefinitions(
-                    definition.expoId, definition.programType,
-                    standards.findAllByParticipantId(item.participantId).map { it.standardProgramId }, existing = true,
-                )
+                val definitions =
+                    gateway.programDefinitions(
+                        definition.expoId,
+                        definition.programType,
+                        standards.findAllByParticipantId(item.participantId).map { it.standardProgramId },
+                        existing = true,
+                    )
                 if (definitions.any { it.groupId == definition.groupId }) conflict("같은 묶음에 기존 신청이 있습니다.")
             }
         }
@@ -129,52 +161,73 @@ class ApplyStudentGuardianBatchServiceImpl(
             repository.waitingCount(definition, channel?.name) > 0 ||
                 ledger.confirmedCount(definition.programType, definition.id) + needed > policy.capacity ||
                 (channel != null && repository.confirmedCount(definition, channel.name) + needed > channel.capacity)
-        if (waiting && (repository.waitingCount(definition, channel?.name) + needed > (channel?.waitingCapacity ?: policy.waitingCapacity) ||
-                !waitlist.now().isBefore(policy.promotionEndedAt))
+        if (waiting &&
+            (
+                repository.waitingCount(definition, channel?.name) + needed > (channel?.waitingCapacity ?: policy.waitingCapacity) ||
+                    !waitlist.now().isBefore(policy.promotionEndedAt)
+            )
         ) {
             conflict("일괄 신청을 수용할 대기 정원이 없거나 대기 접수가 종료되었습니다.")
         }
-        val traineeIds = if (command.key.programType == ProgramSessionType.TRAINING) {
-            newItems.associate { item ->
-                item.participantId to gateway.resolveTrainee(
-                    definition.expoId, item.participantId, requireNotNull(snapshots[item.participantId]).trainingId(requireNotNull(item.answers)),
-                )
-            }.also { resolved ->
-                if (resolved.values.toSet().size != resolved.size) conflict("서로 다른 참가자가 같은 연수자로 연결되었습니다.")
-                resolved.values.sorted().forEach { id ->
-                    if (!trainings.tryLockTrainee(id)) conflict("연수 신청 변경 중입니다.")
-                    val definitions = gateway.programDefinitions(
-                        definition.expoId, definition.programType, trainings.findAllByTraineeId(id).map { it.trainingProgramId }, existing = true,
-                    )
-                    if (definitions.any { it.groupId == definition.groupId }) conflict("같은 묶음에 기존 연수 신청이 있습니다.")
-                }
+        val traineeIds =
+            if (command.key.programType == ProgramSessionType.TRAINING) {
+                newItems
+                    .associate { item ->
+                        item.participantId to
+                            gateway.resolveTrainee(
+                                definition.expoId,
+                                item.participantId,
+                                requireNotNull(snapshots[item.participantId]).trainingId(requireNotNull(item.answers)),
+                            )
+                    }.also { resolved ->
+                        if (resolved.values.toSet().size != resolved.size) conflict("서로 다른 참가자가 같은 연수자로 연결되었습니다.")
+                        resolved.values.sorted().forEach { id ->
+                            if (!trainings.tryLockTrainee(id)) conflict("연수 신청 변경 중입니다.")
+                            val definitions =
+                                gateway.programDefinitions(
+                                    definition.expoId,
+                                    definition.programType,
+                                    trainings.findAllByTraineeId(id).map { it.trainingProgramId },
+                                    existing = true,
+                                )
+                            if (definitions.any { it.groupId == definition.groupId }) conflict("같은 묶음에 기존 연수 신청이 있습니다.")
+                        }
+                    }
+            } else {
+                emptyMap()
             }
-        } else {
-            emptyMap()
-        }
         if (!waitlist.now().isBefore(policy.applicationEndedAt) || snapshots.values.any { !waitlist.now().isBefore(it.endedAt) } ||
             (waiting && !waitlist.now().isBefore(policy.promotionEndedAt))
         ) {
             conflict("프로그램 또는 폼 접수 기간이 끝났습니다.")
         }
-        val applications = request.participants.map { item ->
-            val old = existing[item.participantId]
-            StudentGuardianBatchApplication(
-                if (old != null) {
-                    ProgramSessionReceipt(old.id, definition.id, old.participantId, old.traineeId, old.status)
-                } else {
-                    ProgramSessionReceipt(UUID.randomUUID(), definition.id, item.participantId, traineeIds[item.participantId].takeUnless { waiting }, if (waiting) "WAITING" else "CONFIRMED")
-                },
-                old != null,
-            )
-        }
+        val applications =
+            request.participants.map { item ->
+                val old = existing[item.participantId]
+                StudentGuardianBatchApplication(
+                    if (old != null) {
+                        ProgramSessionReceipt(old.id, definition.id, old.participantId, old.traineeId, old.status)
+                    } else {
+                        ProgramSessionReceipt(
+                            UUID.randomUUID(),
+                            definition.id,
+                            item.participantId,
+                            traineeIds[item.participantId].takeUnless { waiting },
+                            if (waiting) "WAITING" else "CONFIRMED",
+                        )
+                    },
+                    old != null,
+                )
+            }
         val receipt = StudentGuardianBatchReceipt(batchId, applications)
         batches.save(command, owner, receipt)
         applications.filterNot { it.reused }.forEach { item ->
             val result = item.application
             if (!waiting) {
                 if (definition.programType == ProgramSessionType.STANDARD) {
-                    standards.saveAndFlush(StandardProgramApplication(participantId = result.participantId, standardProgramId = definition.id))
+                    standards.saveAndFlush(
+                        StandardProgramApplication(participantId = result.participantId, standardProgramId = definition.id),
+                    )
                 } else {
                     val trainee = requireNotNull(result.traineeId)
                     operations.lockVersion(trainee)
@@ -182,7 +235,13 @@ class ApplyStudentGuardianBatchServiceImpl(
                     operations.incrementVersion(trainee)
                 }
             }
-            ledger.save(requireNotNull(commands[result.participantId]), definition, requireNotNull(snapshots[result.participantId]), result, channel?.name)
+            ledger.save(
+                requireNotNull(commands[result.participantId]),
+                definition,
+                requireNotNull(snapshots[result.participantId]),
+                result,
+                channel?.name,
+            )
             repository.event(result.applicationId, result.status)
             batches.addMember(batchId, result.applicationId, result.participantId in guardians)
         }
@@ -193,5 +252,6 @@ class ApplyStudentGuardianBatchServiceImpl(
 
     private fun conflict(reason: String): Nothing = throw ProgramApplicationConflictException(reason)
 
-    private fun unavailable(): Nothing = throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "학생·보호자 학년·정책·시간 충돌 계약 공급자가 준비되지 않았습니다.")
+    private fun unavailable(): Nothing =
+        throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "학생·보호자 학년·정책·시간 충돌 계약 공급자가 준비되지 않았습니다.")
 }

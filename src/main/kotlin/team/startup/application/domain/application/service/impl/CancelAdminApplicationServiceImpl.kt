@@ -47,7 +47,9 @@ class CancelAdminApplicationServiceImpl(
         val access = expo.requireCancelAccess(command.expoId, command.authorization)
         val original = target(command)
         if (guardianBatches.batchId(original.id) != null) {
-            guardianCancellation.execute(CancelStudentGuardianApplicationCommand(command.expoId, original.id, authorization = command.authorization))
+            guardianCancellation.execute(
+                CancelStudentGuardianApplicationCommand(command.expoId, original.id, authorization = command.authorization),
+            )
             return AdminCancellationResult(command.applicationId)
         }
         val type = OwnerApplicationType.valueOf(original.key.programType.name)

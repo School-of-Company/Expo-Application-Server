@@ -50,8 +50,14 @@ class StudentGuardianBatchController(
         @Valid @RequestBody body: StudentGuardianBatchRequest,
         request: HttpServletRequest,
     ): ResponseEntity<StudentGuardianBatchReceipt> {
-        val session = request.cookies.orEmpty().filter { it.name == cookieName }.singleOrNull()?.value?.takeIf { it.isNotBlank() }
-            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "SESSION_REQUIRED")
+        val session =
+            request.cookies
+                .orEmpty()
+                .filter { it.name == cookieName }
+                .singleOrNull()
+                ?.value
+                ?.takeIf { it.isNotBlank() }
+                ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "SESSION_REQUIRED")
         if (programId <= 0 || key.isNullOrBlank() || key.length > 200) throw ResponseStatusException(HttpStatus.BAD_REQUEST)
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(
             service.execute(ApplyStudentGuardianBatchCommand(ProgramSessionKey(expoId, programType, programId), session, key, body)),
