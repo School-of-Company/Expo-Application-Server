@@ -92,6 +92,7 @@ class ApplyStudentGuardianBatchServiceImpl(
                 request.links,
                 StudentGuardianValidationPhase.SUBMISSION,
                 existing.keys,
+                request.participants,
             ),
         )
         val newItems = request.participants.filter { it.participantId !in existing }

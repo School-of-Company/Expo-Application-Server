@@ -54,6 +54,7 @@ class PrepareProgramChangeServiceImpl(
                     ) {
                         badRequest()
                     }
+                    if (policy.guardianPolicy?.valid() == false) badRequest()
                     if (listOf(policy.applicationStartedAt, policy.applicationEndedAt, policy.cancelEndedAt, policy.promotionEndedAt).any {
                             it.nano %
                                 1000 !=
@@ -77,6 +78,7 @@ class PrepareProgramChangeServiceImpl(
             val active = repository.activeCount(old)
             val confirmed = ledger.confirmedCount(old.programType, old.id)
             val waiting = repository.waitingCount(old)
+            if ((active > 0 || confirmed > 0) && next != null && next.policy?.guardianPolicy != old.policy?.guardianPolicy) conflict()
             if ((next == null && (active > 0 || confirmed > 0)) ||
                 (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
                 (next?.policy != null && (next.policy.capacity < confirmed || next.policy.waitingCapacity < waiting))

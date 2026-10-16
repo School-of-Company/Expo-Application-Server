@@ -2774,7 +2774,11 @@ class ProgramSessionApplicationTests {
                     }
                 }
 
-                override fun validateSingle(command: ApplyProgramSessionCommand) {
+                override fun validateSingle(
+                    command: ApplyProgramSessionCommand,
+                    definition: team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition,
+                    occupation: String?,
+                ) {
                     if (guardianPolicy) throw ProgramApplicationConflictException("동반 정책은 배치 접수가 필요합니다.")
                 }
             }

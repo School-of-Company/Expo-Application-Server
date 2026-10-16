@@ -214,6 +214,37 @@ class RegistrationGateway(
         return nodes
     }
 
+    fun participantOccupations(
+        expoId: String,
+        participantIds: Set<Long>,
+    ): Map<Long, String?> {
+        val ids = participantIds.sorted()
+        val response =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/standard-participants/details",
+                    "POST",
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantIds" to ids)),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        if (!response.isArray || response.size() != ids.size) invalidManagedResponse()
+        return ids
+            .mapIndexed { index, id ->
+                val node = response[index]
+                val actual = node.path("participantId")
+                val occupation = node.get("occupation") ?: invalidManagedResponse()
+                if (!actual.isIntegralNumber || !actual.canConvertToLong() || actual.asLong() != id ||
+                    (!occupation.isNull && !occupation.isString)
+                ) {
+                    invalidManagedResponse()
+                }
+                id to occupation.takeUnless { it.isNull }?.stringValue()
+            }.toMap()
+    }
+
     fun managedOccupation(
         expoId: String,
         sessionId: String,

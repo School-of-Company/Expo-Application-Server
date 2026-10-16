@@ -26,6 +26,8 @@ data class ProgramSessionPolicy(
     // Absent means one capacity for the whole session; omitted when null so stored receipts and snapshots stay byte-identical.
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val channels: List<ProgramSessionChannel>? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    val guardianPolicy: ProgramGuardianPolicy? = null,
 ) {
     fun channelOf(occupation: String): ProgramSessionChannel? = channels?.firstOrNull { occupation in it.allowedOccupations }
 
