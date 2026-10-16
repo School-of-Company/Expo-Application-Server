@@ -29,6 +29,21 @@ data class ProgramParticipantsResponse(
     val participants: List<ProgramParticipantItem>,
     val capacity: ProgramCapacityInfo? = null,
     val channels: List<ProgramChannelCapacityInfo> = emptyList(),
+    val admissionSeats: ProgramAdmissionSeats? = null,
+)
+
+data class ProgramAdmissionSeats(
+    val preRegistration: ProgramAdmissionCapacity,
+    val onsite: ProgramAdmissionCapacity,
+    val unknownConfirmedCount: Long,
+    val waitingEnabled: Boolean = false,
+    val onsiteAdmissionEnabled: Boolean = false,
+)
+
+data class ProgramAdmissionCapacity(
+    val capacity: Int,
+    val confirmedCount: Long,
+    val remaining: Long,
 )
 
 data class ProgramCapacityInfo(

@@ -187,6 +187,7 @@ class AdminApplicationQueryRepository(
                     rs.getString("history"),
                     mapper.typeFactory.constructCollectionType(List::class.java, AdminApplicationHistory::class.java),
                 ),
+                admissionRoute = rs.getString("admission_route"),
             )
         }
     }

@@ -36,9 +36,12 @@ class GetProgramParticipantsServiceImpl(
                 .programDefinitions(command.owner.expoId.toString(), command.type, listOf(command.programId), existing = true)
                 .singleOrNull() ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         val policy = definition.policy
+        if (policy != null && !policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY)
         val allowed = policy?.allowedOccupations.orEmpty()
         return requireNotNull(
             reads.execute {
+                ledger.lockCapacityReads(listOf(definition))
+                waitlist.checkDefinition(definition)
                 ProgramParticipantsResponse(
                     party.representativeId != null,
                     party.participants.map { participant ->
@@ -86,6 +89,7 @@ class GetProgramParticipantsServiceImpl(
                             ),
                         )
                     },
+                    ledger.admissionSeats(definition),
                 )
             },
         )

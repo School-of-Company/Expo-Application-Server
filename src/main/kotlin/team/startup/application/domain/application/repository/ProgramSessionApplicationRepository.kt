@@ -6,6 +6,8 @@ import org.springframework.stereotype.Repository
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.ProgramAdmissionCapacity
+import team.startup.application.domain.application.presentation.dto.ProgramAdmissionSeats
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
@@ -218,6 +220,13 @@ class ProgramSessionApplicationRepository(
             .forEach { lock(44, it) }
     }
 
+    fun lockCapacityReads(definitions: List<ProgramSessionDefinition>) {
+        lockGroups(definitions)
+        definitions.map { it.id }.distinct().sorted().forEach {
+            jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock_shared(?) AS text)", String::class.java, it)
+        }
+    }
+
     private fun lock(
         namespace: Int,
         key: String,
@@ -290,6 +299,54 @@ class ProgramSessionApplicationRepository(
         return requireNotNull(jdbc.queryForObject("SELECT count(*) FROM $table WHERE $column = ?", Long::class.java, programId))
     }
 
+    fun admissionConfirmedCount(
+        definition: ProgramSessionDefinition,
+        route: String,
+    ): Long =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_application " +
+                    "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'CONFIRMED' AND admission_route = ?",
+                Long::class.java,
+                UUID.fromString(definition.expoId),
+                definition.programType.name,
+                definition.id,
+                route,
+            ),
+        )
+
+    fun unknownAdmissionCount(definition: ProgramSessionDefinition): Long =
+        (
+            confirmedCount(definition.programType, definition.id) -
+                admissionConfirmedCount(definition, "PRE_REGISTRATION") - admissionConfirmedCount(definition, "ONSITE")
+        ).coerceAtLeast(0)
+
+    fun preRegistrationRemaining(definition: ProgramSessionDefinition): Long {
+        val capacity = requireNotNull(requireNotNull(definition.policy).preRegistrationCapacity)
+        return (capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition)).coerceAtLeast(0)
+    }
+
+    fun admissionSeats(definition: ProgramSessionDefinition): ProgramAdmissionSeats? {
+        val policy = definition.policy?.takeIf { it.hasAdmissionCapacities() } ?: return null
+        if (!policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "접수 경로별 정원 정의가 올바르지 않습니다.")
+        val pre = admissionConfirmedCount(definition, "PRE_REGISTRATION")
+        val onsite = admissionConfirmedCount(definition, "ONSITE")
+        val unknown = unknownAdmissionCount(definition)
+        return ProgramAdmissionSeats(
+            ProgramAdmissionCapacity(
+                requireNotNull(policy.preRegistrationCapacity),
+                pre,
+                (policy.preRegistrationCapacity - pre - unknown).coerceAtLeast(0),
+            ),
+            ProgramAdmissionCapacity(
+                requireNotNull(policy.onsiteCapacity),
+                onsite,
+                (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
+            ),
+            unknown,
+        )
+    }
+
     fun knownGroups(
         expoId: String,
         type: ProgramSessionType,
@@ -337,8 +394,8 @@ class ProgramSessionApplicationRepository(
         jdbc.update(
             "INSERT INTO tb_program_session_application " +
                 "(id, expo_id, program_type, program_id, group_id, participant_id, trainee_id, status, " +
-                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, channel) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?)",
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, channel, admission_route) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?)",
             receipt.applicationId,
             UUID.fromString(command.expoId),
             command.programType.name,
@@ -353,6 +410,7 @@ class ProgramSessionApplicationRepository(
             mapper.writeValueAsString(form.questions),
             mapper.writeValueAsString(command.answers),
             channel,
+            if (definition.policy?.hasAdmissionCapacities() == true) "PRE_REGISTRATION" else null,
         )
         jdbc.update(
             "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded) VALUES (?, ?, 'USER', TRUE)",

@@ -51,7 +51,7 @@ class PrepareProgramChangeServiceImpl(
                         !policy.applicationStartedAt.isBefore(policy.applicationEndedAt) ||
                         policy.cancelEndedAt.isBefore(policy.applicationStartedAt) ||
                         policy.promotionEndedAt.isBefore(policy.applicationStartedAt) ||
-                        !policy.channelsValid()
+                        !policy.channelsValid() || !policy.admissionCapacitiesValid() || policy.guardianPolicy?.valid() == false
                     ) {
                         badRequest()
                     }
@@ -87,6 +87,19 @@ class PrepareProgramChangeServiceImpl(
             // Existing applications are never reclassified: with any history the channel layout is frozen,
             // and each channel may only shrink down to its own confirmed and waiting rows.
             next?.policy?.let { policy ->
+                if ((active > 0 || confirmed > 0) && policy.guardianPolicy != old.policy?.guardianPolicy) conflict()
+                if (old.policy?.hasAdmissionCapacities() == true && !policy.hasAdmissionCapacities()) conflict()
+                if (policy.hasAdmissionCapacities()) {
+                    val unknown = ledger.unknownAdmissionCount(old)
+                    if (requireNotNull(
+                            policy.preRegistrationCapacity,
+                        ) < ledger.admissionConfirmedCount(old, "PRE_REGISTRATION") + unknown ||
+                        requireNotNull(policy.onsiteCapacity) < ledger.admissionConfirmedCount(old, "ONSITE") + unknown ||
+                        (old.policy?.hasAdmissionCapacities() != true && waiting > 0)
+                    ) {
+                        conflict()
+                    }
+                }
                 if ((active > 0 || confirmed > 0) && policy.channelLayout() != old.policy?.channelLayout()) conflict()
                 if (policy.channels.orEmpty().any {
                         it.capacity < repository.confirmedCount(old, it.name) || it.waitingCapacity < repository.waitingCount(old, it.name)
