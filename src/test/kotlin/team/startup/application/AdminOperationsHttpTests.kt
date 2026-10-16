@@ -100,6 +100,8 @@ class AdminOperationsHttpTests {
                     now.plusSeconds(3600),
                     now.plusSeconds(3600),
                 ),
+                startedAt = now.plusSeconds(7200).toString(),
+                endedAt = now.plusSeconds(10800).toString(),
             )
         jdbc.execute(
             "TRUNCATE tb_program_session_application, tb_program_session_state, tb_standard_program_application, tb_training_program_application, tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE",
