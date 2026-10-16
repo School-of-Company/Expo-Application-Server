@@ -1,7 +1,9 @@
 package team.startup.application.domain.application.repository
 
+import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
+import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
@@ -10,6 +12,11 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeParseException
 import java.util.UUID
 
 @Repository
@@ -19,6 +26,74 @@ class ProgramSessionApplicationRepository(
 ) {
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
+    }
+
+    fun tryLockParticipant(participantId: Long): Boolean =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT pg_try_advisory_xact_lock(43, hashtext(?))",
+                Boolean::class.java,
+                participantId.toString(),
+            ),
+        )
+
+    fun lockSchedule(
+        expoId: String,
+        changing: Boolean = false,
+    ) {
+        val function = if (changing) "pg_advisory_xact_lock" else "pg_advisory_xact_lock_shared"
+        jdbc.queryForObject("SELECT CAST($function(46, hashtext(?)) AS text)", String::class.java, UUID.fromString(expoId).toString())
+    }
+
+    fun activeParticipants(definition: ProgramSessionDefinition): List<Long> =
+        jdbc.query(
+            "SELECT DISTINCT participant_id FROM tb_program_session_application " +
+                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status IN ('CONFIRMED', 'WAITING')",
+            { rs, _ -> rs.getLong(1) },
+            UUID.fromString(definition.expoId),
+            definition.programType.name,
+            definition.id,
+        )
+
+    fun hasTimeConflict(
+        definition: ProgramSessionDefinition,
+        participantId: Long,
+    ): Boolean {
+        val start = sessionTime(definition.startedAt)
+        val end = sessionTime(definition.endedAt)
+        if (!start.isBefore(end)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간 구간이 올바르지 않습니다.")
+        val existing =
+            jdbc.query(
+                "SELECT COALESCE(s.pending_definition, s.definition, a.definition_snapshot) " +
+                    "FROM tb_program_session_application a LEFT JOIN tb_program_session_state s " +
+                    "ON s.expo_id = a.expo_id AND s.program_type = a.program_type AND s.program_id = a.program_id " +
+                    "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') " +
+                    "AND NOT (a.program_type = ? AND a.program_id = ?)",
+                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) },
+                UUID.fromString(definition.expoId),
+                participantId,
+                definition.programType.name,
+                definition.id,
+            )
+        return existing.any {
+            val otherStart = sessionTime(it.startedAt)
+            val otherEnd = sessionTime(it.endedAt)
+            if (!otherStart.isBefore(otherEnd)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기존 프로그램 운영 시간이 올바르지 않습니다.")
+            start.isBefore(otherEnd) && otherStart.isBefore(end)
+        }
+    }
+
+    private fun sessionTime(value: String?): Instant {
+        if (value.isNullOrBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 운영 시간이 제공되지 않았습니다.")
+        return try {
+            OffsetDateTime.parse(value).toInstant()
+        } catch (_: DateTimeParseException) {
+            try {
+                LocalDateTime.parse(value).atZone(ZoneId.of("Asia/Seoul")).toInstant()
+            } catch (ex: DateTimeParseException) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간이 올바르지 않습니다.", ex)
+            }
+        }
     }
 
     fun lockGroups(definitions: List<ProgramSessionDefinition>) {
@@ -72,16 +147,23 @@ class ProgramSessionApplicationRepository(
     fun activeInGroup(
         command: ApplyProgramSessionCommand,
         groupId: UUID,
+    ): Boolean = activeInGroup(UUID.fromString(command.expoId), command.programType, groupId, command.participantId)
+
+    fun activeInGroup(
+        expoId: UUID,
+        type: ProgramSessionType,
+        groupId: UUID,
+        participantId: Long,
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM tb_program_session_application " +
                     "WHERE expo_id = ? AND program_type = ? AND group_id = ? AND participant_id = ? AND status IN ('CONFIRMED', 'WAITING'))",
                 Boolean::class.java,
-                UUID.fromString(command.expoId),
-                command.programType.name,
+                expoId,
+                type.name,
                 groupId,
-                command.participantId,
+                participantId,
             ),
         )
 

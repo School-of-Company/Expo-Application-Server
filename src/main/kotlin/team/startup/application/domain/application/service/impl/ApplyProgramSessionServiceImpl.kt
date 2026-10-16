@@ -9,6 +9,7 @@ import team.startup.application.domain.application.entity.StandardProgramApplica
 import team.startup.application.domain.application.entity.TrainingProgramApplication
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -54,10 +55,10 @@ class ApplyProgramSessionServiceImpl(
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정책 공급자가 준비되지 않았습니다.")
         val policy = definition.policy ?: conflict("참가자 신청 정책이 없는 프로그램입니다.")
         if (!ledger.confirmedPreregister(command)) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "확정된 사전등록 참가자만 신청할 수 있습니다.")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED.name)
         }
         if (occupation == null || occupation !in policy.allowedOccupations) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, "신청 가능한 참가자 역할이 아닙니다.")
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED.name)
         }
         if (!policy.channelsValid()) badGateway()
         val channel = policy.channels?.let { policy.channelOf(occupation) ?: badGateway() }
@@ -81,7 +82,12 @@ class ApplyProgramSessionServiceImpl(
             conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
         }
         if (waitlist.isDeleted(definition)) conflict("삭제된 프로그램입니다.")
-        if (ledger.activeInGroup(command, definition.groupId)) conflict("같은 프로그램 묶음에 활성 신청이 있습니다.")
+        if (ledger.activeInGroup(command, definition.groupId)) {
+            throw ProgramApplicationConflictException("같은 프로그램 묶음에 활성 신청이 있습니다.", ProgramIneligibleReason.GROUP_ALREADY_APPLIED)
+        }
+        if (ledger.hasTimeConflict(definition, command.participantId)) {
+            throw ProgramApplicationConflictException("신청한 프로그램과 운영 시간이 겹칩니다.", ProgramIneligibleReason.TIME_CONFLICT)
+        }
         if (command.programType == ProgramSessionType.STANDARD) {
             ensureNoLegacyGroup(
                 command,
@@ -164,7 +170,9 @@ class ApplyProgramSessionServiceImpl(
                 programIds.filter { it !in known },
                 existing = true,
             )
-        if (definitions.any { it.groupId == groupId }) conflict("같은 프로그램 묶음에 기존 신청이 있습니다.")
+        if (definitions.any { it.groupId == groupId }) {
+            throw ProgramApplicationConflictException("같은 프로그램 묶음에 기존 신청이 있습니다.", ProgramIneligibleReason.GROUP_ALREADY_APPLIED)
+        }
     }
 }
 

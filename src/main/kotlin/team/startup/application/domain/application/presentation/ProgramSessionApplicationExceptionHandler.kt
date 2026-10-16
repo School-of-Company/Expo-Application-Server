@@ -8,11 +8,13 @@ import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 
 @Schema(description = "프로그램 신청 오류")
 data class ProgramSessionError(
     @field:Schema(description = "HTTP 오류 상태", example = "400") val status: Int,
     @field:Schema(description = "클라이언트가 처리할 오류 종류") val code: String,
+    @field:Schema(description = "참가자 신청 불가 사유. 제공되지 않는 오류에서는 null") val ineligibleReason: ProgramIneligibleReason? = null,
 )
 
 @RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class, ManagedParticipantController::class])
@@ -38,13 +40,14 @@ class ProgramSessionApplicationExceptionHandler {
                     else -> "SUPPLIER_UNAVAILABLE"
                 }
             }
-        return ResponseEntity.status(status).body(ProgramSessionError(status, code))
+        val reason = if (status == 403) ProgramIneligibleReason.entries.firstOrNull { it.name == ex.reason } else null
+        return ResponseEntity.status(status).body(ProgramSessionError(status, code, reason))
     }
 
     @ExceptionHandler(ProgramApplicationConflictException::class)
     fun conflict(ex: ProgramApplicationConflictException): ResponseEntity<ProgramSessionError> {
         log.warn("Program application conflict: {}", ex.message)
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(ProgramSessionError(409, "APPLICATION_CONFLICT"))
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ProgramSessionError(409, "APPLICATION_CONFLICT", ex.ineligibleReason))
     }
 
     @ExceptionHandler(

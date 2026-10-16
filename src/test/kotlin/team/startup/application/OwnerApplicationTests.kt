@@ -761,6 +761,8 @@ class OwnerApplicationTests {
                 UUID.randomUUID(),
                 1,
                 ProgramSessionPolicy(UUID.randomUUID(), setOf("TEACHER"), 1, 5, START, END, false, END, END),
+                startedAt = START.toString(),
+                endedAt = END.toString(),
             )
         private const val REPRESENTATIVE = """{"participantId":1,"name":"Owner","occupation":"TEACHER","representative":true}"""
 

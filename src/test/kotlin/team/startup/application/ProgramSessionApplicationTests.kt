@@ -116,6 +116,7 @@ class ProgramSessionApplicationTests {
         formQuestions = QUESTIONS
         realFields = REAL_FIELDS
         groups = emptyMap()
+        windows = emptyMap()
         sessionResponse = null
         occupationResponse = null
         missingProgram = null
@@ -2012,6 +2013,95 @@ class ProgramSessionApplicationTests {
         )
     }
 
+    @Test
+    fun `back to back sessions are allowed after normalizing KST and offset times`() {
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        windows =
+            mapOf(
+                ("STANDARD" to 1L) to ("2030-01-01T09:00:00" to "2030-01-01T10:00:00"),
+                ("TRAINING" to 2L) to ("2030-01-01T01:00:00Z" to "2030-01-01T02:00:00Z"),
+            )
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        assertEquals("CONFIRMED", service.execute(command(program = 2, type = ProgramSessionType.TRAINING, key = "adjacent")).status)
+        assertEquals(2L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `time conflicts serialize different groups across standard and training and cancelled applications release the window`() {
+        val window = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to window, ("TRAINING" to 2L) to window)
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val results = concurrent(command(), command(program = 2, type = ProgramSessionType.TRAINING, key = "training"))
+        assertEquals(1, results.count { it == "ok" })
+        assertEquals(1, results.count { it == "conflict" })
+        val existing = jdbc.queryForObject("SELECT id FROM tb_program_session_application", UUID::class.java)!!
+        val next = if (results[0] == "ok") command(program = 2, type = ProgramSessionType.TRAINING, key = "next") else command(key = "next")
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(next) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val target =
+            mapper.readValue(
+                definition(next.programId.toString(), next.programType.name),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(false, ledger.hasTimeConflict(target, 2))
+        assertEquals(false, ledger.hasTimeConflict(target.copy(expoId = UUID.randomUUID().toString()), 1))
+        cancel(existing)
+        assertEquals("CONFIRMED", service.execute(next).status)
+    }
+
+    @Test
+    fun `waiting applications block overlapping submissions and promotion leaves conflicting head waiting without taking a seat`() {
+        waitingCapacity = 2
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        val window = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        val conflict =
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                service.execute(command(program = 2, participant = 2, type = ProgramSessionType.TRAINING, key = "overlap"))
+            }
+        assertEquals("TIME_CONFLICT", conflict.ineligibleReason?.name)
+        windows = emptyMap()
+        val other = service.execute(command(program = 2, participant = 2, type = ProgramSessionType.TRAINING, key = "later"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        jdbc.update(
+            "UPDATE tb_program_session_state SET definition = CAST(? AS jsonb) WHERE program_type = 'TRAINING' AND program_id = 2",
+            definition("2", "TRAINING"),
+        )
+        cancel(confirmed.applicationId)
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        assertEquals(0L, count("tb_standard_program_application"))
+        cancel(other.applicationId)
+        reconcile()
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `schedule changes cannot introduce an overlap for an active participant`() {
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        service.execute(command())
+        service.execute(command(program = 2, type = ProgramSessionType.TRAINING, key = "later"))
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val previous = mapper.readTree(definition("2", "TRAINING"))
+        val next =
+            previous.deepCopy().asObject().apply {
+                put("revision", 2)
+                put("startedAt", first.path("startedAt").stringValue())
+                put("endedAt", first.path("endedAt").stringValue())
+            }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+        assertEquals(0L, count("tb_program_change_receipt"))
+    }
+
     private fun applied(
         participant: Long,
         value: Boolean,
@@ -2161,6 +2251,8 @@ class ProgramSessionApplicationTests {
         @Volatile private var capacity = 1
 
         @Volatile private var waitingCapacity = 0
+
+        @Volatile private var windows: Map<Pair<String, Long>, Pair<String, String>> = emptyMap()
 
         @Volatile private var revision = 1L
 
@@ -2359,19 +2451,19 @@ class ProgramSessionApplicationTests {
                 """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"${groups[id] ?: GROUP}","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
                     ",\"channels\":$it"
                 } ?: ""}}}"""
+            val json = ObjectMapper().readTree(response).asObject()
+            val start = Instant.parse("2030-01-01T00:00:00Z").plusSeconds(id.toLong() * 7200 + if (type == "TRAINING") 86400 else 0)
+            val window = windows[type to id.toLong()] ?: (start.toString() to start.plusSeconds(3600).toString())
+            json.put("startedAt", window.first)
+            json.put("endedAt", window.second)
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
-                val json = ObjectMapper().readTree(response).asObject()
                 json.putNull("policy")
                 return json.toString()
             }
             if (places.containsKey(id)) {
-                return ObjectMapper()
-                    .readTree(response)
-                    .asObject()
-                    .put("place", places[id])
-                    .toString()
+                json.put("place", places[id])
             }
-            return response
+            return json.toString()
         }
 
         @Container @ServiceConnection @JvmStatic

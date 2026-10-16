@@ -166,6 +166,9 @@ class ManagedParticipantHttpTests {
                 .andExpect(jsonPath("$.participants[0].eligible").value(true))
                 .andExpect(jsonPath("$.participants[1].eligible").value(false))
                 .andExpect(jsonPath("$.participants[2].eligible").value(false))
+                .andExpect(jsonPath("$.participants[0].ineligibleReason").isEmpty)
+                .andExpect(jsonPath("$.participants[1].ineligibleReason").value("OCCUPATION_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.participants[2].ineligibleReason").value("PREREGISTRATION_NOT_CONFIRMED"))
                 .andExpect(jsonPath("$.participants[0].participant.code").doesNotExist())
                 .andExpect(jsonPath("$.participants[0].participant.phoneNumber").doesNotExist())
                 .andReturn()
@@ -178,6 +181,70 @@ class ManagedParticipantHttpTests {
             .andExpect(jsonPath("$.registered").value(false))
             .andExpect(jsonPath("$.participants").isEmpty)
         assertEquals(0, qrCalls.get())
+    }
+
+    @Test
+    fun `group reasons reflect active ledger and final submission rechecks after advisory lookup`() {
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.participants[0].eligible").value(true))
+
+        fun submit(key: String) =
+            post("/application/expos/$expo/program-sessions/STANDARD/1/applications")
+                .with(csrf())
+                .cookie(cookie)
+                .header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"participantId":1,"formVersion":1,"answers":{}}""")
+        mvc.perform(submit("first")).andExpect(status().isCreated)
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.capacity.capacity").value(5))
+            .andExpect(jsonPath("$.capacity.confirmedCount").value(1))
+            .andExpect(jsonPath("$.capacity.remaining").value(4))
+            .andExpect(jsonPath("$.capacity.waitingCapacity").value(0))
+            .andExpect(jsonPath("$.capacity.waitingCount").value(0))
+            .andExpect(jsonPath("$.capacity.waitingRemaining").value(0))
+        for (state in listOf("CONFIRMED", "WAITING")) {
+            jdbc.update("UPDATE tb_program_session_application SET status = ?", state)
+            mvc
+                .perform(get(participantsPath).cookie(cookie))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[0].eligible").value(false))
+                .andExpect(jsonPath("$.participants[0].ineligibleReason").value("GROUP_ALREADY_APPLIED"))
+                .andExpect(jsonPath("$.capacity.waitingCount").value(if (state == "WAITING") 1 else 0))
+            mvc
+                .perform(submit("duplicate-$state"))
+                .andExpect(status().isConflict)
+                .andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+                .andExpect(jsonPath("$.ineligibleReason").value("GROUP_ALREADY_APPLIED"))
+        }
+        mvc.perform(submit("first")).andExpect(status().isCreated)
+        jdbc.update("UPDATE tb_program_session_application SET status = 'CANCELLED'")
+        jdbc.update("DELETE FROM tb_standard_program_application")
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.participants[0].eligible").value(true))
+    }
+
+    @Test
+    fun `submission eligibility reasons do not expose supplier details`() {
+        for ((participant, reason) in listOf(2 to "OCCUPATION_NOT_ALLOWED", 3 to "PREREGISTRATION_NOT_CONFIRMED")) {
+            mvc
+                .perform(
+                    post("/application/expos/$expo/program-sessions/STANDARD/1/applications")
+                        .with(csrf())
+                        .cookie(cookie)
+                        .header("Idempotency-Key", "denied-$participant")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"participantId":$participant,"formVersion":1,"answers":{}}"""),
+                ).andExpect(status().isForbidden)
+                .andExpect(jsonPath("$.code").value("PARTICIPANT_INELIGIBLE"))
+                .andExpect(jsonPath("$.ineligibleReason").value(reason))
+        }
     }
 
     @Test
@@ -337,7 +404,8 @@ class ManagedParticipantHttpTests {
                                         .path("participantIds")
                                         .get(0)
                                         .asLong()
-                                """[{"participantId":$id,"name":"Person","occupation":"TEACHER","representative":true}]"""
+                                val occupation = if (id == 2L) "STUDENT" else "TEACHER"
+                                """[{"participantId":$id,"name":"Person","occupation":"$occupation","representative":true}]"""
                             }
 
                             path.contains("forms/by-id") -> {
@@ -370,15 +438,26 @@ class ManagedParticipantHttpTests {
                                 "{}"
                             }
                         }
+                    val scheduledResponse =
+                        if (path.endsWith("standard-programs/1") || path.endsWith("training-programs/batch")) {
+                            val hour = if (path.endsWith("standard-programs/1")) "09" else "12"
+                            val end = if (hour == "09") "10" else "13"
+                            response.replace(
+                                "\"groupId\":",
+                                "\"startedAt\":\"2030-01-01T$hour:00:00+09:00\",\"endedAt\":\"2030-01-01T$end:00:00+09:00\",\"groupId\":",
+                            )
+                        } else {
+                            response
+                        }
                     val bytes =
                         (
                             if (pendingPolicy) {
-                                response.replace(
+                                scheduledResponse.replace(
                                     "\"revision\":1",
                                     "\"revision\":1,\"pendingRevision\":2",
                                 )
                             } else {
-                                response
+                                scheduledResponse
                             }
                         ).toByteArray()
                     exchange.sendResponseHeaders(responseStatus, bytes.size.toLong())
