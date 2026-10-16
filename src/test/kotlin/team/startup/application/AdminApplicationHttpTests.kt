@@ -790,6 +790,48 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `current session seats expose pre onsite and unknown usage without counting the ledger twice`() {
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        val session = page["items"][0].asObject()
+        session.set(
+            "policy",
+            mapper.readTree(
+                """{"formId":"${UUID.randomUUID()}","allowedOccupations":["TEACHER"],"capacity":5,"preRegistrationCapacity":2,"onsiteCapacity":3,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}""",
+            ),
+        )
+        expoBody = page.toString()
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (1001, 99)")
+        try {
+            val response = read("/current-sessions")
+            assertEquals(200, response.status)
+            assertEquals("no-store", response.getHeader("Cache-Control"))
+            val seats = mapper.readTree(response.contentAsString)["items"][0]["admissionSeats"]
+            assertEquals(1, seats["unknownConfirmedCount"].asInt())
+            assertEquals(0, seats["preRegistration"]["confirmedCount"].asInt())
+            assertEquals(1, seats["preRegistration"]["remaining"].asInt())
+            assertEquals(2, seats["onsite"]["remaining"].asInt())
+            assertFalse(seats["onsiteAdmissionEnabled"].asBoolean())
+            val row = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]
+            assertTrue(row["admissionRoute"].isNull)
+        } finally {
+            jdbc.update("DELETE FROM tb_standard_program_application WHERE participant_id = 1001 AND standard_program_id = 99")
+        }
+    }
+
+    @Test
+    fun `current session malformed admission capacities fail closed`() {
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        page["items"][0].asObject().set(
+            "policy",
+            mapper.readTree(
+                """{"formId":"${UUID.randomUUID()}","allowedOccupations":["TEACHER"],"capacity":5,"preRegistrationCapacity":2,"onsiteCapacity":2,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}""",
+            ),
+        )
+        expoBody = page.toString()
+        assertEquals(502, read("/current-sessions").status)
+    }
+
+    @Test
     fun `현재 회차는 빈 접수에도 조회하며 버전 변경과 타 행사 선택을 구분한다`() {
         val response = admin("/current-sessions")
         assertEquals(200, response.status)
