@@ -51,6 +51,7 @@ class ApplyTrainingProgramsServiceImpl(
             throw ProgramApplicationConflictException("정책이 설정된 프로그램은 참가자와 폼 답변을 포함하는 신청이 필요합니다.")
         }
         applications.lockTrainee(command.trainee.id)
+        ledger.validateAttributedTrainingChange(command.trainee.expoId, command.trainee.id, programIds, definitions)
         if (definitions.isNotEmpty() &&
             applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }.toSet() != oldIds
         ) {

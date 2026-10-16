@@ -6,6 +6,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.PrepareProgramChangeCommand
+import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
@@ -25,6 +26,8 @@ class PrepareProgramChangeServiceImpl(
     @Transactional
     override fun execute(command: PrepareProgramChangeCommand) {
         repository.lockChange(command.expoId)
+        ledger.lockSchedule(command.expoId.toString(), changing = true)
+        ledger.requireAttributionReady(command.expoId)
         val payload = mapper.writeValueAsString(command.payload)
         if (repository.changeReplay(command.expoId, command.changeId, payload)) return
         val mutations = command.payload.mutations
@@ -34,11 +37,11 @@ class PrepareProgramChangeServiceImpl(
         for (mutation in mutations) {
             val old = requireNotNull(mutation.previous)
             if (UUID.fromString(old.expoId) != command.expoId || old.revision <= 0 || old.id <= 0) badRequest()
-            if (old.pendingRevision != null || old.revision == Long.MAX_VALUE) badRequest()
+            if (old.pendingRevision != null || old.revision == Long.MAX_VALUE || !old.hasValidPlace()) badRequest()
             mutation.definition?.let { next ->
                 if (next.expoId != old.expoId || next.programType != old.programType || next.id != old.id ||
                     next.revision != old.revision + 1 ||
-                    next.pendingRevision != null
+                    next.pendingRevision != null || !next.hasValidPlace()
                 ) {
                     badRequest()
                 }
@@ -48,7 +51,7 @@ class PrepareProgramChangeServiceImpl(
                         !policy.applicationStartedAt.isBefore(policy.applicationEndedAt) ||
                         policy.cancelEndedAt.isBefore(policy.applicationStartedAt) ||
                         policy.promotionEndedAt.isBefore(policy.applicationStartedAt) ||
-                        !policy.channelsValid()
+                        !policy.channelsValid() || !policy.admissionCapacitiesValid() || policy.guardianPolicy?.valid() == false
                     ) {
                         badRequest()
                     }
@@ -75,6 +78,7 @@ class PrepareProgramChangeServiceImpl(
             val active = repository.activeCount(old)
             val confirmed = ledger.confirmedCount(old.programType, old.id)
             val waiting = repository.waitingCount(old)
+            if ((active > 0 || confirmed > 0) && next != null && next.policy?.guardianPolicy != old.policy?.guardianPolicy) conflict()
             if ((next == null && (active > 0 || confirmed > 0)) ||
                 (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
                 (next?.policy != null && (next.policy.capacity < confirmed || next.policy.waitingCapacity < waiting))
@@ -84,6 +88,18 @@ class PrepareProgramChangeServiceImpl(
             // Existing applications are never reclassified: with any history the channel layout is frozen,
             // and each channel may only shrink down to its own confirmed and waiting rows.
             next?.policy?.let { policy ->
+                if (old.policy?.hasAdmissionCapacities() == true && !policy.hasAdmissionCapacities()) conflict()
+                if (policy.hasAdmissionCapacities()) {
+                    val unknown = ledger.unknownAdmissionCount(old)
+                    if (requireNotNull(
+                            policy.preRegistrationCapacity,
+                        ) < ledger.admissionConfirmedCount(old, "PRE_REGISTRATION") + unknown ||
+                        requireNotNull(policy.onsiteCapacity) < ledger.admissionConfirmedCount(old, "ONSITE") + unknown ||
+                        (old.policy?.hasAdmissionCapacities() != true && waiting > 0)
+                    ) {
+                        conflict()
+                    }
+                }
                 if ((active > 0 || confirmed > 0) && policy.channelLayout() != old.policy?.channelLayout()) conflict()
                 if (policy.channels.orEmpty().any {
                         it.capacity < repository.confirmedCount(old, it.name) || it.waitingCapacity < repository.waitingCount(old, it.name)
@@ -95,6 +111,13 @@ class PrepareProgramChangeServiceImpl(
             repository.stage(old, next, command.changeId)
             if (next == null) {
                 if (old.programType.name == "STANDARD") standards.markDeleted(old.id) else trainings.markDeleted(old.id)
+            }
+        }
+        for (mutation in mutations) {
+            val old = requireNotNull(mutation.previous)
+            val next = mutation.definition ?: continue
+            if (next.startedAt != old.startedAt || next.endedAt != old.endedAt) {
+                if (ledger.activeParticipants(old).any { ledger.hasTimeConflict(next, it) }) conflict()
             }
         }
         repository.saveChange(command.expoId, command.changeId, payload)

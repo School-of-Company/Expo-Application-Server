@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.boot.test.context.SpringBootTest
@@ -39,16 +41,34 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.ApplyStudentGuardianBatchCommand
+import team.startup.application.domain.application.presentation.dto.ApplyTrainingProgramsCommand
+import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
+import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
+import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
+import team.startup.application.domain.application.presentation.dto.ProgramGuardianPolicy
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
+import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchRequest
+import team.startup.application.domain.application.presentation.dto.StudentGuardianEligibilityQuery
+import team.startup.application.domain.application.presentation.dto.StudentGuardianLink
+import team.startup.application.domain.application.presentation.dto.StudentGuardianSubmission
+import team.startup.application.domain.application.presentation.dto.TraineeReference
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyProgramSessionService
+import team.startup.application.domain.application.service.ApplyStudentGuardianBatchService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
+import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
+import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
+import team.startup.application.domain.application.service.StudentGuardianEligibilityProvider
 import team.startup.application.domain.application.service.impl.ApplyProgramSessionServiceImpl
 import team.startup.application.domain.application.service.impl.ProgramFormAdapter
 import team.startup.application.domain.application.service.impl.ProgramWaitlist
@@ -86,10 +106,16 @@ class ProgramSessionApplicationTests {
 
     @Autowired private lateinit var transactions: TransactionTemplate
 
+    @Autowired private lateinit var batchService: ApplyStudentGuardianBatchService
+
+    @Autowired private lateinit var batchCancellation: CancelStudentGuardianApplicationService
+
     @BeforeEach
     fun reset() {
         jdbc.execute(
-            "TRUNCATE tb_program_session_event, tb_program_session_state, tb_program_change_receipt, " +
+            "TRUNCATE tb_program_guardian_link, tb_program_guardian_member, tb_program_guardian_batch, " +
+                "tb_legacy_trainee_program, tb_legacy_trainee_attribution, tb_legacy_trainee_attribution_operation, " +
+                "tb_program_session_event, tb_program_session_state, tb_program_change_receipt, " +
                 "tb_program_session_history, tb_program_session_receipt, tb_program_session_application, " +
                 "tb_standard_program_application, tb_training_program_application, tb_training_application_version, " +
                 "tb_training_operation_receipt, tb_deleted_standard_program, tb_deleted_training_program, " +
@@ -106,14 +132,21 @@ class ProgramSessionApplicationTests {
         linkRequests.clear()
         occupation = "TEACHER"
         occupations = emptyMap()
+        managedIds = listOf(1, 2)
+        guardianPolicy = false
+        protectedParticipants = emptySet()
         allowed = "[\"TEACHER\"]"
         channels = null
+        admissionCapacities = null
         closed = false
         expired = false
         badExpo = false
         pending = false
         formMode = "valid"
         formQuestions = QUESTIONS
+        realFields = REAL_FIELDS
+        groups = emptyMap()
+        windows = emptyMap()
         sessionResponse = null
         occupationResponse = null
         missingProgram = null
@@ -136,6 +169,85 @@ class ProgramSessionApplicationTests {
         delayedLinkParticipant = null
         title = "Session"
         unavailableLookup = null
+        places = emptyMap()
+        attributionCalls.clear()
+        attributionStatus = 200
+        attributionMalformed = false
+        attributionParticipant = null
+        attributionAfterUser = null
+        attributionAccessStatus = 200
+        attributionActor = 42
+    }
+
+    @Test
+    fun `standard and training venues survive snapshots and approved revision changes without rewriting history`() {
+        for (type in ProgramSessionType.entries) {
+            reset()
+            capacity = 2
+            places = mapOf("1" to "Room A", "2" to "Room B")
+            val first = service.execute(command(type = type))
+            val sibling = service.execute(command(program = 2, participant = 2, type = type))
+
+            fun snapshot(id: UUID) =
+                jdbc.queryForObject(
+                    "SELECT definition_snapshot->>'place' FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    id,
+                )
+            assertEquals("Room A", snapshot(first.applicationId))
+            assertEquals("Room B", snapshot(sibling.applicationId))
+            addParticipant(3)
+            places = places + ("1" to "Room C")
+            assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3, type = type)) }
+            places = places + ("1" to "Room A")
+            val previous = mapper.readTree(definition("1", type.name))
+            val next = previous.deepCopy().asObject()
+            next.put("revision", 2)
+            next.put("place", "Room C")
+            mvc
+                .perform(
+                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                ).andExpect(status().isNoContent)
+            places = places + ("1" to "Room C")
+            revision = 2
+            val latest = service.execute(command(participant = 3, type = type))
+            assertEquals("Room C", snapshot(latest.applicationId))
+            assertEquals("Room A", snapshot(first.applicationId))
+            assertEquals(first, service.execute(command(type = type)))
+        }
+    }
+
+    @Test
+    fun `legacy definitions omit place and supplier venue length uses Unicode code points`() {
+        service.execute(command())
+        assertEquals(
+            false,
+            jdbc.queryForObject(
+                "SELECT jsonb_exists(definition_snapshot, 'place') FROM tb_program_session_application",
+                Boolean::class.java,
+            ),
+        )
+        for (type in ProgramSessionType.entries) {
+            reset()
+            places = mapOf("1" to "😀".repeat(255))
+            service.execute(command(type = type))
+            assertEquals(
+                "😀".repeat(255),
+                jdbc.queryForObject("SELECT definition_snapshot->>'place' FROM tb_program_session_application", String::class.java),
+            )
+            for (invalid in listOf("", "   ", " Room ", "😀".repeat(256))) {
+                places = mapOf("1" to invalid)
+                assertEquals(
+                    HttpStatus.BAD_GATEWAY,
+                    assertThrows(ResponseStatusException::class.java) {
+                        service.execute(command(participant = 2, type = type))
+                    }.statusCode,
+                )
+            }
+        }
     }
 
     @Test
@@ -320,6 +432,89 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `eligible teacher companion sharing the representative phone applies to training through the real form contract`() {
+        // #122: representative 1 is GENERAL; companions 9 and 10 are teachers reached through the representative's session phone.
+        addParticipant(9)
+        addParticipant(10)
+        occupations = mapOf(1L to "GENERAL", 9L to "TEACHER", 10L to "TEACHER")
+        capacity = 2
+        formMode = "real"
+        realFields =
+            """[{"id":30,"title":"동의","formType":"CHECKBOX","requiredStatus":true,""" +
+            """"jsonData":{},"otherJson":null,"dynamicFormType":"DEFAULT"}]"""
+
+        fun apply(
+            participant: Long,
+            key: String,
+            program: Long = 1,
+        ) = mvc.perform(
+            post("/application/expos/$EXPO/program-sessions/TRAINING/$program/applications")
+                .with(csrf())
+                .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                .header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"participantId":$participant,"formVersion":1,"answers":{"30":true}}"""),
+        )
+
+        val created =
+            apply(9, "teacher")
+                .andExpect(status().isCreated)
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.participantId").value(9))
+                .andExpect(jsonPath("$.traineeId").value(509))
+                .andReturn()
+        val applicationId = mapper.readTree(created.response.contentAsString).path("applicationId").stringValue()
+        assertEquals(mapper.readTree("""{"expoId":"$EXPO","participantId":9,"trainingId":null}"""), mapper.readTree(linkRequests.single()))
+        apply(9, "teacher").andExpect(status().isCreated).andExpect(jsonPath("$.applicationId").value(applicationId))
+        assertEquals(1, linkCalls.get())
+        apply(9, "teacher-again").andExpect(status().isConflict).andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+        apply(1, "general").andExpect(status().isForbidden).andExpect(jsonPath("$.code").value("PARTICIPANT_INELIGIBLE"))
+        apply(10, "companion").andExpect(status().isCreated).andExpect(jsonPath("$.traineeId").value(510))
+        assertEquals(
+            listOf(509L, 510L),
+            jdbc.queryForList(
+                "SELECT trainee_id FROM tb_training_program_application WHERE training_program_id = 1 ORDER BY trainee_id",
+                Long::class.java,
+            ),
+        )
+        assertEquals(
+            applicationId,
+            jdbc.queryForObject("SELECT id::text FROM tb_program_session_application WHERE trainee_id = 509", String::class.java),
+        )
+        mvc
+            .perform(get("/internal/program-applications/training/1/trainees/509").header("X-Internal-Token", "test-token"))
+            .andExpect(jsonPath("$.applied").value(true))
+
+        groups = mapOf("2" to "00000000-0000-0000-0000-000000000003")
+        apply(9, "other-training", program = 2).andExpect(status().isCreated).andExpect(jsonPath("$.traineeId").value(509))
+        assertEquals(
+            2L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_training_program_application WHERE trainee_id = 509", Long::class.java),
+        )
+
+        addParticipant(11)
+        occupations = occupations + (11L to "TEACHER")
+        apply(11, "full").andExpect(status().isConflict).andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+        cancel(UUID.fromString(applicationId))
+        mvc
+            .perform(get("/internal/program-applications/training/1/trainees/509").header("X-Internal-Token", "test-token"))
+            .andExpect(jsonPath("$.applied").value(false))
+        closed = true
+        apply(11, "closed").andExpect(status().isConflict)
+        assertEquals(3, linkCalls.get())
+    }
+
+    @Test
+    fun `User trainee link conflict is distinguishable from local conflicts and writes nothing`() {
+        linkRejections = mapOf(1L to 409)
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
+        assertEquals(HttpStatus.CONFLICT, error.statusCode)
+        assertEquals("연수자 연결이 거부되었습니다.", error.reason)
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_training_program_application"))
+    }
+
+    @Test
     fun `legacy HTTP cannot bypass policy or overbook new application`() {
         for (path in listOf("standard", "training")) {
             val person = if (path == "standard") "participant" else "trainee"
@@ -364,6 +559,53 @@ class ProgramSessionApplicationTests {
         }
     }
 
+    @ParameterizedTest
+    @CsvSource("STANDARD,false", "STANDARD,true", "TRAINING,false", "TRAINING,true")
+    fun `event failure rolls back admission and the same key retries without duplicate seats`(
+        type: ProgramSessionType,
+        waiting: Boolean,
+    ) {
+        waitingCapacity = 1
+        if (waiting) service.execute(command(type = type))
+        val before = if (waiting) 1L else 0L
+        val request = command(type = type, participant = 2, key = "event-retry")
+        val expectedStatus = if (waiting) "WAITING" else "CONFIRMED"
+        val tables =
+            listOf(
+                "tb_program_session_application",
+                "tb_program_session_receipt",
+                "tb_program_session_history",
+                "tb_program_session_event",
+            )
+        val relation = if (type == ProgramSessionType.STANDARD) "tb_standard_program_application" else "tb_training_program_application"
+        jdbc.execute("ALTER TABLE tb_program_session_event ADD CONSTRAINT test_admission_event_failure CHECK (status <> '$expectedStatus')")
+        try {
+            assertThrows(DataIntegrityViolationException::class.java) { service.execute(request) }
+            (tables + relation).forEach { assertEquals(before, count(it), it) }
+            assertEquals(
+                0L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_training_application_version WHERE trainee_id = 502", Long::class.java),
+            )
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_event DROP CONSTRAINT test_admission_event_failure")
+        }
+        val receipt = service.execute(request)
+        assertEquals(expectedStatus, receipt.status)
+        assertEquals(receipt, service.execute(request.copy(sessionId = "renewed-session")))
+        tables.forEach { assertEquals(before + 1, count(it), it) }
+        assertEquals(if (waiting) before else 1L, count(relation))
+        assertEquals(
+            mapper.readTree("""{"101":"a"}"""),
+            mapper.readTree(
+                jdbc.queryForObject(
+                    "SELECT answers_snapshot::text FROM tb_program_session_application WHERE id = ?",
+                    String::class.java,
+                    receipt.applicationId,
+                ),
+            ),
+        )
+    }
+
     @Test
     fun `missing production Form adapter fails closed without local or remote creation`() {
         val unavailable =
@@ -376,6 +618,7 @@ class ProgramSessionApplicationTests {
                 DefaultListableBeanFactory().getBeanProvider(ProgramFormProvider::class.java),
                 context.getBean(ProgramWaitlist::class.java),
                 context.getBean(ProgramWaitlistRepository::class.java),
+                context.getBeanProvider(StudentGuardianEligibilityProvider::class.java),
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
@@ -384,6 +627,502 @@ class ProgramSessionApplicationTests {
         assertEquals(503, error.statusCode.value())
         assertEquals(0L, count("tb_program_session_application"))
         assertEquals(0, linkCalls.get())
+    }
+
+    @ParameterizedTest
+    @CsvSource("STANDARD", "TRAINING")
+    fun `two students and a new guardian use three seats with separate answers and one replayable batch`(type: ProgramSessionType) {
+        enableGuardianPolicy(3, 0)
+        val request = guardianBatch(1, 2, type = type)
+        val receipt = batchService.execute(request)
+        assertEquals(3, receipt.applications.size)
+        assertTrue(receipt.applications.all { it.application.status == "CONFIRMED" && !it.reused })
+        assertEquals(
+            3L,
+            count(
+                if (type ==
+                    ProgramSessionType.STANDARD
+                ) {
+                    "tb_standard_program_application"
+                } else {
+                    "tb_training_program_application"
+                },
+            ),
+        )
+        assertEquals(2L, count("tb_program_guardian_link"))
+        assertEquals(3L, count("tb_program_session_event"))
+        assertEquals(receipt, batchService.execute(request.copy(sessionId = "renewed-session")))
+        assertEquals(1L, count("tb_program_guardian_batch"))
+        assertEquals(3L, count("tb_program_session_receipt"))
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            batchService.execute(request.copy(request = request.request.copy(links = request.request.links.reversed())))
+        }
+    }
+
+    @Test
+    fun `a three person batch waits together behind two vacant seats and promotes without a single overtaking it`() {
+        enableGuardianPolicy(2, 4)
+        val receipt = batchService.execute(guardianBatch(1, 2))
+        assertTrue(receipt.applications.all { it.application.status == "WAITING" })
+        assertEquals(0L, count("tb_standard_program_application"))
+        occupations = occupations + (4L to "ELEMENTARY_STUDENT")
+        guardianPolicy = false
+        val single = service.execute(command(participant = 4))
+        assertEquals("WAITING", single.status)
+        guardianPolicy = true
+        change { it.put("capacity", 3) }
+        reconcile()
+        receipt.applications.forEach { applied(it.application.participantId, true) }
+        applied(4, false)
+        assertEquals(3L, count("tb_standard_program_application"))
+        reconcile()
+        assertEquals(7L, count("tb_program_session_event"))
+    }
+
+    @Test
+    fun `batch without three seats or waiting capacity rejects all people before local writes`() {
+        enableGuardianPolicy(2, 0)
+        assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1, 2)) }
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_guardian_batch"))
+        assertEquals(0L, count("tb_program_guardian_link"))
+    }
+
+    @Test
+    fun `reused confirmed guardian keeps its form and seat while an extra student waits and promotes`() {
+        enableGuardianPolicy(2, 1)
+        val original = batchService.execute(guardianBatch(1))
+        val guardian = original.applications.single { it.application.participantId == 3L }.application
+        val extra = batchService.execute(guardianBatch(2, key = "extra", reuse = true))
+        assertEquals(guardian, extra.applications.single { it.reused }.application)
+        assertEquals(
+            "WAITING",
+            extra.applications
+                .single { !it.reused }
+                .application.status,
+        )
+        assertEquals(3L, count("tb_program_session_application"))
+        assertEquals(2L, count("tb_standard_program_application"))
+        cancelGuardianStudent(
+            original.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId,
+        )
+        applied(1, false)
+        applied(2, true)
+        applied(3, true)
+        assertEquals(2L, count("tb_standard_program_application"))
+        cancelGuardianStudent(
+            extra.applications
+                .single { !it.reused }
+                .application.applicationId,
+        )
+        assertEquals(0L, count("tb_standard_program_application"))
+        assertEquals(
+            3L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CANCELLED'", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `guardian only cancellation and attendance protected final cancellation cannot leave orphan students`() {
+        enableGuardianPolicy(3, 0)
+        val result = batchService.execute(guardianBatch(1, 2))
+        val guardian =
+            result.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
+        assertThrows(ProgramApplicationConflictException::class.java) { cancelGuardianStudent(guardian) }
+        cancelGuardianStudent(
+            result.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId,
+        )
+        assertEquals(2L, count("tb_standard_program_application"))
+        protectedParticipants = setOf(3)
+        assertThrows(ResponseStatusException::class.java) {
+            cancelGuardianStudent(
+                result.applications
+                    .single { it.application.participantId == 2L }
+                    .application.applicationId,
+            )
+        }
+        assertEquals(2L, count("tb_standard_program_application"))
+        protectedParticipants = emptySet()
+        cancelGuardianStudent(
+            result.applications
+                .single { it.application.participantId == 2L }
+                .application.applicationId,
+        )
+        assertEquals(0L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `bad form wrong party standalone guardian and unavailable eligibility never partially accept a batch`() {
+        enableGuardianPolicy(3, 0)
+        val request = guardianBatch(1, 2)
+        val badForm = request.request.participants.map { if (it.participantId == 2L) it.copy(answers = mapper.readTree("{}")) else it }
+        assertThrows(ResponseStatusException::class.java) {
+            batchService.execute(request.copy(request = request.request.copy(participants = badForm)))
+        }
+        managedIds = listOf(1, 3)
+        assertThrows(ResponseStatusException::class.java) { batchService.execute(request) }
+        managedIds = listOf(1, 2, 3)
+        assertThrows(ResponseStatusException::class.java) {
+            batchService.execute(
+                request.copy(
+                    request = StudentGuardianBatchRequest(listOf(StudentGuardianSubmission(3, 1, mapper.readTree("{}"))), emptyList()),
+                ),
+            )
+        }
+        guardianPolicy = false
+        assertEquals(503, assertThrows(ResponseStatusException::class.java) { batchService.execute(request) }.statusCode.value())
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_guardian_link"))
+    }
+
+    @Test
+    fun `batch event failure rolls back links seats and receipt then retries the same key`() {
+        enableGuardianPolicy(3, 0)
+        jdbc.execute("ALTER TABLE tb_program_session_event ADD CONSTRAINT test_guardian_event_failure CHECK (status <> 'CONFIRMED')")
+        val request = guardianBatch(1, 2)
+        try {
+            assertThrows(DataIntegrityViolationException::class.java) { batchService.execute(request) }
+            listOf(
+                "tb_program_guardian_batch",
+                "tb_program_guardian_member",
+                "tb_program_guardian_link",
+                "tb_program_session_application",
+                "tb_program_session_receipt",
+                "tb_standard_program_application",
+            ).forEach {
+                assertEquals(0L, count(it), it)
+            }
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_event DROP CONSTRAINT test_guardian_event_failure")
+        }
+        assertEquals(3, batchService.execute(request).applications.size)
+    }
+
+    @Test
+    fun `legacy training replacement cannot remove a guardian without linked students`() {
+        enableGuardianPolicy(3, 0)
+        batchService.execute(guardianBatch(1, 2, type = ProgramSessionType.TRAINING))
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            context.getBean(ReplaceTrainingProgramsService::class.java).execute(
+                ApplyTrainingProgramsCommand(TraineeReference(503, EXPO), emptyList(), UUID.randomUUID(), 1),
+            )
+        }
+        assertEquals(3L, count("tb_training_program_application"))
+        assertEquals(
+            3L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `failed last student cancellation rolls back guardian cancellation seats and both events`() {
+        enableGuardianPolicy(2, 0)
+        val receipt = batchService.execute(guardianBatch(1))
+        val student =
+            receipt.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
+        val guardian =
+            receipt.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
+        jdbc.execute(
+            "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_cancel_failure CHECK (application_id <> '$guardian' OR status <> 'CANCELLED')",
+        )
+        try {
+            assertThrows(DataIntegrityViolationException::class.java) { cancelGuardianStudent(student) }
+            assertEquals(2L, count("tb_standard_program_application"))
+            assertEquals(2L, count("tb_program_session_history"))
+            assertEquals(2L, count("tb_program_session_event"))
+            assertEquals(
+                2L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'CONFIRMED'", Long::class.java),
+            )
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_history DROP CONSTRAINT test_guardian_cancel_failure")
+        }
+        cancelGuardianStudent(student)
+        assertEquals(0L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `failed batch promotion rolls back every promoted member and the cancellation that released seats`() {
+        enableGuardianPolicy(3, 3)
+        guardianPolicy = false
+        val single = service.execute(command(participant = 4))
+        guardianPolicy = true
+        val receipt = batchService.execute(guardianBatch(1, 2))
+        val guardian =
+            receipt.applications
+                .single { it.application.participantId == 3L }
+                .application.applicationId
+        jdbc.execute(
+            "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_promotion_failure CHECK (application_id <> '$guardian' OR status <> 'CONFIRMED')",
+        )
+        try {
+            assertThrows(jakarta.servlet.ServletException::class.java) {
+                mvc.perform(
+                    post(
+                        "/internal/program-session-applications/${single.applicationId}/cancellation",
+                    ).header("X-Internal-Token", "test-token"),
+                )
+            }
+            assertEquals(1L, count("tb_standard_program_application"))
+            assertEquals(
+                3L,
+                jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+            )
+            assertEquals(4L, count("tb_program_session_history"))
+            assertEquals(4L, count("tb_program_session_event"))
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_history DROP CONSTRAINT test_guardian_promotion_failure")
+        }
+        cancel(single.applicationId)
+        assertEquals(3L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `concurrent additional students reuse one guardian and cannot double charge its seat`() {
+        enableGuardianPolicy(3, 1)
+        batchService.execute(guardianBatch(1))
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val results =
+                listOf(2L, 4L).map { id ->
+                    pool.submit<String> {
+                        assertTrue(start.await(10, TimeUnit.SECONDS))
+                        batchService
+                            .execute(
+                                guardianBatch(id, key = "add-$id", reuse = true),
+                            ).applications
+                            .single { !it.reused }
+                            .application.status
+                    }
+                }
+            start.countDown()
+            assertEquals(setOf("CONFIRMED", "WAITING"), results.map { it.get(30, TimeUnit.SECONDS) }.toSet())
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(3L, count("tb_standard_program_application"))
+        assertEquals(4L, count("tb_program_session_application"))
+        assertEquals(3L, count("tb_program_guardian_link"))
+    }
+
+    @Test
+    fun `batch public route requires csrf and a participant session`() {
+        val path = "/application/expos/$EXPO/program-sessions/STANDARD/1/application-batches"
+        val body = mapper.writeValueAsString(guardianBatch(1, 2).request)
+        mvc
+            .perform(
+                post(
+                    path,
+                ).cookie(
+                    Cookie("PARTICIPANT_SESSION", "session"),
+                ).header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isForbidden)
+        mvc
+            .perform(
+                post(path)
+                    .with(csrf())
+                    .header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isUnauthorized)
+        enableGuardianPolicy(3, 0)
+        mvc
+            .perform(
+                post(
+                    path,
+                ).with(
+                    csrf(),
+                ).cookie(
+                    Cookie("PARTICIPANT_SESSION", "session"),
+                ).header("Idempotency-Key", "http")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isCreated)
+    }
+
+    @Test
+    fun `waiting guardian is not reused as confirmed and promotion revalidates the whole group`() {
+        enableGuardianPolicy(1, 3)
+        val first = batchService.execute(guardianBatch(1))
+        assertTrue(first.applications.all { it.application.status == "WAITING" })
+        assertThrows(
+            ProgramApplicationConflictException::class.java,
+        ) { batchService.execute(guardianBatch(2, key = "extra", reuse = true)) }
+        guardianPolicy = false
+        change { it.put("capacity", 2) }
+        reconcile()
+        assertEquals(0L, count("tb_standard_program_application"))
+        guardianPolicy = true
+        reconcile()
+        assertEquals(2L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `direct cancellation cannot bypass guardian links and policy off keeps the single route`() {
+        enableGuardianPolicy(2, 0)
+        val first = batchService.execute(guardianBatch(1))
+        mvc
+            .perform(
+                post(
+                    "/internal/program-session-applications/${first.applications.first().application.applicationId}/cancellation",
+                ).header("X-Internal-Token", "test-token"),
+            ).andExpect(status().isConflict)
+        assertEquals(2L, count("tb_standard_program_application"))
+        reset()
+        assertEquals("CONFIRMED", service.execute(command()).status)
+    }
+
+    @Test
+    fun `concurrent cancellation and extra student never leave an active guardian without students`() {
+        enableGuardianPolicy(3, 1)
+        val first = batchService.execute(guardianBatch(1))
+        val student =
+            first.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val cancellation =
+                pool.submit<String> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    try {
+                        cancelGuardianStudent(student)
+                        "cancelled"
+                    } catch (_: ProgramApplicationConflictException) {
+                        "retry"
+                    }
+                }
+            val addition =
+                pool.submit<String> {
+                    assertTrue(start.await(10, TimeUnit.SECONDS))
+                    try {
+                        batchService.execute(guardianBatch(2, key = "race", reuse = true))
+                        "added"
+                    } catch (exception: ResponseStatusException) {
+                        assertEquals(400, exception.statusCode.value())
+                        "guardian-cancelled"
+                    }
+                }
+            start.countDown()
+            val cancelled = cancellation.get(30, TimeUnit.SECONDS)
+            val added = addition.get(30, TimeUnit.SECONDS)
+            assertTrue(cancelled == "cancelled" || added == "added")
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(
+            0L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_guardian_link l " +
+                    "JOIN tb_program_session_application s ON s.id = l.student_application_id " +
+                    "JOIN tb_program_session_application g ON g.id = l.guardian_application_id " +
+                    "WHERE s.status <> 'CANCELLED' AND g.status = 'CANCELLED'",
+                Long::class.java,
+            ),
+        )
+        assertEquals(
+            0L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_guardian_member m JOIN tb_program_session_application g ON g.id = m.application_id " +
+                    "WHERE m.role = 'GUARDIAN' AND g.status <> 'CANCELLED' AND NOT EXISTS " +
+                    "(SELECT 1 FROM tb_program_guardian_link l JOIN tb_program_session_application s ON s.id = l.student_application_id " +
+                    "WHERE l.guardian_application_id = g.id AND s.status <> 'CANCELLED')",
+                Long::class.java,
+            ),
+        )
+    }
+
+    private fun enableGuardianPolicy(
+        seats: Int,
+        queue: Int,
+    ) {
+        guardianPolicy = true
+        capacity = seats
+        waitingCapacity = queue
+        managedIds = listOf(1, 2, 3, 4, 5)
+        listOf(3L, 4L, 5L).forEach(::addParticipant)
+        occupations =
+            mapOf(
+                1L to "ELEMENTARY_STUDENT",
+                2L to "ELEMENTARY_STUDENT",
+                3L to "PARENT",
+                4L to "ELEMENTARY_STUDENT",
+                5L to "ELEMENTARY_STUDENT",
+            )
+        allowed = "[\"ELEMENTARY_STUDENT\",\"PARENT\"]"
+    }
+
+    @Test
+    fun `merged batch admission rejects a conflicting guardian without accepting any students`() {
+        enableGuardianPolicy(3, 3)
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val window = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        guardianPolicy = false
+        service.execute(command(program = 2, participant = 3, type = ProgramSessionType.TRAINING, key = "guardian-other"))
+        guardianPolicy = true
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1, 2)) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        assertEquals(0L, count("tb_program_guardian_batch"))
+        assertEquals(0L, count("tb_standard_program_application"))
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `merged batch promotion keeps all members waiting when a non head student has a time conflict`() {
+        enableGuardianPolicy(1, 3)
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val batch = batchService.execute(guardianBatch(1, 2))
+        guardianPolicy = false
+        service.execute(command(program = 2, participant = 2, type = ProgramSessionType.TRAINING, key = "student-other"))
+        guardianPolicy = true
+        val window = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        jdbc.update(
+            "UPDATE tb_program_session_state SET definition = CAST(? AS jsonb) WHERE program_type = 'TRAINING' AND program_id = 2",
+            definition("2", "TRAINING"),
+        )
+        change { it.put("capacity", 3) }
+        val events = count("tb_program_session_event")
+        reconcile()
+        batch.applications.forEach { assertEquals("WAITING", column("status", it.application.applicationId)) }
+        assertEquals(0L, count("tb_standard_program_application"))
+        assertEquals(events, count("tb_program_session_event"))
+    }
+
+    private fun guardianBatch(
+        vararg students: Long,
+        key: String = "batch",
+        reuse: Boolean = false,
+        type: ProgramSessionType = ProgramSessionType.STANDARD,
+    ): ApplyStudentGuardianBatchCommand =
+        ApplyStudentGuardianBatchCommand(
+            ProgramSessionKey(UUID.fromString(EXPO), type, 1),
+            "session",
+            key,
+            StudentGuardianBatchRequest(
+                students.map { StudentGuardianSubmission(it, 1, mapper.readTree("""{"101":"a"}""")) } +
+                    StudentGuardianSubmission(3, if (reuse) null else 1, if (reuse) null else mapper.readTree("""{"101":"b"}""")),
+                students.map { StudentGuardianLink(it, 3) },
+            ),
+        )
+
+    private fun cancelGuardianStudent(id: UUID) {
+        batchCancellation.execute(CancelStudentGuardianApplicationCommand(UUID.fromString(EXPO), id, sessionId = "session"))
     }
 
     @Test
@@ -621,6 +1360,12 @@ class ProgramSessionApplicationTests {
         applied(2, false)
         cancel(confirmed.applicationId)
         applied(2, true)
+        assertEquals(
+            listOf("USER:null:CONFIRMED:true", "USER:null:WAITING:true", "USER:CONFIRMED:CANCELLED:true", "SYSTEM:WAITING:CONFIRMED:true"),
+            jdbc.query(
+                "SELECT actor_type, previous_status, status, previous_status_recorded FROM tb_program_session_history ORDER BY id",
+            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" },
+        )
         assertEquals(waiting, service.execute(command(participant = 2)))
         cancel(confirmed.applicationId)
         assertEquals(
@@ -1849,6 +2594,752 @@ class ProgramSessionApplicationTests {
         )
     }
 
+    @Test
+    fun `back to back sessions are allowed after normalizing KST and offset times`() {
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        windows =
+            mapOf(
+                ("STANDARD" to 1L) to ("2030-01-01T09:00:00" to "2030-01-01T10:00:00"),
+                ("TRAINING" to 2L) to ("2030-01-01T01:00:00Z" to "2030-01-01T02:00:00Z"),
+            )
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        assertEquals("CONFIRMED", service.execute(command(program = 2, type = ProgramSessionType.TRAINING, key = "adjacent")).status)
+        assertEquals(2L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `time conflicts serialize different groups across standard and training and cancelled applications release the window`() {
+        val window = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to window, ("TRAINING" to 2L) to window)
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val results = concurrent(command(), command(program = 2, type = ProgramSessionType.TRAINING, key = "training"))
+        assertEquals(1, results.count { it == "ok" })
+        assertEquals(1, results.count { it == "conflict" })
+        val existing = jdbc.queryForObject("SELECT id FROM tb_program_session_application", UUID::class.java)!!
+        val next = if (results[0] == "ok") command(program = 2, type = ProgramSessionType.TRAINING, key = "next") else command(key = "next")
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(next) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val target =
+            mapper.readValue(
+                definition(next.programId.toString(), next.programType.name),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(false, ledger.hasTimeConflict(target, 2))
+        assertEquals(false, ledger.hasTimeConflict(target.copy(expoId = UUID.randomUUID().toString()), 1))
+        cancel(existing)
+        assertEquals("CONFIRMED", service.execute(next).status)
+    }
+
+    @Test
+    fun `waiting applications block overlapping submissions and promotion leaves conflicting head waiting without taking a seat`() {
+        waitingCapacity = 2
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        val window = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        val conflict =
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                service.execute(command(program = 2, participant = 2, type = ProgramSessionType.TRAINING, key = "overlap"))
+            }
+        assertEquals("TIME_CONFLICT", conflict.ineligibleReason?.name)
+        windows = emptyMap()
+        val other = service.execute(command(program = 2, participant = 2, type = ProgramSessionType.TRAINING, key = "later"))
+        windows = mapOf(("TRAINING" to 2L) to (window.path("startedAt").stringValue() to window.path("endedAt").stringValue()))
+        jdbc.update(
+            "UPDATE tb_program_session_state SET definition = CAST(? AS jsonb) WHERE program_type = 'TRAINING' AND program_id = 2",
+            definition("2", "TRAINING"),
+        )
+        cancel(confirmed.applicationId)
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        assertEquals(0L, count("tb_standard_program_application"))
+        cancel(other.applicationId)
+        reconcile()
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `schedule changes cannot introduce an overlap for an active participant`() {
+        groups = mapOf("2" to UUID.randomUUID().toString())
+        service.execute(command())
+        service.execute(command(program = 2, type = ProgramSessionType.TRAINING, key = "later"))
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val previous = mapper.readTree(definition("2", "TRAINING"))
+        val next =
+            previous.deepCopy().asObject().apply {
+                put("revision", 2)
+                put("startedAt", first.path("startedAt").stringValue())
+                put("endedAt", first.path("endedAt").stringValue())
+            }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+        assertEquals(0L, count("tb_program_change_receipt"))
+    }
+
+    @Test
+    fun `legacy attribution adopts only identity and preserves seats receipts snapshots and User actor`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(true))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_session_receipt"))
+        assertEquals(0L, count("tb_program_session_event"))
+        assertEquals(42, mapper.readTree(attributionCalls.single()).path("actorAdminId").asInt())
+        assertEquals("원본 자료와 운영자 확인", mapper.readTree(attributionCalls.single()).path("reason").asString())
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(true))
+        assertEquals(1, attributionCalls.size)
+        attribute(UUID.randomUUID()).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution requires cancel authority and cannot trust supplied admin headers`() {
+        for (denial in listOf(401, 403, 404)) {
+            attributionAccessStatus = denial
+            attribute(UUID.randomUUID()).andExpect(status().`is`(denial))
+            attribute(UUID.randomUUID(), revoke = true).andExpect(status().`is`(denial))
+        }
+        assertEquals(0, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution_operation"))
+        attributionAccessStatus = 200
+        attributionActor = 73
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        assertEquals(73, mapper.readTree(attributionCalls.single()).path("actorAdminId").asInt())
+    }
+
+    @Test
+    fun `legacy attribution validates IDs reason and operation header before User writes`() {
+        val path = "/application/admin/expos/$EXPO/legacy-trainee-attributions"
+        for (body in listOf(
+            """{"traineeId":0,"participantId":1,"reason":"proof"}""",
+            """{"traineeId":700,"participantId":0,"reason":"proof"}""",
+            """{"traineeId":700,"participantId":1,"reason":" "}""",
+            """{"traineeId":700,"participantId":1}""",
+            mapper.writeValueAsString(mapOf("traineeId" to 700, "participantId" to 1, "reason" to "x".repeat(501))),
+        )) {
+            mvc
+                .perform(
+                    post(path)
+                        .header("Authorization", "Bearer admin")
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body),
+                ).andExpect(status().isBadRequest)
+        }
+        mvc
+            .perform(
+                post(path)
+                    .header("Authorization", "Bearer admin")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"traineeId":700,"participantId":1,"reason":"proof"}"""),
+            ).andExpect(status().isBadRequest)
+        assertEquals(0, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution_operation"))
+    }
+
+    @Test
+    fun `legacy attribution rejects operation ID reuse for other IDs reasons actions or actors`() {
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk)
+        attribute(id, participant = 2).andExpect(status().isConflict)
+        attribute(id, revoke = true).andExpect(status().isConflict)
+        attributionActor = 43
+        attribute(id).andExpect(status().isConflict)
+        assertEquals(1, attributionCalls.size)
+    }
+
+    @Test
+    fun `legacy attribution User rejection writes no projection and preserves conflict status`() {
+        for (code in listOf(400, 403, 404, 409)) {
+            attributionStatus = code
+            val id = UUID.randomUUID()
+            attribute(id).andExpect(status().`is`(code))
+            attribute(id).andExpect(status().`is`(code))
+            mvc
+                .perform(
+                    get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                        .header("Authorization", "Bearer admin"),
+                ).andExpect(status().isOk)
+                .andExpect(jsonPath("$.state").value("REJECTED"))
+        }
+        assertEquals(4, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+    }
+
+    @Test
+    fun `legacy attribution response loss holds gates and same operation repairs committed User link`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attributionMalformed = true
+        attribute(id).andExpect(status().isBadGateway)
+        assertEquals(1L, attributionParticipant)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        mvc
+            .perform(
+                get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                    .header("Authorization", "Bearer admin"),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.state").value("PENDING"))
+            .andExpect(jsonPath("$.errorStatus").value(502))
+            .andExpect(jsonPath("$.reason").doesNotExist())
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        attribute(UUID.randomUUID(), revoke = true).andExpect(status().isConflict)
+        attributionMalformed = false
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution local commit failure retains durable operation and retries without duplicate seats`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attributionAfterUser = {
+            jdbc.execute("ALTER TABLE tb_legacy_trainee_program ADD CONSTRAINT test_attribution_failure CHECK (program_id < 0)")
+        }
+        try {
+            attribute(id).andExpect(status().isServiceUnavailable)
+            assertEquals(1L, attributionParticipant)
+            assertEquals(0L, count("tb_legacy_trainee_attribution"))
+            assertEquals(
+                "PENDING",
+                jdbc.queryForObject("SELECT state FROM tb_legacy_trainee_attribution_operation WHERE id = ?", String::class.java, id),
+            )
+        } finally {
+            attributionAfterUser = null
+            jdbc.execute("ALTER TABLE tb_legacy_trainee_program DROP CONSTRAINT IF EXISTS test_attribution_failure")
+        }
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+    }
+
+    @Test
+    fun `legacy attribution adopted training blocks overlapping standard while leaving companions independent`() {
+        seedLegacyAttribution()
+        val overlap = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to overlap, ("TRAINING" to 2L) to overlap)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        assertEquals("CONFIRMED", service.execute(command(participant = 2)).status)
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution revoke removes only adopted ownership and keeps original application and standard history`() {
+        seedLegacyAttribution()
+        val receipt = service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val revokeId = UUID.randomUUID()
+        attribute(revokeId, revoke = true).andExpect(status().isOk)
+        attribute(revokeId, revoke = true).andExpect(status().isOk)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        assertEquals(0L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals("CONFIRMED", column("status", receipt.applicationId))
+        assertEquals(1L, count("tb_program_session_event"))
+        assertEquals(1L, count("tb_program_session_receipt"))
+        attribute(UUID.randomUUID(), participant = 2).andExpect(status().isOk)
+        assertEquals(2L, jdbc.queryForObject("SELECT participant_id FROM tb_legacy_trainee_attribution", Long::class.java))
+    }
+
+    @Test
+    fun `legacy attribution revoke response loss preserves gate until cleanup resumes even when User changed is false`() {
+        seedLegacyAttribution()
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val id = UUID.randomUUID()
+        attributionMalformed = true
+        attribute(id, revoke = true).andExpect(status().isBadGateway)
+        assertEquals(null, attributionParticipant)
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        attributionMalformed = false
+        attribute(id, revoke = true).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution FIFO promotion waits for conflict and resumes after revoke without returning legacy seat`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        seedLegacyAttribution()
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (first.path("startedAt").asString() to first.path("endedAt").asString()))
+        attribute(UUID.randomUUID(), participant = 2).andExpect(status().isOk)
+        cancel(confirmed.applicationId)
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        assertEquals(0L, count("tb_standard_program_application"))
+        attribute(UUID.randomUUID(), participant = 2, revoke = true).andExpect(status().isOk)
+        reconcile()
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution schedule validation includes adopted trainees with no session receipt`() {
+        seedLegacyAttribution()
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val previous = mapper.readTree(definition("2", "TRAINING"))
+        val next =
+            previous.deepCopy().asObject().apply {
+                put("revision", 2)
+                put("startedAt", first.path("startedAt").asString())
+                put("endedAt", first.path("endedAt").asString())
+            }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+        assertEquals(0L, count("tb_program_change_receipt"))
+    }
+
+    @Test
+    fun `legacy attribution legacy cancellation removes time occupancy while retaining attribution for future applications`() {
+        seedLegacyAttribution()
+        val overlap = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to overlap, ("TRAINING" to 2L) to overlap)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[]}"""),
+            ).andExpect(status().isNoContent)
+        assertEquals(0L, count("tb_training_program_application"))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals("CONFIRMED", service.execute(command()).status)
+    }
+
+    @Test
+    fun `legacy attribution status hides missing and other expo operations and never returns verification reason`() {
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk)
+        for ((owner, operation) in listOf(EXPO to UUID.randomUUID(), UUID.randomUUID().toString() to id)) {
+            mvc
+                .perform(
+                    get("/application/admin/expos/$owner/legacy-trainee-attributions/operations/$operation")
+                        .header("Authorization", "Bearer admin"),
+                ).andExpect(status().isNotFound)
+        }
+        mvc
+            .perform(
+                get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                    .header("Authorization", "Bearer admin"),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.state").value("APPLIED"))
+            .andExpect(jsonPath("$.reason").doesNotExist())
+            .andExpect(jsonPath("$.authorization").doesNotExist())
+    }
+
+    private fun seedLegacyAttribution() {
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (700, 2)")
+        groups = mapOf("2" to UUID.randomUUID().toString())
+    }
+
+    @Test
+    fun `legacy attribution preexisting conflicts do not prevent a removal only legacy replacement`() {
+        seedLegacyAttribution()
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (700, 3)")
+        groups = groups + ("3" to UUID.randomUUID().toString())
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val overlap = first.path("startedAt").asString() to first.path("endedAt").asString()
+        windows = mapOf(("TRAINING" to 2L) to overlap, ("TRAINING" to 3L) to overlap)
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[{"id":3,"expoId":"$EXPO","category":"CHOICE"}]}"""),
+            ).andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(3L, jdbc.queryForObject("SELECT training_program_id FROM tb_training_program_application", Long::class.java))
+    }
+
+    @Test
+    fun `legacy attribution training add and replace check standard conflicts and preserve new projection`() {
+        seedLegacyAttribution()
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        groups = groups + ("3" to UUID.randomUUID().toString())
+        noPolicyProgram = 0
+        windows = mapOf(("TRAINING" to 3L) to (first.path("startedAt").asString() to first.path("endedAt").asString()))
+        val body = """{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[{"id":3,"expoId":"$EXPO","category":"CHOICE"}]}"""
+        mvc
+            .perform(
+                post("/internal/training-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isConflict)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isConflict)
+        assertEquals(1L, count("tb_training_program_application"))
+        windows = emptyMap()
+        mvc
+            .perform(
+                post("/internal/training-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isCreated)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_training_program_application"))
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val target =
+            mapper.readValue(
+                definition("3", "TRAINING"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(true, ledger.hasTimeConflict(target.copy(programType = ProgramSessionType.STANDARD, id = 4), 1))
+        val removed =
+            mapper.readValue(
+                definition("2", "TRAINING"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(false, ledger.hasTimeConflict(removed.copy(programType = ProgramSessionType.STANDARD, id = 4), 1))
+    }
+
+    private fun attribute(
+        id: UUID,
+        participant: Long = 1,
+        revoke: Boolean = false,
+    ): org.springframework.test.web.servlet.ResultActions =
+        mvc.perform(
+            post("/application/admin/expos/$EXPO/legacy-trainee-attributions" + if (revoke) "/revoke" else "")
+                .header("Authorization", "Bearer admin")
+                .header("X-User-Id", "9999")
+                .header("Idempotency-Key", id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"traineeId":700,"participantId":$participant,"reason":"원본 자료와 운영자 확인"}"""),
+        )
+
+    @ParameterizedTest
+    @CsvSource("STANDARD", "TRAINING")
+    fun `split seats enforce pre registration quota with replay cancellation and immutable route`(type: ProgramSessionType) {
+        capacity = 3
+        waitingCapacity = 5
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val first = service.execute(command(type = type))
+        assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
+        assertEquals(first, service.execute(command(type = type).copy(sessionId = "renewed-session")))
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2, type = type)) }
+        assertEquals(1L, count("tb_program_session_application"))
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update("UPDATE tb_program_session_application SET admission_route = 'ONSITE' WHERE id = ?", first.applicationId)
+        }
+        cancel(first.applicationId)
+        cancel(first.applicationId)
+        val replacement = service.execute(command(participant = 2, type = type))
+        assertEquals("PRE_REGISTRATION", column("admission_route", replacement.applicationId))
+        assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
+    }
+
+    @Test
+    fun `split seats serialize the last pre seat without borrowing onsite seats`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val results = concurrent(command(), command(participant = 2))
+        assertEquals(1, results.count { it == "ok" })
+        assertEquals(1, results.count { it == "conflict" })
+        assertEquals(1L, count("tb_standard_program_application"))
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `split seats block forged onsite selection and expose both quotas without double counting`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications?admissionRoute=ONSITE")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                    .header("Idempotency-Key", "forged")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":2,"formVersion":1,"answers":{"101":"a"},"admissionRoute":"ONSITE"}"""),
+            ).andExpect(status().isConflict)
+        mvc
+            .perform(
+                get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.capacity.confirmedCount").value(1))
+            .andExpect(jsonPath("$.admissionSeats.preRegistration.capacity").value(1))
+            .andExpect(jsonPath("$.admissionSeats.preRegistration.remaining").value(0))
+            .andExpect(jsonPath("$.admissionSeats.onsite.capacity").value(2))
+            .andExpect(jsonPath("$.admissionSeats.onsite.confirmedCount").value(0))
+            .andExpect(jsonPath("$.admissionSeats.onsite.remaining").value(2))
+            .andExpect(jsonPath("$.admissionSeats.onsiteAdmissionEnabled").value(false))
+            .andExpect(jsonPath("$.admissionSeats.waitingEnabled").value(false))
+    }
+
+    @Test
+    fun `split seats rollback failures and retry uses the same route exactly once`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        jdbc.execute("ALTER TABLE tb_program_session_event ADD CONSTRAINT test_split_event CHECK (status <> 'CONFIRMED')")
+        try {
+            assertThrows(DataIntegrityViolationException::class.java) { service.execute(command()) }
+            assertEquals(0L, count("tb_program_session_application"))
+            assertEquals(0L, count("tb_standard_program_application"))
+            assertEquals(0L, count("tb_program_session_receipt"))
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_event DROP CONSTRAINT test_split_event")
+        }
+        val result = service.execute(command())
+        assertEquals(result, service.execute(command()))
+        assertEquals("PRE_REGISTRATION", column("admission_route", result.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `split seats reject atomic guardian batches that would borrow onsite capacity`() {
+        enableGuardianPolicy(4, 5)
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
+        assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1, 2)) }
+        assertEquals(0L, count("tb_program_guardian_batch"))
+        assertEquals(0L, count("tb_program_session_application"))
+        val result = batchService.execute(guardianBatch(1))
+        assertTrue(result.applications.all { it.application.status == "CONFIRMED" })
+        assertEquals(result, batchService.execute(guardianBatch(1)))
+        result.applications.forEach { assertEquals("PRE_REGISTRATION", column("admission_route", it.application.applicationId)) }
+    }
+
+    @Test
+    fun `split seats reject malformed provider quotas before linking a trainee`() {
+        capacity = 3
+        for (fields in listOf(
+            "\"preRegistrationCapacity\":1",
+            "\"preRegistrationCapacity\":null,\"onsiteCapacity\":null",
+            "\"preRegistrationCapacity\":1.5,\"onsiteCapacity\":2",
+            "\"preRegistrationCapacity\":\"1\",\"onsiteCapacity\":2",
+            "\"onsiteCapacity\":2",
+            "\"preRegistrationCapacity\":-1,\"onsiteCapacity\":4",
+            "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1",
+            "\"preRegistrationCapacity\":2147483647,\"onsiteCapacity\":2147483647",
+        )) {
+            admissionCapacities = fields
+            val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
+            assertEquals(502, error.statusCode.value())
+        }
+        assertEquals(0, linkCalls.get())
+        assertEquals(0L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `split seats cannot shrink an occupied route or revert to total only capacity`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        for (remove in listOf(false, true)) {
+            val next = previous.deepCopy().asObject().apply { put("revision", 2) }
+            next.path("policy").asObject().apply {
+                if (remove) {
+                    remove("preRegistrationCapacity")
+                    remove("onsiteCapacity")
+                } else {
+                    put("preRegistrationCapacity", 0)
+                    put("onsiteCapacity", 3)
+                }
+            }
+            mvc
+                .perform(
+                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                ).andExpect(status().isConflict)
+        }
+        assertEquals(0L, count("tb_program_change_receipt"))
+        change {
+            it.put("onsiteCapacity", 3)
+            it.put("capacity", 4)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":3"
+        reconcile()
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2)) }
+    }
+
+    @Test
+    fun `split seats never reclassify legacy confirmed rows and reject adoption with waiting parties`() {
+        capacity = 4
+        service.execute(command())
+        change {
+            it.put("preRegistrationCapacity", 2)
+            it.put("onsiteCapacity", 2)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
+        reconcile()
+        val definition =
+            mapper.readValue(
+                definition("1", "STANDARD"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        val seats = requireNotNull(context.getBean(ProgramSessionApplicationRepository::class.java).admissionSeats(definition))
+        assertEquals(1L, seats.unknownConfirmedCount)
+        assertEquals(1L, seats.preRegistration.remaining)
+        assertEquals(1L, seats.onsite.remaining)
+        assertEquals(null, jdbc.queryForObject("SELECT admission_route FROM tb_program_session_application", String::class.java))
+        reset()
+        waitingCapacity = 2
+        service.execute(command())
+        service.execute(command(participant = 2))
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val next = previous.deepCopy().asObject().apply { put("revision", 2) }
+        next.path("policy").asObject().apply {
+            put("capacity", 3)
+            put("preRegistrationCapacity", 1)
+            put("onsiteCapacity", 2)
+        }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+    }
+
+    @Test
+    fun `split seats preserve enabled guardian policy in supplier decoding and saved snapshots`() {
+        capacity = 3
+        val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
+        val supplied =
+            requireNotNull(context.getBean(RegistrationGateway::class.java).programDefinition(EXPO, ProgramSessionType.STANDARD, 1))
+        assertEquals(guardian, supplied.policy?.guardianPolicy)
+        assertEquals(1, supplied.policy?.preRegistrationCapacity)
+        assertEquals(2, supplied.policy?.onsiteCapacity)
+        assertEquals(supplied, mapper.readValue(mapper.writeValueAsString(supplied), supplied.javaClass))
+        val result = service.execute(command())
+        val snapshot =
+            jdbc.queryForObject(
+                "SELECT definition_snapshot::text FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                result.applicationId,
+            )
+        assertEquals(supplied, mapper.readValue(snapshot, supplied.javaClass))
+    }
+
+    @Test
+    fun `split seats enabled guardian policy fails closed when eligibility provider is missing`() {
+        capacity = 3
+        val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
+        val withoutGuardian =
+            ApplyProgramSessionServiceImpl(
+                context.getBean(ProgramSessionApplicationRepository::class.java),
+                context.getBean(StandardProgramApplicationRepository::class.java),
+                context.getBean(TrainingProgramApplicationRepository::class.java),
+                context.getBean(TrainingOperationRepository::class.java),
+                context.getBean(RegistrationGateway::class.java),
+                context.getBeanProvider(ProgramFormProvider::class.java),
+                context.getBean(ProgramWaitlist::class.java),
+                context.getBean(ProgramWaitlistRepository::class.java),
+                DefaultListableBeanFactory().getBeanProvider(StudentGuardianEligibilityProvider::class.java),
+            )
+        val error =
+            assertThrows(ResponseStatusException::class.java) {
+                transactions.execute { withoutGuardian.execute(command()) }
+            }
+        assertEquals(503, error.statusCode.value())
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `split seats retain a seeded onsite route on cancellation and return only that quota`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val pre = service.execute(command())
+        val onsite = UUID.randomUUID()
+        jdbc.update(
+            "INSERT INTO tb_program_session_application " +
+                "(id, expo_id, program_type, program_id, group_id, participant_id, status, " +
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, admission_route) " +
+                "SELECT ?, expo_id, program_type, program_id, group_id, 2, 'CONFIRMED', " +
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, 'ONSITE' " +
+                "FROM tb_program_session_application WHERE id = ?",
+            onsite,
+            pre.applicationId,
+        )
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (2, 1)")
+        val definition = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val before = requireNotNull(ledger.admissionSeats(definition))
+        assertEquals(1L, before.onsite.confirmedCount)
+        assertEquals(0L, before.unknownConfirmedCount)
+        cancel(onsite)
+        val after = requireNotNull(ledger.admissionSeats(definition))
+        assertEquals(before.preRegistration, after.preRegistration)
+        assertEquals(0L, after.onsite.confirmedCount)
+        assertEquals(before.onsite.remaining + 1, after.onsite.remaining)
+        assertEquals("ONSITE", column("admission_route", onsite))
+        assertEquals("PRE_REGISTRATION", column("admission_route", pre.applicationId))
+    }
+
+    @Test
+    fun `split seats allow current and prepared definition reads while rejecting unrelated revisions`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        val current = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        change {
+            it.put("capacity", 4)
+            it.put("onsiteCapacity", 3)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":3"
+        val prepared = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        transactions.execute {
+            context.getBean(ProgramSessionApplicationRepository::class.java).lockCapacityReads(listOf(current))
+            repository.checkDefinition(current.copy(pendingRevision = prepared.revision))
+            repository.checkDefinition(prepared)
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                repository.checkDefinition(prepared.copy(revision = prepared.revision + 1))
+            }
+        }
+        pending = true
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(participant = 2)) }
+        assertEquals(409, error.statusCode.value())
+    }
+
     private fun applied(
         participant: Long,
         value: Boolean,
@@ -1933,6 +3424,70 @@ class ProgramSessionApplicationTests {
     @TestConfiguration
     class Forms {
         @Bean
+        fun guardianEligibility(): StudentGuardianEligibilityProvider =
+            object : StudentGuardianEligibilityProvider {
+                override fun validate(query: StudentGuardianEligibilityQuery) {
+                    if (!guardianPolicy) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
+                    if (query.links.any {
+                            it.studentId !in
+                                setOf(
+                                    1L,
+                                    2L,
+                                    4L,
+                                    5L,
+                                ) || it.guardianId != 3L
+                        }
+                    ) {
+                        throw ResponseStatusException(HttpStatus.FORBIDDEN)
+                    }
+                }
+
+                override fun validateSingle(
+                    command: ApplyProgramSessionCommand,
+                    definition: team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition,
+                    occupation: String?,
+                ) {
+                    if (guardianPolicy) throw ProgramApplicationConflictException("동반 정책은 배치 접수가 필요합니다.")
+                }
+            }
+
+        @Bean
+        @Primary
+        fun guardianCancellationGuard(): OwnerCancellationGuard =
+            object : OwnerCancellationGuard {
+                override fun acquire(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    party: OwnerApplicationParty,
+                ): OwnerCancellationGuard.Permit {
+                    if (party.participants.none { it.participantId == participantId }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
+                    return permit(participantId)
+                }
+
+                override fun acquireAdmin(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    sessionId: Long,
+                ): OwnerCancellationGuard.Permit = permit(participantId)
+
+                override fun acquireAdminProgram(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    programId: Long,
+                ): OwnerCancellationGuard.Permit = permit(participantId)
+
+                private fun permit(participantId: Long): OwnerCancellationGuard.Permit {
+                    if (participantId in protectedParticipants) throw ResponseStatusException(HttpStatus.CONFLICT)
+                    return object : OwnerCancellationGuard.Permit {
+                        override val linkedTraineeId = participantId + 500
+                        override val cancelEndedAt = cancelEnd
+
+                        override fun close() {}
+                    }
+                }
+            }
+
+        @Bean
         @Primary
         fun testClock(): Clock = testClock
 
@@ -1999,6 +3554,8 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var waitingCapacity = 0
 
+        @Volatile private var windows: Map<Pair<String, Long>, Pair<String, String>> = emptyMap()
+
         @Volatile private var revision = 1L
 
         @Volatile private var applicationEnd = Instant.parse("2100-01-01T00:00:00Z")
@@ -2037,6 +3594,12 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var occupations = mapOf<Long, String>()
 
+        @Volatile private var managedIds = listOf<Long>(1, 2)
+
+        @Volatile private var guardianPolicy = false
+
+        @Volatile private var protectedParticipants = emptySet<Long>()
+
         @Volatile private var allowed = "[\"TEACHER\"]"
 
         @Volatile private var channels: String? = null
@@ -2053,6 +3616,24 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var formQuestions = QUESTIONS
 
+        @Volatile private var realFields = REAL_FIELDS
+
+        @Volatile private var groups = mapOf<String, String>()
+
+        private val attributionCalls = ConcurrentLinkedQueue<String>()
+
+        @Volatile private var attributionStatus = 200
+
+        @Volatile private var attributionMalformed = false
+
+        @Volatile private var attributionParticipant: Long? = null
+
+        @Volatile private var attributionAfterUser: (() -> Unit)? = null
+
+        @Volatile private var attributionAccessStatus = 200
+
+        @Volatile private var attributionActor = 42L
+
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
@@ -2066,9 +3647,34 @@ class ProgramSessionApplicationTests {
                                 "{}"
                             }
 
+                            path.endsWith("/admin-application-cancel-access") || path.endsWith("/admin-access") -> {
+                                status = attributionAccessStatus
+                                val owner = path.substringAfter("/internal/expo/").substringBefore('/')
+                                val cancel = path.endsWith("/admin-application-cancel-access")
+                                """{"expoId":"$owner","adminId":$attributionActor,"permission":"${if (cancel) "APPLICATION_CANCEL" else "APPLICATION_READ"}","scope":"${if (cancel) "EXPO_ADMIN" else "GLOBAL_ADMIN"}","policyVersion":"${if (cancel) "EXPO_ADMIN_APPLICATION_CANCEL_V1" else "GLOBAL_ADMIN_APPLICATION_READ_V1"}"}"""
+                            }
+
+                            path.startsWith("/internal/trainees/participant-link") -> {
+                                attributionCalls.add(body)
+                                status = attributionStatus
+                                val request = ObjectMapper().readTree(body)
+                                val participant = request.path("participantId").asLong()
+                                val revoke = path.endsWith("/revoke")
+                                val changed = if (revoke) attributionParticipant != null else attributionParticipant != participant
+                                if (status == 200) {
+                                    attributionParticipant = if (revoke) null else participant
+                                    attributionAfterUser?.invoke()
+                                }
+                                if (attributionMalformed) {
+                                    "{"
+                                } else {
+                                    """{"traineeId":700,"participantId":$attributionParticipant,"changed":$changed}"""
+                                }
+                            }
+
                             path == "/internal/forms/by-id/$FORM" -> {
                                 """{"id":"$FORM","expoId":"$EXPO","purpose":"PROGRAM","version":1,"participantType":null,""" +
-                                    """"startDate":"2020-01-01T00:00:00Z","endDate":"2100-01-01T00:00:00Z","dynamicForm":$REAL_FIELDS}"""
+                                    """"startDate":"2020-01-01T00:00:00Z","endDate":"2100-01-01T00:00:00Z","dynamicForm":$realFields}"""
                             }
 
                             path.endsWith("participant-sessions/resolve") -> {
@@ -2079,6 +3685,14 @@ class ProgramSessionApplicationTests {
                                     sessionResponse
                                         ?: """{"expoId":"$EXPO","phoneNumber":"01012345678","expiresAt":"2100-01-01T00:00:00"}"""
                                 }
+                            }
+
+                            path.endsWith("standard-participants/managed") -> {
+                                val people =
+                                    managedIds.joinToString(",") { id ->
+                                        """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L}}"""
+                                    }
+                                """{"registered":true,"participants":[$people]}"""
                             }
 
                             path.endsWith("managed/select") -> {
@@ -2182,20 +3796,35 @@ class ProgramSessionApplicationTests {
                 start()
             }
 
+        @Volatile private var places: Map<String, String?> = emptyMap()
+
+        @Volatile private var admissionCapacities: String? = null
+
         private fun definition(
             id: String,
             type: String,
         ): String {
             val response =
-                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"$GROUP","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
+                """{"expoId":"${if (badExpo) "other" else EXPO}","programType":"$type","id":$id,"title":"$title","groupId":"${groups[id] ?: GROUP}","revision":$revision,"pendingRevision":${if (pending) 2 else "null"},"policy":{"formId":"$FORM","allowedOccupations":$allowed,"capacity":$capacity,"waitingCapacity":$waitingCapacity,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"${if (expired) "2021-01-01T00:00:00Z" else applicationEnd}","cancelEndedAt":"$cancelEnd","promotionEndedAt":"$promotionEnd","closed":$closed${channels?.let {
                     ",\"channels\":$it"
                 } ?: ""}}}"""
+            val json = ObjectMapper().readTree(response).asObject()
+            admissionCapacities?.let { fields ->
+                val policy = json.path("policy").asObject()
+                ObjectMapper().readTree("{$fields}").properties().forEach { (name, value) -> policy.set(name, value) }
+            }
+            val start = Instant.parse("2030-01-01T00:00:00Z").plusSeconds(id.toLong() * 7200 + if (type == "TRAINING") 86400 else 0)
+            val window = windows[type to id.toLong()] ?: (start.toString() to start.plusSeconds(3600).toString())
+            json.put("startedAt", window.first)
+            json.put("endedAt", window.second)
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
-                val json = ObjectMapper().readTree(response).asObject()
                 json.putNull("policy")
                 return json.toString()
             }
-            return response
+            if (places.containsKey(id)) {
+                json.put("place", places[id])
+            }
+            return json.toString()
         }
 
         @Container @ServiceConnection @JvmStatic
@@ -2203,6 +3832,7 @@ class ProgramSessionApplicationTests {
 
         @DynamicPropertySource @JvmStatic
         fun properties(registry: DynamicPropertyRegistry) {
+            registry.add("application.legacy-trainee-attribution.enabled") { true }
             registry.add("application.program-sessions.enabled") { true }
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
             registry.add("application.registration.expo-internal-token") { "test-token" }

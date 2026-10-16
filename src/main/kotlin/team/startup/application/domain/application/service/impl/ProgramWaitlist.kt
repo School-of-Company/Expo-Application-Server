@@ -1,11 +1,13 @@
 package team.startup.application.domain.application.service.impl
 
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
 import team.startup.application.domain.application.entity.TrainingProgramApplication
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -25,12 +27,14 @@ class ProgramWaitlist(
     private val operations: TrainingOperationRepository,
     private val gateway: RegistrationGateway,
     private val clock: Clock,
+    private val guardianBatches: ObjectProvider<StudentGuardianBatchPromotion>,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun now(): Instant = clock.instant()
 
     fun lock(definition: ProgramSessionDefinition) {
+        ledger.lockSchedule(definition.expoId)
         ledger.lockGroups(listOf(definition))
         if (definition.programType ==
             ProgramSessionType.STANDARD
@@ -55,6 +59,7 @@ class ProgramWaitlist(
         now: Instant = now(),
     ) {
         val policy = definition.policy ?: return
+        if (policy.hasAdmissionCapacities()) return
         if (policy.closed || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
             !now.isBefore(policy.promotionEndedAt)
         ) {
@@ -73,6 +78,16 @@ class ProgramWaitlist(
                 )
             if (remaining <= 0) continue
             for (entry in repository.waiting(definition, remaining.toInt(), channel?.name)) {
+                val promoted = guardianBatches.ifAvailable?.promote(definition, entry)
+                if (promoted != null) {
+                    if (promoted == 0) continue@channels
+                    if (promoted > 0) budget -= promoted
+                    if (budget <= 0) return
+                    continue
+                }
+                // Submission takes participant before group locks, so promotion must never wait for a participant.
+                if (!ledger.tryLockParticipant(entry.participantId)) continue@channels
+                if (ledger.hasTimeConflict(definition, entry.participantId)) continue@channels
                 val traineeId =
                     if (definition.programType ==
                         ProgramSessionType.TRAINING
@@ -92,7 +107,7 @@ class ProgramWaitlist(
                         StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id),
                     )
                 }
-                repository.transition(entry.id, "CONFIRMED", traineeId)
+                repository.transition(entry.id, "CONFIRMED", ApplicationActorType.SYSTEM, traineeId)
                 budget--
             }
         }
@@ -109,7 +124,7 @@ class ProgramWaitlist(
                 // User 404/409는 재시도해도 성공하지 않으므로 대기에서 내려 다음 순번이 차례대로 승급되게 한다(#116).
                 // shortcut: 빈자리는 이번 회차가 아니라 다음 승급 계기(스케줄러·취소·신청)에서 채운다.
                 if (ex.statusCode == HttpStatus.NOT_FOUND || ex.statusCode == HttpStatus.CONFLICT) {
-                    repository.transition(entry.id, "CANCELLED")
+                    repository.transition(entry.id, "CANCELLED", ApplicationActorType.SYSTEM)
                     log.warn(
                         "프로그램 대기 취소: {} / {} / {} ({}, USER_{})",
                         definition.expoId,

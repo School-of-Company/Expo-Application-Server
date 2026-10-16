@@ -4,6 +4,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
@@ -107,6 +108,29 @@ class ProgramWaitlistRepository(
                 channel,
             ),
         )
+
+    fun checkDefinition(definition: ProgramSessionDefinition) {
+        jdbc
+            .query(
+                "SELECT definition, pending_definition, deleted FROM tb_program_session_state " +
+                    "WHERE expo_id = ? AND program_type = ? AND program_id = ?",
+                { rs, _ ->
+                    Triple(
+                        mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java),
+                        rs.getString(2)?.let { mapper.readValue(it, ProgramSessionDefinition::class.java) },
+                        rs.getBoolean(3),
+                    )
+                },
+                UUID.fromString(definition.expoId),
+                definition.programType.name,
+                definition.id,
+            ).singleOrNull()
+            ?.let { (current, pending, deleted) ->
+                if (deleted || definition.copy(pendingRevision = null) !in listOf(current, pending)) {
+                    conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+                }
+            }
+    }
 
     fun observe(definition: ProgramSessionDefinition) {
         jdbc.update(
@@ -217,16 +241,25 @@ class ProgramWaitlistRepository(
     fun transition(
         id: UUID,
         status: String,
+        actorType: ApplicationActorType,
         traineeId: Long? = null,
         actorId: Long? = null,
     ) {
+        jdbc.update(
+            "INSERT INTO tb_program_session_history " +
+                "(application_id, status, actor_type, actor_id, previous_status, previous_status_recorded) " +
+                "SELECT id, ?, ?, ?, status, TRUE FROM tb_program_session_application WHERE id = ?",
+            status,
+            actorType.name,
+            actorId,
+            id,
+        )
         jdbc.update(
             "UPDATE tb_program_session_application SET status = ?, trainee_id = COALESCE(?, trainee_id) WHERE id = ?",
             status,
             traineeId,
             id,
         )
-        jdbc.update("INSERT INTO tb_program_session_history (application_id, status, actor_id) VALUES (?, ?, ?)", id, status, actorId)
         event(id, status)
     }
 

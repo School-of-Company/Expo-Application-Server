@@ -1,8 +1,10 @@
 package team.startup.application
 
 import com.sun.net.httpserver.HttpServer
+import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -13,6 +15,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.datasource.SingleConnectionDataSource
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
@@ -71,7 +74,7 @@ class AdminApplicationHttpTests {
         expoStatus = 200
         expoBody = null
         expoRequests.clear()
-        jdbc.execute("TRUNCATE tb_program_session_application CASCADE")
+        jdbc.execute("TRUNCATE tb_program_session_application, tb_program_session_state CASCADE")
         insert(first, expoId, "CONFIRMED")
         insert(second, expoId, "WAITING")
         insert(UUID.randomUUID(), expoId, "CANCELLED", "TRAINING", 8)
@@ -112,7 +115,203 @@ class AdminApplicationHttpTests {
 
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
 
+    @Test
+    fun `사전등록 원장은 참가자 행과 예약 일행을 구분하고 검색 선택 전체 대상이 일치한다`() {
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CANCELLED')",
+            expoId,
+            expoId,
+            expoId,
+        )
+        val snapshot =
+            """{"name":"Waiting","phoneNumber":"010-3333-4444",""" +
+                """"informationJson":"{\"companion\":[{\"name\":\"Child\"}]}","questions":[]}"""
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq, withdrawn_at) " +
+                "VALUES (?, 'wait', 1, '{}', ?, 2, 'WAITING', 1, NULL), " +
+                "(?, 'withdrawn', 1, '{}', ?, 2, 'REJECTED', 2, CURRENT_TIMESTAMP), " +
+                "(?, 'pending', 1, '{}', ?, 2, 'RESERVED', NULL, NULL), " +
+                "(?, 'completed', 1, '{}', ?, 2, 'COMPLETED', NULL, NULL)",
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+        )
+        participantIds = listOf(1L, 2L, 3L)
+        val path = "/application/admin/expos/$expoId/preregistrations"
+
+        fun readLedger(query: String = "") =
+            mvc.perform(get(path + query).header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+
+        fun targets(body: String) =
+            mvc
+                .perform(
+                    post(
+                        "$path/targets",
+                    ).header("Authorization", "Bearer original-admin-jwt").contentType(MediaType.APPLICATION_JSON).content(body),
+                ).andReturn()
+                .response
+        val response = readLedger()
+        assertEquals(200, response.status, response.contentAsString)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val page = mapper.readTree(response.contentAsString)
+        assertEquals(6, page["totalElements"].asInt())
+        val rows = page["items"].toList()
+        assertEquals(1, rows.first { it["participantId"].asLong() == 2L }["representativeId"].asInt())
+        val waiting = rows.single { it["status"].asString() == "WAITING" }
+        assertTrue(waiting["participantId"].isNull)
+        assertEquals(2, waiting["applicants"].asInt())
+        assertEquals("Waiting", waiting["reservation"]["name"].asString())
+        val detail = readLedger("/detail?key=RESERVATION:$expoId:wait")
+        assertEquals(waiting, mapper.readTree(detail.contentAsString))
+        val filtered = readLedger("?q=chosen&status=CONFIRMED,CANCELLED&sessionId=1")
+        assertEquals(1, mapper.readTree(filtered.contentAsString)["totalElements"].asInt())
+        val selection = targets("""{"kind":"FILTERED","filter":{"q":"chosen","status":["CONFIRMED","CANCELLED"],"sessionId":1}}""")
+        assertEquals(200, selection.status, selection.contentAsString)
+        val selected = mapper.readTree(selection.contentAsString)
+        assertEquals(mapper.readTree(filtered.contentAsString)["items"], selected["items"])
+        assertEquals(false, selected["messagingSupported"].asBoolean())
+        assertEquals(false, selected["reportSupported"].asBoolean())
+        val key = selected["items"][0]["key"].asString()
+        assertEquals(selected["items"], mapper.readTree(targets("""{"kind":"SELECTED","keys":["$key"]}""").contentAsString)["items"])
+        userStatus = 503
+        val waitingSearch = readLedger("?status=WAITING&q=33334444")
+        assertEquals(200, waitingSearch.status)
+        assertEquals(2, mapper.readTree(waitingSearch.contentAsString)["items"][0]["applicants"].asInt())
+        userStatus = 200
+        assertEquals(0, mapper.readTree(readLedger("?q=missing").contentAsString)["totalElements"].asInt())
+        assertEquals(1, mapper.readTree(readLedger("?size=1&page=1").contentAsString)["items"].size())
+        assertEquals(404, readLedger("/detail?key=APPLICATION:$expoId:999999999").status)
+        assertEquals(404, targets("""{"kind":"SELECTED","keys":["$first"]}""").status)
+        assertEquals(404, targets("""{"kind":"SELECTED","keys":["RESERVATION:${UUID.randomUUID()}:wait"]}""").status)
+        assertEquals(400, targets("""{"kind":"FILTERED","filter":{"programType":"STANDARD"}}""").status)
+        assertEquals(400, targets("""{"kind":"SELECTED","keys":["$key","$key"]}""").status)
+        assertEquals(400, targets("""{"kind":"FILTERED","filter":{"page":1}}""").status)
+        assertEquals(400, readLedger("?programType=STANDARD").status)
+        assertEquals(400, readLedger("?q=a&q=b").status)
+        assertEquals(400, readLedger("?size=101").status)
+        val other = "/application/admin/expos/${UUID.randomUUID()}/preregistrations"
+        assertEquals(
+            404,
+            mvc
+                .perform(get("$other/detail?key=$key").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(403, readLedger().status)
+        assertEquals(403, targets("""{"kind":"FILTERED","filter":{}}""").status)
+    }
+
+    @Test
+    fun `사전등록 검색 전체 상한과 삭제 행사 및 원천 누락을 성공으로 바꾸지 않는다`() {
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "SELECT ?, 'bulk-' || n, 1, '{}', '{\"name\":\"Waiting\",\"phoneNumber\":\"01011112222\"}', 1, 'WAITING', n " +
+                "FROM generate_series(1, 5001) n",
+            expoId,
+        )
+        val path = "/application/admin/expos/$expoId/preregistrations"
+        val tooMany =
+            mvc
+                .perform(
+                    post("$path/targets")
+                        .header("Authorization", "Bearer original-admin-jwt")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"kind":"FILTERED","filter":{"status":"WAITING"}}"""),
+                ).andReturn()
+                .response
+        assertEquals(422, tooMany.status, tooMany.contentAsString)
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 999999, 999999, 'CONFIRMED')",
+            expoId,
+        )
+        val missing = mvc.perform(get("$path?status=CONFIRMED").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+        assertEquals(502, missing.status)
+        jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", expoId)
+        assertEquals(
+            409,
+            mvc
+                .perform(get(path).header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+    }
+
     private fun summary(query: String = "") = read("/summary$query")
+
+    @Test
+    fun `V21 업그레이드는 과거 주체와 이전 상태를 추정하지 않는다`() {
+        val schema = "activity_upgrade_" + UUID.randomUUID().toString().replace("-", "")
+        val source = requireNotNull(jdbc.dataSource)
+        Flyway
+            .configure()
+            .dataSource(source)
+            .schemas(schema)
+            .defaultSchema(schema)
+            .target("20")
+            .load()
+            .migrate()
+        try {
+            source.connection.use { connection ->
+                connection.schema = schema
+                try {
+                    val scoped = JdbcTemplate(SingleConnectionDataSource(connection, true))
+                    scoped.update(
+                        "INSERT INTO tb_program_session_application " +
+                            "(id, expo_id, program_type, program_id, group_id, participant_id, status, definition_snapshot, " +
+                            "form_id, form_version, questions_snapshot, answers_snapshot) " +
+                            "VALUES (?, ?, 'STANDARD', 7, ?, 1, 'CANCELLED', '{}', ?, 1, '[]', '{}')",
+                        first,
+                        expoId,
+                        groupId,
+                        UUID.randomUUID(),
+                    )
+                    scoped.update(
+                        "INSERT INTO tb_program_session_history(application_id, status, actor_id) " +
+                            "VALUES (?, 'WAITING', NULL), (?, 'CONFIRMED', NULL), (?, 'CANCELLED', 99)",
+                        first,
+                        first,
+                        first,
+                    )
+                    Flyway
+                        .configure()
+                        .dataSource(source)
+                        .schemas(schema)
+                        .defaultSchema(schema)
+                        .load()
+                        .migrate()
+                    assertEquals(
+                        listOf("UNKNOWN:null:false:null", "UNKNOWN:null:false:null", "UNKNOWN:null:false:99"),
+                        scoped.query(
+                            "SELECT actor_type, previous_status, previous_status_recorded, actor_id FROM tb_program_session_history ORDER BY id",
+                        ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getBoolean(3)}:${rs.getString(4)}" },
+                    )
+                } finally {
+                    connection.schema = "public"
+                }
+            }
+        } finally {
+            jdbc.execute("DROP SCHEMA $schema CASCADE")
+        }
+    }
 
     private fun admin(
         query: String = "",
@@ -127,6 +326,11 @@ class AdminApplicationHttpTests {
 
     @Test
     fun `관리자 행사 처리 이력은 신청 취소 승급을 구분하고 행사 범위와 페이지를 지킨다`() {
+        jdbc.update(
+            "INSERT INTO tb_program_session_state (expo_id, program_type, program_id, definition, deleted) " +
+                "VALUES (?, 'STANDARD', 7, '{\"title\":\"Changed title\"}', TRUE)",
+            expoId,
+        )
         jdbc.update("UPDATE tb_program_session_history SET created_at = '2026-10-11T00:00:00Z' WHERE application_id = ?", first)
         jdbc.update(
             "INSERT INTO tb_program_session_history (application_id, status, created_at) VALUES (?, 'WAITING', '2026-10-11T00:01:00Z')",
@@ -165,6 +369,12 @@ class AdminApplicationHttpTests {
         assertEquals("CANCELLED", body["items"][0]["action"].asString())
         assertEquals("PROMOTED", body["items"][1]["action"].asString())
         assertTrue(body["items"][0]["actorId"].isNull)
+        assertEquals("UNKNOWN", body["items"][0]["actorType"].asString())
+        assertEquals(false, body["items"][0]["previousStatusRecorded"].asBoolean())
+        assertTrue(body["items"][0]["previousStatus"].isNull)
+        assertEquals("100% Kotlin", body["items"][0]["definition"]["title"].asString())
+        assertTrue(body["items"][0]["definition"].get("startedAt") == null)
+        assertEquals("Person 3", body["items"][0]["participant"]["name"].asString())
         val applied =
             mapper.readTree(
                 mvc
@@ -193,6 +403,87 @@ class AdminApplicationHttpTests {
                 .andReturn()
                 .response.status,
         )
+    }
+
+    @Test
+    fun `이력 복합 검색과 페이지 건수는 현재 참가자와 이력 결과 상태로 동일하게 제한된다`() {
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded, created_at) " +
+                "VALUES (?, 'WAITING', 'USER', TRUE, '2026-10-12T00:00:00Z')",
+            first,
+        )
+        jdbc.update(
+            "INSERT INTO tb_program_session_history " +
+                "(application_id, status, actor_type, previous_status, previous_status_recorded, created_at) " +
+                "VALUES (?, 'CONFIRMED', 'SYSTEM', 'WAITING', TRUE, '2026-10-12T00:01:00Z')",
+            first,
+        )
+        jdbc.update(
+            "INSERT INTO tb_program_session_history " +
+                "(application_id, status, actor_type, actor_id, previous_status, previous_status_recorded, created_at) " +
+                "VALUES (?, 'CANCELLED', 'ADMIN', 99, 'CONFIRMED', TRUE, '2026-10-12T00:02:00Z')",
+            first,
+        )
+        jdbc.update("UPDATE tb_program_session_application SET status = 'CANCELLED' WHERE id = ?", first)
+        val path = "/application/admin/expos/$expoId/program-session-applications/activities"
+        val filter =
+            "q=chosen&programType=STANDARD&programId=7&applicationId=$first" +
+                "&from=2026-10-12T00:00:00Z&until=2026-10-13T00:00:00Z"
+
+        fun query(parameters: String) =
+            mvc.perform(get("$path?$parameters").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+
+        val page = mapper.readTree(query("$filter&size=1").contentAsString)
+        assertEquals(3, page["totalElements"].asInt())
+        assertEquals(1, page["items"].size())
+        val cancelled = page["items"][0]
+        assertEquals("ADMIN", cancelled["actorType"].asString())
+        assertEquals(99, cancelled["actorId"].asInt())
+        assertEquals("CONFIRMED", cancelled["previousStatus"].asString())
+        assertTrue(cancelled["previousStatusRecorded"].asBoolean())
+        assertTrue(cancelled["receiptNumber"].asLong() > 0)
+        val promoted = mapper.readTree(query("$filter&action=PROMOTED&status=CONFIRMED").contentAsString)
+        assertEquals(1, promoted["totalElements"].asInt())
+        assertEquals("SYSTEM", promoted["items"][0]["actorType"].asString())
+        assertEquals("WAITING", promoted["items"][0]["previousStatus"].asString())
+        val applied = mapper.readTree(query("$filter&status=WAITING").contentAsString)
+        assertEquals(1, applied["totalElements"].asInt())
+        assertEquals("USER", applied["items"][0]["actorType"].asString())
+        assertTrue(applied["items"][0]["previousStatus"].isNull)
+        assertTrue(applied["items"][0]["previousStatusRecorded"].asBoolean())
+        val next = mapper.readTree(query("$filter&size=1&page=1").contentAsString)
+        assertEquals(3, next["totalElements"].asInt())
+        assertEquals(promoted["items"][0]["id"], next["items"][0]["id"])
+        for (parameters in listOf(
+            "$filter&action=APPLIED&status=CANCELLED",
+            filter.replace("chosen", "missing"),
+            filter.replace("STANDARD", "TRAINING"),
+            filter.replace("programId=7", "programId=8"),
+            "$filter&page=10",
+        )) {
+            val empty = mapper.readTree(query(parameters).contentAsString)
+            assertEquals(0, empty["items"].size(), parameters)
+            assertEquals(if (parameters.endsWith("page=10")) 3 else 0, empty["totalElements"].asInt(), parameters)
+        }
+        val other = UUID.randomUUID()
+        insert(other, UUID.randomUUID(), "CONFIRMED")
+        jdbc.update("INSERT INTO tb_program_session_history(application_id, status) VALUES (?, 'CONFIRMED')", other)
+        assertEquals(0, mapper.readTree(query("applicationId=$other").contentAsString)["totalElements"].asInt())
+        assertEquals(
+            400,
+            mvc
+                .perform(get(path).param("q", " ").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        for (invalid in listOf("q=${"a".repeat(51)}", "programId=7", "programType=STANDARD&programId=0", "status=OTHER", "q=a&q=b")) {
+            assertEquals(400, query(invalid).status, invalid)
+        }
+        userStatus = 503
+        assertEquals(503, query("q=chosen").status)
+        userStatus = 200
+        userBody = """{"items":[],"nextCursor":null}"""
+        assertEquals(502, query("applicationId=$first").status)
     }
 
     @Test
@@ -476,6 +767,68 @@ class AdminApplicationHttpTests {
         assertEquals("saved", saved["answers"]["1"].asString())
         assertEquals("CONFIRMED", saved["history"][0]["status"].asString())
         assertTrue(saved["participant"].isNull)
+    }
+
+    @Test
+    fun `admin snapshot venue stays historical while current session venue changes independently`() {
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = " +
+                "jsonb_set(definition_snapshot, '{place}', to_jsonb(CAST(? AS text))) WHERE id = ?",
+            "Original room",
+            first,
+        )
+
+        fun snapshot() = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]["definition"]
+        assertEquals("Original room", snapshot()["place"].asString())
+        val current = mapper.readTree(admin("/current-sessions").contentAsString).asObject()
+        current["items"][0].asObject().put("place", "Current room")
+        expoBody = mapper.writeValueAsString(current)
+        assertEquals("Current room", mapper.readTree(read("/current-sessions").contentAsString)["items"][0]["place"].asString())
+        assertEquals("Original room", snapshot()["place"].asString())
+        jdbc.update("UPDATE tb_program_session_application SET definition_snapshot = definition_snapshot - 'place' WHERE id = ?", first)
+        assertFalse(snapshot().has("place"))
+    }
+
+    @Test
+    fun `current session seats expose pre onsite and unknown usage without counting the ledger twice`() {
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        val session = page["items"][0].asObject()
+        session.set(
+            "policy",
+            mapper.readTree(
+                """{"formId":"${UUID.randomUUID()}","allowedOccupations":["TEACHER"],"capacity":5,"preRegistrationCapacity":2,"onsiteCapacity":3,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}""",
+            ),
+        )
+        expoBody = page.toString()
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (1001, 99)")
+        try {
+            val response = read("/current-sessions")
+            assertEquals(200, response.status)
+            assertEquals("no-store", response.getHeader("Cache-Control"))
+            val seats = mapper.readTree(response.contentAsString)["items"][0]["admissionSeats"]
+            assertEquals(1, seats["unknownConfirmedCount"].asInt())
+            assertEquals(0, seats["preRegistration"]["confirmedCount"].asInt())
+            assertEquals(1, seats["preRegistration"]["remaining"].asInt())
+            assertEquals(2, seats["onsite"]["remaining"].asInt())
+            assertFalse(seats["onsiteAdmissionEnabled"].asBoolean())
+            val row = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]
+            assertTrue(row["admissionRoute"].isNull)
+        } finally {
+            jdbc.update("DELETE FROM tb_standard_program_application WHERE participant_id = 1001 AND standard_program_id = 99")
+        }
+    }
+
+    @Test
+    fun `current session malformed admission capacities fail closed`() {
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        page["items"][0].asObject().set(
+            "policy",
+            mapper.readTree(
+                """{"formId":"${UUID.randomUUID()}","allowedOccupations":["TEACHER"],"capacity":5,"preRegistrationCapacity":2,"onsiteCapacity":2,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}""",
+            ),
+        )
+        expoBody = page.toString()
+        assertEquals(502, read("/current-sessions").status)
     }
 
     @Test
@@ -828,6 +1181,14 @@ class AdminApplicationHttpTests {
         assertEquals("saved", body["items"][0]["answers"]["1"].asString())
         assertEquals("CONFIRMED", body["items"][0]["history"][0]["status"].asString())
         assertTrue(body["items"][0]["traineeId"].isNull)
+        // #122: a training row shows the ledger's own participant and linked trainee IDs.
+        jdbc.update("UPDATE tb_program_session_application SET program_type = 'TRAINING', trainee_id = 509 WHERE id = ?", first)
+        val training = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]
+        assertEquals(509L, training["traineeId"].asLong())
+        assertEquals(
+            jdbc.queryForObject("SELECT participant_id FROM tb_program_session_application WHERE id = ?", Long::class.java, first),
+            training["participantId"].asLong(),
+        )
         val other =
             mvc
                 .perform(

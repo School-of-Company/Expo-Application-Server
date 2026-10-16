@@ -11,6 +11,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.ParticipantQrResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
@@ -167,7 +168,9 @@ class RegistrationGateway(
                     ) {
                         invalidProgramResponse()
                     }
-                if (owner != canonicalExpo || definition.programType != type || definition.id !in ids || definition.revision <= 0) {
+                if (owner != canonicalExpo || definition.programType != type || definition.id !in ids || definition.revision <= 0 ||
+                    !definition.hasValidPlace()
+                ) {
                     invalidProgramResponse()
                 }
                 if (!existing && definition.pendingRevision != null) {
@@ -209,6 +212,37 @@ class RegistrationGateway(
             invalidProgramResponse()
         }
         return nodes
+    }
+
+    fun participantOccupations(
+        expoId: String,
+        participantIds: Set<Long>,
+    ): Map<Long, String?> {
+        val ids = participantIds.sorted()
+        val response =
+            decode(
+                call(
+                    userUrl,
+                    "/internal/standard-participants/details",
+                    "POST",
+                    mapper.writeValueAsString(mapOf("expoId" to expoId, "participantIds" to ids)),
+                    token = userInternalToken,
+                ).body(),
+                JsonNode::class.java,
+            )
+        if (!response.isArray || response.size() != ids.size) invalidManagedResponse()
+        return ids
+            .mapIndexed { index, id ->
+                val node = response[index]
+                val actual = node.path("participantId")
+                val occupation = node.get("occupation") ?: invalidManagedResponse()
+                if (!actual.isIntegralNumber || !actual.canConvertToLong() || actual.asLong() != id ||
+                    (!occupation.isNull && !occupation.isString)
+                ) {
+                    invalidManagedResponse()
+                }
+                id to occupation.takeUnless { it.isNull }?.stringValue()
+            }.toMap()
     }
 
     fun managedOccupation(
@@ -348,6 +382,7 @@ class RegistrationGateway(
                     "POST",
                     mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId, "trainingId" to trainingId)),
                     token = userInternalToken,
+                    conflictReason = "연수자 연결이 거부되었습니다.",
                 ).body(),
                 JsonNode::class.java,
             )

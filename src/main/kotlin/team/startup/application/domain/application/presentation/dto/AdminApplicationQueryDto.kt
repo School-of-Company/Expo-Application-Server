@@ -79,11 +79,13 @@ data class AdminApplicationRow(
     val createdAt: Instant,
     val formId: UUID,
     val formVersion: Long,
+    @field:Schema(description = "신청 당시 정의 스냅샷. place는 당시 장소이며 현재 장소는 current-sessions에서 조회")
     val definition: JsonNode,
     val questions: JsonNode,
     val answers: JsonNode,
     val history: List<AdminApplicationHistory>,
     val participant: AdminParticipantDetail? = null,
+    val admissionRoute: String? = null,
 )
 
 data class AdminApplicationReadCommand(

@@ -50,11 +50,13 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyPreregisterSessionService
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
@@ -128,6 +130,7 @@ class OwnerApplicationTests {
         traineeId = null
         closedPermits.set(0)
         adminGuards.clear()
+        currentDefinition = definition
     }
 
     @Test
@@ -162,6 +165,46 @@ class OwnerApplicationTests {
         failure(HttpStatus.NOT_FOUND) { cancel.execute(cancelCommand("invalid", OwnerApplicationType.STANDARD)) }
         failure(HttpStatus.NOT_FOUND) { cancel.execute(cancelCommand(own.applicationId.toString(), OwnerApplicationType.TRAINING)) }
         assertEquals(0, closedPermits.get())
+    }
+
+    @Test
+    fun `owner venue is current while application venue snapshot stays immutable and legacy missing stays absent`() {
+        currentDefinition = definition.copy(place = "Room A")
+        val receipt = applyProgram.execute(programCommand())
+        currentDefinition = definition.copy(revision = 2, place = "Room B")
+
+        fun item() =
+            query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications.single {
+                it.applicationId == receipt.applicationId.toString()
+            }
+        assertEquals("Room B", item().place)
+        assertEquals("Room A", item().snapshotPlace)
+        currentDefinition = currentDefinition.copy(place = null)
+        assertEquals(null, item().place)
+        assertEquals("Room A", item().snapshotPlace)
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = definition_snapshot - 'place' WHERE id = ?",
+            receipt.applicationId,
+        )
+        currentDefinition = currentDefinition.copy(place = "Room C")
+        assertEquals("Room C", item().place)
+        assertEquals(null, item().snapshotPlace)
+        val response =
+            mvc
+                .perform(get("/application/expos/$EXPO/my-applications").cookie(Cookie("PARTICIPANT_SESSION", "session")))
+                .andExpect(status().isOk)
+                .andReturn()
+                .response
+        val program = mapper.readTree(response.contentAsString)["applications"].single { it["type"].asString() == "STANDARD" }
+        assertEquals("Room C", program["place"].asString())
+        assertTrue(
+            query
+                .execute(GetOwnerApplicationsCommand(EXPO, "session"))
+                .applications
+                .filter {
+                    it.type == OwnerApplicationType.PREREGISTER
+                }.all { it.place == null && it.snapshotPlace == null },
+        )
     }
 
     @Test
@@ -204,6 +247,8 @@ class OwnerApplicationTests {
                 DefaultListableBeanFactory().getBeanProvider(OwnerCancellationGuard::class.java),
                 TEST_CLOCK,
                 context.getBean(PreregisterWaitlist::class.java),
+                context.getBean(StudentGuardianBatchRepository::class.java),
+                context.getBean(CancelStudentGuardianApplicationService::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(cancelCommand("2")) }
         assertEquals("CONFIRMED", state(2))
@@ -376,6 +421,16 @@ class OwnerApplicationTests {
     @Test
     fun `training cancellation retains trainee identity and history but clears applied`() {
         val receipt = applyProgram.execute(programCommand(2).copy(programType = ProgramSessionType.TRAINING))
+        assertEquals(502L, receipt.traineeId)
+        // #122: the companion's own entry carries the receipt ID that cancellation uses.
+        val applied =
+            query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications.single {
+                it.type ==
+                    OwnerApplicationType.TRAINING
+            }
+        assertEquals(receipt.applicationId.toString(), applied.applicationId)
+        assertEquals(2L, applied.participantId)
+        assertTrue(applied.applied)
         traineeId = 502
         guardStatus = HttpStatus.CONFLICT
         failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand(receipt.applicationId.toString(), OwnerApplicationType.TRAINING)) }
@@ -710,8 +765,12 @@ class OwnerApplicationTests {
                 UUID.randomUUID(),
                 1,
                 ProgramSessionPolicy(UUID.randomUUID(), setOf("TEACHER"), 1, 5, START, END, false, END, END),
+                startedAt = START.toString(),
+                endedAt = END.toString(),
             )
         private const val REPRESENTATIVE = """{"participantId":1,"name":"Owner","occupation":"TEACHER","representative":true}"""
+
+        @Volatile private var currentDefinition = definition
 
         @Volatile private var sessionStatus = 200
 
@@ -766,11 +825,11 @@ class OwnerApplicationTests {
                             }
 
                             path.contains("standard-programs/") -> {
-                                ObjectMapper().writeValueAsString(definition)
+                                ObjectMapper().writeValueAsString(currentDefinition)
                             }
 
                             path.endsWith("training-programs/batch") -> {
-                                ObjectMapper().writeValueAsString(listOf(definition.copy(programType = ProgramSessionType.TRAINING)))
+                                ObjectMapper().writeValueAsString(listOf(currentDefinition.copy(programType = ProgramSessionType.TRAINING)))
                             }
 
                             path.endsWith("resolve-or-create-by-participant") -> {

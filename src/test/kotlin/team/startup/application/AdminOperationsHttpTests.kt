@@ -100,6 +100,8 @@ class AdminOperationsHttpTests {
                     now.plusSeconds(3600),
                     now.plusSeconds(3600),
                 ),
+                startedAt = now.plusSeconds(7200).toString(),
+                endedAt = now.plusSeconds(10800).toString(),
             )
         jdbc.execute(
             "TRUNCATE tb_program_session_application, tb_program_session_state, tb_standard_program_application, tb_training_program_application, tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE",
@@ -202,6 +204,13 @@ class AdminOperationsHttpTests {
         assertEquals("CANCELLED", mapper.readTree(response.contentAsString)["status"].asString())
         assertEquals("CANCELLED", status())
         assertEquals("CONFIRMED", status(waiting))
+        assertEquals(
+            listOf("ADMIN:CONFIRMED:CANCELLED:true", "SYSTEM:WAITING:CONFIRMED:true"),
+            jdbc.query(
+                "SELECT actor_type, previous_status, status, previous_status_recorded FROM tb_program_session_history " +
+                    "WHERE actor_type <> 'UNKNOWN' ORDER BY id",
+            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" },
+        )
         assertEquals(
             1L,
             jdbc.queryForObject(

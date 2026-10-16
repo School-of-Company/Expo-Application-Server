@@ -17,6 +17,7 @@ import team.startup.application.domain.application.exception.ProgramApplicationC
         AdminGroupMessageController::class,
         AdminSourceHistoryController::class,
         AdminApplicationCancellationController::class,
+        LegacyTraineeAttributionController::class,
     ],
 )
 class AdminGroupMessageExceptionHandler {
