@@ -55,6 +55,7 @@ class ProgramWaitlistRepository(
             ).singleOrNull()
 
     // A null channel means the whole session; channel sessions never hold NULL-channel active rows (see PrepareProgramChange).
+    // Promotion skips participants without a confirmed preregistration, so stale WAITING rows neither promote nor block the queue.
     fun waiting(
         definition: ProgramSessionDefinition,
         limit: Int,
@@ -65,6 +66,8 @@ class ProgramWaitlistRepository(
                 "FROM tb_program_session_application " +
                 "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = 'WAITING' " +
                 "AND (CAST(? AS text) IS NULL OR channel = ?) " +
+                "AND EXISTS (SELECT 1 FROM tb_preregister_application p WHERE p.expo_id = tb_program_session_application.expo_id " +
+                "AND p.participant_id = tb_program_session_application.participant_id AND p.status = 'CONFIRMED') " +
                 "ORDER BY created_at, id LIMIT ?",
             entryMapper,
             UUID.fromString(definition.expoId),

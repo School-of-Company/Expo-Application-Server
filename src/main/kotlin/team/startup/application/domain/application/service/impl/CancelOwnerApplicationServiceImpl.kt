@@ -10,9 +10,6 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
-import team.startup.application.domain.application.repository.PreregisterSessionRepository
-import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
-import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
@@ -23,11 +20,8 @@ import java.util.UUID
 class CancelOwnerApplicationServiceImpl(
     private val gateway: RegistrationGateway,
     private val owners: OwnerApplicationRepository,
-    private val preregister: PreregisterSessionRepository,
-    private val programs: ProgramSessionApplicationRepository,
-    private val trainings: TrainingProgramApplicationRepository,
+    private val preregisterCancellation: PreregisterCancellation,
     private val ledger: PreregisterSessionLedger,
-    private val attendance: SessionAttendanceOutbox,
     private val cancelProgram: CancelProgramSessionService,
     private val guards: ObjectProvider<OwnerCancellationGuard>,
     private val clock: Clock,
@@ -45,8 +39,7 @@ class CancelOwnerApplicationServiceImpl(
         guard.acquire(command, original.participantId, party).use { permit ->
             ledger.transactions.executeWithoutResult {
                 ledger.lock(command.expoId)
-                programs.lockParticipant(original.participantId)
-                permit.linkedTraineeId?.let(trainings::lockTrainee)
+                preregisterCancellation.lockParticipant(original.participantId, permit)
                 val current =
                     owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
                 if (current.status == "CANCELLED") return@executeWithoutResult
@@ -56,22 +49,19 @@ class CancelOwnerApplicationServiceImpl(
                     conflict("연결된 연수자 정보가 변경되었습니다. 취소를 재시도해 주세요.")
                 }
                 if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
-                var cancellationRevision: Long? = null
                 if (command.type == OwnerApplicationType.PREREGISTER) {
-                    ledger.ensureAvailable(command.expoId, current.sessionOrProgramId)
-                    if (owners.activePrograms(command.expoId, current.participantId, permit.linkedTraineeId)) {
-                        conflict("활성 프로그램 신청을 먼저 취소해야 합니다.")
-                    }
-                    if (current.participantId == party.representativeId && owners.activeCompanions(command.expoId, current.participantId)) {
-                        conflict("동행자의 사전등록을 먼저 취소해야 합니다.")
-                    }
-                    preregister.status(current.applicationId.toLong(), "CANCELLED")
-                    val outboxId = attendance.cancelled(command.expoId, current.participantId)
-                    cancellationRevision = Math.addExact(Math.multiplyExact(outboxId, 2L), 1L)
+                    preregisterCancellation.cancel(
+                        command.expoId,
+                        current.sessionOrProgramId,
+                        current.applicationId.toLong(),
+                        current.participantId,
+                        party.representativeId,
+                        permit,
+                    )
                 } else {
                     cancelProgram.execute(CancelProgramSessionCommand(UUID.fromString(current.applicationId)))
+                    permit.committed()
                 }
-                permit.committed(cancellationRevision)
             }
         }
         if (command.type == OwnerApplicationType.PREREGISTER) waitlist.promoteQuietly(command.expoId, original.sessionOrProgramId)

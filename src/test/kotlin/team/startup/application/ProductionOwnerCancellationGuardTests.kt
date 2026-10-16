@@ -28,6 +28,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
+import team.startup.application.domain.application.service.impl.AdminCancellationParticipantGateway
 import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
 import team.startup.application.domain.application.service.impl.AttendanceCancellationStatusGateway
 import team.startup.application.domain.application.service.impl.OwnerCancellationDeadlineGateway
@@ -129,6 +130,11 @@ class ProductionOwnerCancellationGuardTests {
                         """{"participantId":2,"representative":false,"entered":${entered || (acquired && changeAfterAcquire)},"traineeLinked":${traineeId != null},"linkedTraineeId":$traineeId}"""
                     }
 
+                    path == "/internal/standard-participants/admin-cancellation-status" -> {
+                        assertEquals("""{"expoId":"$EXPO","participantId":2}""", request)
+                        """{"participantId":2,"entered":${entered || (acquired && changeAfterAcquire)},"traineeLinked":false,"linkedTraineeId":null}"""
+                    }
+
                     path.endsWith("/participants/2/cancellation-status") -> {
                         code = statusCode
                         """{"participantId":2,"representative":$attendanceRepresentative,"entered":$entered,"programAttended":false,"traineeLinked":${traineeId != null},"linkedTraineeId":$traineeId,"guardState":null}"""
@@ -141,7 +147,7 @@ class ProductionOwnerCancellationGuardTests {
                     path.contains("cancellation-guard") -> {
                         requests.add(exchange.requestMethod to path)
                         if (exchange.requestMethod == "PUT") {
-                            assertEquals("""{"phoneNumber":"01012345678"}""", request)
+                            assertEquals(if (path.contains("admin-")) "" else """{"phoneNumber":"01012345678"}""", request)
                             acquired = true
                         } else if (exchange.requestMethod == "POST") {
                             assertEquals("""{"revision":123}""", request)
@@ -185,6 +191,34 @@ class ProductionOwnerCancellationGuardTests {
         assertEquals(listOf("PUT", "POST"), requests.map { it.first })
         assertEquals(requests[0].second + "/commit", requests[1].second)
         assertEquals(null, deliveries.find(COMMAND))
+    }
+
+    @Test
+    fun `internal admin acquire uses admin guard and commits the cancellation revision`() {
+        guard.acquireAdmin(COMMAND, 2, 7).use { permit ->
+            transactions.executeWithoutResult { permit.committed(123) }
+            assertEquals("COMMIT", requireNotNull(deliveries.find(COMMAND)).action)
+        }
+        assertEquals(listOf("PUT", "POST"), requests.map { it.first })
+        assertTrue(requests[0].second.contains("/participants/2/admin-cancellation-guard/"))
+        assertEquals(requests[0].second.replace("admin-cancellation-guard", "cancellation-guard") + "/commit", requests[1].second)
+        assertEquals(null, deliveries.find(COMMAND))
+    }
+
+    @Test
+    fun `internal admin acquire rejects entry and deadline first and aborts on status change`() {
+        entered = true
+        failure(HttpStatus.CONFLICT) { guard.acquireAdmin(COMMAND, 2, 7) }
+        entered = false
+        deadline = NOW.toString()
+        failure(HttpStatus.CONFLICT) { guard.acquireAdmin(COMMAND, 2, 7) }
+        assertEquals(0, requests.size)
+        deadline = "2026-10-13T00:00:00Z"
+        changeAfterAcquire = true
+        failure(HttpStatus.CONFLICT) { guard.acquireAdmin(COMMAND, 2, 7) }
+        assertEquals(listOf("PUT", "DELETE"), requests.map { it.first })
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Long::class.java))
+        failure(HttpStatus.SERVICE_UNAVAILABLE) { restarted(attendanceEnabled = false).acquireAdmin(COMMAND, 2, 7) }
     }
 
     @Test
@@ -393,6 +427,7 @@ class ProductionOwnerCancellationGuardTests {
             deliveries,
             Clock.fixed(NOW, ZoneOffset.UTC),
             AttendanceCancellationStatusGateway(mapper, base, "test-token"),
+            AdminCancellationParticipantGateway(mapper, base, "test-token"),
             attendanceEnabled,
         )
     }

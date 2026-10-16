@@ -19,12 +19,14 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.Primary
 import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
@@ -57,6 +59,7 @@ import team.startup.application.domain.application.service.GetOwnerApplicationsS
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
+import team.startup.application.domain.application.service.impl.PreregisterCancellation
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
 import team.startup.application.domain.application.service.impl.PreregisterWaitlist
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -68,6 +71,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -123,6 +127,7 @@ class OwnerApplicationTests {
         deadline = END
         traineeId = null
         closedPermits.set(0)
+        adminGuards.clear()
     }
 
     @Test
@@ -193,11 +198,8 @@ class OwnerApplicationTests {
             CancelOwnerApplicationServiceImpl(
                 context.getBean(RegistrationGateway::class.java),
                 context.getBean(OwnerApplicationRepository::class.java),
-                preregister,
-                programs,
-                context.getBean(TrainingProgramApplicationRepository::class.java),
+                context.getBean(PreregisterCancellation::class.java),
                 context.getBean(PreregisterSessionLedger::class.java),
-                context.getBean(SessionAttendanceOutbox::class.java),
                 context.getBean(CancelProgramSessionService::class.java),
                 DefaultListableBeanFactory().getBeanProvider(OwnerCancellationGuard::class.java),
                 TEST_CLOCK,
@@ -274,6 +276,90 @@ class OwnerApplicationTests {
         assertEquals(listOf("CONFIRMED", "CANCELLED"), old.history.map { it.status })
         assertFalse(old.applied)
         assertEquals(mapper.readTree("""{"101":"yes"}"""), old.answers)
+    }
+
+    @Test
+    fun `internal cancellation shares owner protections and waiting program blocks it`() {
+        applyProgram.execute(programCommand())
+        assertEquals("WAITING", applyProgram.execute(programCommand(2)).status)
+        assertEquals(409, internalCancel("""{"representativeId":1,"applicationIds":[2]}"""))
+        assertEquals(409, internalCancel("""{"applicationIds":[1]}"""))
+        jdbc.execute("TRUNCATE tb_program_session_application, tb_standard_program_application CASCADE")
+        assertEquals(409, internalCancel("""{"applicationIds":[1]}"""))
+        deadline = NOW
+        assertEquals(409, internalCancel("""{"applicationIds":[2]}"""))
+        deadline = END
+        guardStatus = HttpStatus.CONFLICT
+        assertEquals(409, internalCancel("""{"applicationIds":[2]}"""))
+        guardStatus = null
+        assertEquals(listOf("CONFIRMED", "CONFIRMED"), listOf(state(1), state(2)))
+        assertEquals(0L, count("tb_session_attendance_outbox"))
+        adminGuards.clear()
+        closedPermits.set(0)
+        assertEquals(200, internalCancel("""{"representativeId":1,"applicationIds":[1,2]}"""))
+        assertEquals(listOf("CANCELLED", "CANCELLED"), listOf(state(1), state(2)))
+        assertEquals(listOf(2L, 1L), adminGuards.toList())
+        assertEquals(2, closedPermits.get())
+        assertEquals(2L, count("tb_session_attendance_outbox"))
+        assertEquals(200, internalCancel("""{"applicationIds":[1,2]}"""))
+        assertEquals(2L, adminGuards.size.toLong())
+        assertEquals(400, internalCancel("""{"applicationIds":[1,2,3,4,5,6]}"""))
+    }
+
+    @Test
+    fun `promotion skips waiting participants without confirmed preregistration`() {
+        val confirmed = applyProgram.execute(programCommand())
+        val stale = applyProgram.execute(programCommand(2))
+        val next = applyProgram.execute(programCommand(99).copy(sessionId = "other"))
+        // Simulates a participant cancelled by the pre-#117 internal API while still WAITING.
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 2")
+        cancel.execute(cancelCommand(confirmed.applicationId.toString(), OwnerApplicationType.STANDARD))
+        assertEquals("WAITING", programStatus(stale.applicationId))
+        assertEquals("CONFIRMED", programStatus(next.applicationId))
+    }
+
+    @Test
+    fun `concurrent internal cancellation and program application keep preregistration consistent`() {
+        repeat(5) {
+            reset()
+            val results =
+                concurrently(
+                    {
+                        internalCancel("""{"applicationIds":[2]}""").let {
+                            if (it !=
+                                200
+                            ) {
+                                throw ResponseStatusException(HttpStatus.valueOf(it))
+                            }
+                        }
+                    },
+                    { applyProgram.execute(programCommand(2)) },
+                )
+            val programs = count("tb_program_session_application")
+            if (state(2) == "CANCELLED") {
+                assertEquals(0L, programs)
+                assertEquals(listOf("ok", "blocked"), results)
+            } else {
+                assertEquals(1L, programs)
+                assertEquals(listOf("blocked", "ok"), results)
+            }
+        }
+    }
+
+    @Test
+    fun `concurrent internal and owner cancellation cancel once`() {
+        repeat(5) {
+            reset()
+            val results =
+                concurrently(
+                    { assertTrue(internalCancel("""{"applicationIds":[2]}""") in setOf(200, 409)) },
+                    { cancel.execute(cancelCommand("2")) },
+                )
+            assertEquals(listOf("ok", "ok"), results)
+            assertEquals("CANCELLED", state(2))
+            assertEquals(4L, count("tb_preregister_transition"))
+            assertEquals(1L, count("tb_session_attendance_outbox"))
+        }
     }
 
     @Test
@@ -505,6 +591,19 @@ class OwnerApplicationTests {
             "key",
         )
 
+    private fun internalCancel(body: String): Int =
+        mvc
+            .perform(
+                delete("/internal/expos/$EXPO/preregister-sessions/1/applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andReturn()
+            .response.status
+
+    private fun programStatus(id: UUID) =
+        jdbc.queryForObject("SELECT status FROM tb_program_session_application WHERE id = ?", String::class.java, id)
+
     private fun state(id: Long) = jdbc.queryForObject("SELECT status FROM tb_preregister_application WHERE id = ?", String::class.java, id)
 
     private fun count(table: String) = jdbc.queryForObject("SELECT count(*) FROM $table", Long::class.java)
@@ -551,7 +650,18 @@ class OwnerApplicationTests {
                     command: CancelOwnerApplicationCommand,
                     participantId: Long,
                     party: OwnerApplicationParty,
+                ) = permit()
+
+                override fun acquireAdmin(
+                    command: CancelOwnerApplicationCommand,
+                    participantId: Long,
+                    sessionId: Long,
                 ): OwnerCancellationGuard.Permit {
+                    adminGuards.add(participantId)
+                    return permit()
+                }
+
+                private fun permit(): OwnerCancellationGuard.Permit {
                     assertFalse(TransactionSynchronizationManager.isActualTransactionActive())
                     guardStatus?.let { throw ResponseStatusException(it) }
                     return object : OwnerCancellationGuard.Permit {
@@ -615,6 +725,7 @@ class OwnerApplicationTests {
 
         @Volatile private var traineeId: Long? = null
         private val closedPermits = AtomicInteger()
+        private val adminGuards = CopyOnWriteArrayList<Long>()
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->

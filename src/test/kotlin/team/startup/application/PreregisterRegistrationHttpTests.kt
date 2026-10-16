@@ -78,6 +78,7 @@ class PreregisterRegistrationHttpTests {
         )
         userRequests.clear()
         attendanceRequests.clear()
+        guardRequests.clear()
         counts.clear()
         stored.clear()
         userStatus.set(201)
@@ -731,10 +732,21 @@ class PreregisterRegistrationHttpTests {
         assertEquals(401, cancel(null, 42))
         assertEquals(409, cancel("test-token", 99))
         assertEquals(200, cancel("test-token", 42))
+        // Companion first, representative last; each guard is acquired as admin and committed with the DELETE revision.
+        assertEquals(
+            listOf(
+                "PUT:43:admin-cancellation-guard",
+                "PUT:42:admin-cancellation-guard",
+                "POST:42:cancellation-guard",
+                "POST:43:cancellation-guard",
+            ),
+            guardRequests.toList(),
+        )
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
         assertEquals(200, cancel("test-token", 42))
         assertEquals(201, submit("again", people = 2, session = 2))
         attendance.dispatch()
-        assertEquals(listOf("PUT:42", "PUT:43", "DELETE:42", "DELETE:43", "PUT:42", "PUT:43"), attendanceRequests.toList())
+        assertEquals(listOf("PUT:42", "PUT:43", "DELETE:43", "DELETE:42", "PUT:42", "PUT:43"), attendanceRequests.toList())
         assertEquals(200, cancel("test-token", null))
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE status = 'CONFIRMED'", Int::class.java))
     }
@@ -823,6 +835,7 @@ class PreregisterRegistrationHttpTests {
         @Volatile private var upstreamAvailable = true
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val attendanceRequests = CopyOnWriteArrayList<String>()
+        private val guardRequests = CopyOnWriteArrayList<String>()
         private val counts = CopyOnWriteArrayList<Long>()
         private val stored = java.util.concurrent.ConcurrentHashMap<String, String>()
         private val userGate =
@@ -848,6 +861,16 @@ class PreregisterRegistrationHttpTests {
                                     } else {
                                         """{"code":"SESSION_EXPIRED"}"""
                                     }
+                            }
+
+                            path == "/internal/standard-participants/admin-cancellation-status" -> {
+                                val id = json.readTree(exchange.requestBody.bufferedReader().readText()).path("participantId").asLong()
+                                200 to """{"participantId":$id,"entered":false,"traineeLinked":false,"linkedTraineeId":null}"""
+                            }
+
+                            path.contains("cancellation-guard/") -> {
+                                guardRequests.add(exchange.requestMethod + ":" + path.split("/")[5] + ":" + path.split("/")[6])
+                                204 to ""
                             }
 
                             path.endsWith("/preregister-session") -> {
@@ -896,7 +919,7 @@ class PreregisterRegistrationHttpTests {
                             path.contains("/preregister-sessions/") -> {
                                 val id = path.substringAfterLast('/').toLong()
                                 200 to
-                                    """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"2030-01-01T00:00:00Z","endedAt":"2030-01-01T01:00:00Z","place":"Place","capacity":${capacity.get()},"waitingCapacity":99,"closed":false,"revision":1}"""
+                                    """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"2030-01-01T00:00:00Z","endedAt":"2030-01-01T01:00:00Z","place":"Place","capacity":${capacity.get()},"waitingCapacity":99,"closed":false,"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
                             }
 
                             path.startsWith("/internal/forms/") -> {
