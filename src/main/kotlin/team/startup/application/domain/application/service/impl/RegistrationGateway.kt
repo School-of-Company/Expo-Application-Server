@@ -348,6 +348,7 @@ class RegistrationGateway(
                     "POST",
                     mapper.writeValueAsString(mapOf("expoId" to expoId, "participantId" to participantId, "trainingId" to trainingId)),
                     token = userInternalToken,
+                    conflictReason = "연수자 연결이 거부되었습니다.",
                 ).body(),
                 JsonNode::class.java,
             )

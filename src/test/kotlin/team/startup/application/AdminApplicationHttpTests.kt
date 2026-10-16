@@ -828,6 +828,14 @@ class AdminApplicationHttpTests {
         assertEquals("saved", body["items"][0]["answers"]["1"].asString())
         assertEquals("CONFIRMED", body["items"][0]["history"][0]["status"].asString())
         assertTrue(body["items"][0]["traineeId"].isNull)
+        // #122: a training row shows the ledger's own participant and linked trainee IDs.
+        jdbc.update("UPDATE tb_program_session_application SET program_type = 'TRAINING', trainee_id = 509 WHERE id = ?", first)
+        val training = mapper.readTree(read("?applicationId=$first").contentAsString)["items"][0]
+        assertEquals(509L, training["traineeId"].asLong())
+        assertEquals(
+            jdbc.queryForObject("SELECT participant_id FROM tb_program_session_application WHERE id = ?", Long::class.java, first),
+            training["participantId"].asLong(),
+        )
         val other =
             mvc
                 .perform(

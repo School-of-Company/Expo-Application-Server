@@ -376,6 +376,16 @@ class OwnerApplicationTests {
     @Test
     fun `training cancellation retains trainee identity and history but clears applied`() {
         val receipt = applyProgram.execute(programCommand(2).copy(programType = ProgramSessionType.TRAINING))
+        assertEquals(502L, receipt.traineeId)
+        // #122: the companion's own entry carries the receipt ID that cancellation uses.
+        val applied =
+            query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications.single {
+                it.type ==
+                    OwnerApplicationType.TRAINING
+            }
+        assertEquals(receipt.applicationId.toString(), applied.applicationId)
+        assertEquals(2L, applied.participantId)
+        assertTrue(applied.applied)
         traineeId = 502
         guardStatus = HttpStatus.CONFLICT
         failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand(receipt.applicationId.toString(), OwnerApplicationType.TRAINING)) }
