@@ -1104,6 +1104,56 @@ class ProgramSessionApplicationTests {
         assertEquals(events, count("tb_program_session_event"))
     }
 
+    @Test
+    fun `permanent User rejection cancels the waiting batch head while an outage keeps it and the next waiter follows`() {
+        for (failure in listOf(409, 503)) {
+            reset()
+            enableGuardianPolicy(2, 4)
+            guardianPolicy = false
+            val first = service.execute(command(participant = 4, type = ProgramSessionType.TRAINING, key = "first"))
+            val second = service.execute(command(participant = 5, type = ProgramSessionType.TRAINING, key = "second"))
+            guardianPolicy = true
+            val batch = batchService.execute(guardianBatch(1, type = ProgramSessionType.TRAINING))
+            guardianPolicy = false
+            val next = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING, key = "next"))
+            guardianPolicy = true
+            assertEquals("WAITING", next.status)
+            if (failure == 409) linkRejections = mapOf(1L to 409) else linkFailure = true
+            cancel(first.applicationId)
+            cancel(second.applicationId)
+            reconcile(ProgramSessionType.TRAINING)
+            val expected = if (failure == 409) "CANCELLED" else "WAITING"
+            batch.applications.forEach { assertEquals(expected, column("status", it.application.applicationId)) }
+            assertEquals(if (failure == 409) "CONFIRMED" else "WAITING", column("status", next.applicationId))
+            if (failure == 409) {
+                batch.applications.forEach {
+                    assertEquals(
+                        1L,
+                        jdbc.queryForObject(
+                            "SELECT count(*) FROM tb_program_session_history WHERE application_id = ? AND status = 'CANCELLED' " +
+                                "AND actor_type = 'SYSTEM'",
+                            Long::class.java,
+                            it.application.applicationId,
+                        ),
+                    )
+                    assertEquals(
+                        1L,
+                        jdbc.queryForObject(
+                            "SELECT count(*) FROM tb_program_session_event WHERE application_id = ? AND status = 'CANCELLED'",
+                            Long::class.java,
+                            it.application.applicationId,
+                        ),
+                    )
+                }
+            } else {
+                linkFailure = false
+                reconcile(ProgramSessionType.TRAINING)
+                batch.applications.forEach { assertEquals("CONFIRMED", column("status", it.application.applicationId)) }
+                assertEquals("WAITING", column("status", next.applicationId))
+            }
+        }
+    }
+
     private fun guardianBatch(
         vararg students: Long,
         key: String = "batch",
@@ -1903,6 +1953,36 @@ class ProgramSessionApplicationTests {
             1L,
             jdbc.queryForObject("SELECT count(*) FROM tb_training_program_application WHERE training_program_id = 1", Long::class.java),
         )
+    }
+
+    @Test
+    fun `legacy add and replace reject a sibling of the group where the trainee participant is waiting`() {
+        groups = mapOf("3" to UUID.randomUUID().toString())
+        waitingCapacity = 1
+        service.execute(command(program = 3, type = ProgramSessionType.TRAINING, key = "other"))
+        service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(type = ProgramSessionType.TRAINING, key = "waiting"))
+        assertEquals("WAITING", waiting.status)
+        noPolicyProgram = 2
+        mvc
+            .perform(
+                post("/internal/training-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":501,"expoId":"$EXPO"},"programs":[{"id":2,"expoId":"$EXPO","category":"CHOICE"}]}"""),
+            ).andExpect(status().isConflict)
+        val replaced =
+            """{"trainee":{"id":501,"expoId":"$EXPO"},"programs":[""" +
+                """{"id":3,"expoId":"$EXPO","category":"CHOICE"},{"id":2,"expoId":"$EXPO","category":"CHOICE"}]}"""
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/501")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(replaced),
+            ).andExpect(status().isConflict)
+        assertEquals(2L, count("tb_training_program_application"))
+        assertEquals("WAITING", column("status", waiting.applicationId))
     }
 
     @Test

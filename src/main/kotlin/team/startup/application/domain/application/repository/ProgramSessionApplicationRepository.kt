@@ -352,14 +352,34 @@ class ProgramSessionApplicationRepository(
         type: ProgramSessionType,
         personId: Long,
     ): Map<Long, UUID> {
-        val column = if (type == ProgramSessionType.STANDARD) "participant_id" else "trainee_id"
+        if (type == ProgramSessionType.STANDARD) {
+            return jdbc
+                .query(
+                    "SELECT program_id, group_id FROM tb_program_session_application " +
+                        "WHERE expo_id = ? AND program_type = ? AND participant_id = ? AND status IN ('CONFIRMED', 'WAITING')",
+                    { rs, _ -> rs.getLong(1) to rs.getObject(2, UUID::class.java) },
+                    UUID.fromString(expoId),
+                    type.name,
+                    personId,
+                ).toMap()
+        }
+        // 연수 대기 행은 trainee_id가 없으므로 로컬에 기록된 연수자-참가자 연결로 대기 행도 찾는다(#146).
+        // ponytail: 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
+        val expo = UUID.fromString(expoId)
         return jdbc
             .query(
                 "SELECT program_id, group_id FROM tb_program_session_application " +
-                    "WHERE expo_id = ? AND program_type = ? AND $column = ? AND status IN ('CONFIRMED', 'WAITING')",
+                    "WHERE expo_id = ? AND program_type = 'TRAINING' AND (" +
+                    "(trainee_id = ? AND status IN ('CONFIRMED', 'WAITING')) OR (status = 'WAITING' AND participant_id IN (" +
+                    "SELECT participant_id FROM tb_program_session_application " +
+                    "WHERE expo_id = ? AND program_type = 'TRAINING' AND trainee_id = ? " +
+                    "UNION SELECT participant_id FROM tb_legacy_trainee_attribution WHERE expo_id = ? AND trainee_id = ?)))",
                 { rs, _ -> rs.getLong(1) to rs.getObject(2, UUID::class.java) },
-                UUID.fromString(expoId),
-                type.name,
+                expo,
+                personId,
+                expo,
+                personId,
+                expo,
                 personId,
             ).toMap()
     }

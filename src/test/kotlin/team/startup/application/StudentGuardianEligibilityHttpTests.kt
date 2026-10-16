@@ -94,19 +94,20 @@ class StudentGuardianEligibilityHttpTests {
     }
 
     @Test
-    fun `three person waiting party promotes together only after current guardian role passes again`() {
+    fun `three person waiting party is cancelled together when the current guardian role fails promotion`() {
         jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (99, 1)")
         val receipt = batch()
         assertTrue(receipt.path("applications").all { it.path("application").path("status").asString() == "WAITING" })
         jdbc.update("DELETE FROM tb_standard_program_application WHERE participant_id=99")
         parentRole = "TEACHER"
         reconcile()
-        assertEquals(3, applicationsWithStatus("WAITING"))
+        // 자격 거부는 영구 실패이므로 묶음 전체를 내려 다음 대기자를 막지 않는다(#146).
+        assertEquals(3, applicationsWithStatus("CANCELLED"))
         assertEquals(0L, count("tb_standard_program_application"))
         parentRole = "PARENT"
         reconcile()
-        assertEquals(3, applicationsWithStatus("CONFIRMED"))
-        assertEquals(3L, count("tb_standard_program_application"))
+        assertEquals(3, applicationsWithStatus("CANCELLED"))
+        assertEquals(0L, count("tb_standard_program_application"))
     }
 
     @Test
