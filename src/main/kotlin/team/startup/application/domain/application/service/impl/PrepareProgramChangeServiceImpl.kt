@@ -27,6 +27,7 @@ class PrepareProgramChangeServiceImpl(
     override fun execute(command: PrepareProgramChangeCommand) {
         repository.lockChange(command.expoId)
         ledger.lockSchedule(command.expoId.toString(), changing = true)
+        ledger.requireAttributionReady(command.expoId)
         val payload = mapper.writeValueAsString(command.payload)
         if (repository.changeReplay(command.expoId, command.changeId, payload)) return
         val mutations = command.payload.mutations

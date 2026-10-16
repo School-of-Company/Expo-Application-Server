@@ -1,0 +1,8 @@
+package team.startup.application.domain.application.service
+
+import team.startup.application.domain.application.presentation.dto.GetLegacyTraineeAttributionOperationCommand
+import team.startup.application.domain.application.presentation.dto.LegacyTraineeAttributionOperationStatus
+
+interface GetLegacyTraineeAttributionOperationService {
+    fun execute(command: GetLegacyTraineeAttributionOperationCommand): LegacyTraineeAttributionOperationStatus
+}
