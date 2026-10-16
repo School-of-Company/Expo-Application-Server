@@ -112,6 +112,7 @@ class ProgramSessionApplicationTests {
     fun reset() {
         jdbc.execute(
             "TRUNCATE tb_program_guardian_link, tb_program_guardian_member, tb_program_guardian_batch, " +
+                "tb_legacy_trainee_program, tb_legacy_trainee_attribution, tb_legacy_trainee_attribution_operation, " +
                 "tb_program_session_event, tb_program_session_state, tb_program_change_receipt, " +
                 "tb_program_session_history, tb_program_session_receipt, tb_program_session_application, " +
                 "tb_standard_program_application, tb_training_program_application, tb_training_application_version, " +
@@ -166,6 +167,13 @@ class ProgramSessionApplicationTests {
         title = "Session"
         unavailableLookup = null
         places = emptyMap()
+        attributionCalls.clear()
+        attributionStatus = 200
+        attributionMalformed = false
+        attributionParticipant = null
+        attributionAfterUser = null
+        attributionAccessStatus = 200
+        attributionActor = 42
     }
 
     @Test
@@ -2672,6 +2680,370 @@ class ProgramSessionApplicationTests {
         assertEquals(0L, count("tb_program_change_receipt"))
     }
 
+    @Test
+    fun `legacy attribution adopts only identity and preserves seats receipts snapshots and User actor`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(true))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_session_receipt"))
+        assertEquals(0L, count("tb_program_session_event"))
+        assertEquals(42, mapper.readTree(attributionCalls.single()).path("actorAdminId").asInt())
+        assertEquals("원본 자료와 운영자 확인", mapper.readTree(attributionCalls.single()).path("reason").asString())
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(true))
+        assertEquals(1, attributionCalls.size)
+        attribute(UUID.randomUUID()).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution requires cancel authority and cannot trust supplied admin headers`() {
+        for (denial in listOf(401, 403, 404)) {
+            attributionAccessStatus = denial
+            attribute(UUID.randomUUID()).andExpect(status().`is`(denial))
+            attribute(UUID.randomUUID(), revoke = true).andExpect(status().`is`(denial))
+        }
+        assertEquals(0, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution_operation"))
+        attributionAccessStatus = 200
+        attributionActor = 73
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        assertEquals(73, mapper.readTree(attributionCalls.single()).path("actorAdminId").asInt())
+    }
+
+    @Test
+    fun `legacy attribution validates IDs reason and operation header before User writes`() {
+        val path = "/application/admin/expos/$EXPO/legacy-trainee-attributions"
+        for (body in listOf(
+            """{"traineeId":0,"participantId":1,"reason":"proof"}""",
+            """{"traineeId":700,"participantId":0,"reason":"proof"}""",
+            """{"traineeId":700,"participantId":1,"reason":" "}""",
+            """{"traineeId":700,"participantId":1}""",
+            mapper.writeValueAsString(mapOf("traineeId" to 700, "participantId" to 1, "reason" to "x".repeat(501))),
+        )) {
+            mvc
+                .perform(
+                    post(path)
+                        .header("Authorization", "Bearer admin")
+                        .header("Idempotency-Key", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body),
+                ).andExpect(status().isBadRequest)
+        }
+        mvc
+            .perform(
+                post(path)
+                    .header("Authorization", "Bearer admin")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"traineeId":700,"participantId":1,"reason":"proof"}"""),
+            ).andExpect(status().isBadRequest)
+        assertEquals(0, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution_operation"))
+    }
+
+    @Test
+    fun `legacy attribution rejects operation ID reuse for other IDs reasons actions or actors`() {
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk)
+        attribute(id, participant = 2).andExpect(status().isConflict)
+        attribute(id, revoke = true).andExpect(status().isConflict)
+        attributionActor = 43
+        attribute(id).andExpect(status().isConflict)
+        assertEquals(1, attributionCalls.size)
+    }
+
+    @Test
+    fun `legacy attribution User rejection writes no projection and preserves conflict status`() {
+        for (code in listOf(400, 403, 404, 409)) {
+            attributionStatus = code
+            val id = UUID.randomUUID()
+            attribute(id).andExpect(status().`is`(code))
+            attribute(id).andExpect(status().`is`(code))
+            mvc
+                .perform(
+                    get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                        .header("Authorization", "Bearer admin"),
+                ).andExpect(status().isOk)
+                .andExpect(jsonPath("$.state").value("REJECTED"))
+        }
+        assertEquals(4, attributionCalls.size)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+    }
+
+    @Test
+    fun `legacy attribution response loss holds gates and same operation repairs committed User link`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attributionMalformed = true
+        attribute(id).andExpect(status().isBadGateway)
+        assertEquals(1L, attributionParticipant)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        mvc
+            .perform(
+                get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                    .header("Authorization", "Bearer admin"),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.state").value("PENDING"))
+            .andExpect(jsonPath("$.errorStatus").value(502))
+            .andExpect(jsonPath("$.reason").doesNotExist())
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        attribute(UUID.randomUUID(), revoke = true).andExpect(status().isConflict)
+        attributionMalformed = false
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution local commit failure retains durable operation and retries without duplicate seats`() {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        attributionAfterUser = {
+            jdbc.execute("ALTER TABLE tb_legacy_trainee_program ADD CONSTRAINT test_attribution_failure CHECK (program_id < 0)")
+        }
+        try {
+            attribute(id).andExpect(status().isServiceUnavailable)
+            assertEquals(1L, attributionParticipant)
+            assertEquals(0L, count("tb_legacy_trainee_attribution"))
+            assertEquals(
+                "PENDING",
+                jdbc.queryForObject("SELECT state FROM tb_legacy_trainee_attribution_operation WHERE id = ?", String::class.java, id),
+            )
+        } finally {
+            attributionAfterUser = null
+            jdbc.execute("ALTER TABLE tb_legacy_trainee_program DROP CONSTRAINT IF EXISTS test_attribution_failure")
+        }
+        attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(1L, count("tb_legacy_trainee_program"))
+    }
+
+    @Test
+    fun `legacy attribution adopted training blocks overlapping standard while leaving companions independent`() {
+        seedLegacyAttribution()
+        val overlap = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to overlap, ("TRAINING" to 2L) to overlap)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        assertEquals("CONFIRMED", service.execute(command(participant = 2)).status)
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution revoke removes only adopted ownership and keeps original application and standard history`() {
+        seedLegacyAttribution()
+        val receipt = service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val revokeId = UUID.randomUUID()
+        attribute(revokeId, revoke = true).andExpect(status().isOk)
+        attribute(revokeId, revoke = true).andExpect(status().isOk)
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        assertEquals(0L, count("tb_legacy_trainee_program"))
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals("CONFIRMED", column("status", receipt.applicationId))
+        assertEquals(1L, count("tb_program_session_event"))
+        assertEquals(1L, count("tb_program_session_receipt"))
+        attribute(UUID.randomUUID(), participant = 2).andExpect(status().isOk)
+        assertEquals(2L, jdbc.queryForObject("SELECT participant_id FROM tb_legacy_trainee_attribution", Long::class.java))
+    }
+
+    @Test
+    fun `legacy attribution revoke response loss preserves gate until cleanup resumes even when User changed is false`() {
+        seedLegacyAttribution()
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val id = UUID.randomUUID()
+        attributionMalformed = true
+        attribute(id, revoke = true).andExpect(status().isBadGateway)
+        assertEquals(null, attributionParticipant)
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        attributionMalformed = false
+        attribute(id, revoke = true).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
+        assertEquals(0L, count("tb_legacy_trainee_attribution"))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution FIFO promotion waits for conflict and resumes after revoke without returning legacy seat`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        seedLegacyAttribution()
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        windows = mapOf(("TRAINING" to 2L) to (first.path("startedAt").asString() to first.path("endedAt").asString()))
+        attribute(UUID.randomUUID(), participant = 2).andExpect(status().isOk)
+        cancel(confirmed.applicationId)
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        assertEquals(0L, count("tb_standard_program_application"))
+        attribute(UUID.randomUUID(), participant = 2, revoke = true).andExpect(status().isOk)
+        reconcile()
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `legacy attribution schedule validation includes adopted trainees with no session receipt`() {
+        seedLegacyAttribution()
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val previous = mapper.readTree(definition("2", "TRAINING"))
+        val next =
+            previous.deepCopy().asObject().apply {
+                put("revision", 2)
+                put("startedAt", first.path("startedAt").asString())
+                put("endedAt", first.path("endedAt").asString())
+            }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+        assertEquals(0L, count("tb_program_change_receipt"))
+    }
+
+    @Test
+    fun `legacy attribution legacy cancellation removes time occupancy while retaining attribution for future applications`() {
+        seedLegacyAttribution()
+        val overlap = "2030-01-01T09:00:00+09:00" to "2030-01-01T10:00:00+09:00"
+        windows = mapOf(("STANDARD" to 1L) to overlap, ("TRAINING" to 2L) to overlap)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[]}"""),
+            ).andExpect(status().isNoContent)
+        assertEquals(0L, count("tb_training_program_application"))
+        assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        assertEquals("CONFIRMED", service.execute(command()).status)
+    }
+
+    @Test
+    fun `legacy attribution status hides missing and other expo operations and never returns verification reason`() {
+        val id = UUID.randomUUID()
+        attribute(id).andExpect(status().isOk)
+        for ((owner, operation) in listOf(EXPO to UUID.randomUUID(), UUID.randomUUID().toString() to id)) {
+            mvc
+                .perform(
+                    get("/application/admin/expos/$owner/legacy-trainee-attributions/operations/$operation")
+                        .header("Authorization", "Bearer admin"),
+                ).andExpect(status().isNotFound)
+        }
+        mvc
+            .perform(
+                get("/application/admin/expos/$EXPO/legacy-trainee-attributions/operations/$id")
+                    .header("Authorization", "Bearer admin"),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.state").value("APPLIED"))
+            .andExpect(jsonPath("$.reason").doesNotExist())
+            .andExpect(jsonPath("$.authorization").doesNotExist())
+    }
+
+    private fun seedLegacyAttribution() {
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (700, 2)")
+        groups = mapOf("2" to UUID.randomUUID().toString())
+    }
+
+    @Test
+    fun `legacy attribution preexisting conflicts do not prevent a removal only legacy replacement`() {
+        seedLegacyAttribution()
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (700, 3)")
+        groups = groups + ("3" to UUID.randomUUID().toString())
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        val overlap = first.path("startedAt").asString() to first.path("endedAt").asString()
+        windows = mapOf(("TRAINING" to 2L) to overlap, ("TRAINING" to 3L) to overlap)
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[{"id":3,"expoId":"$EXPO","category":"CHOICE"}]}"""),
+            ).andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(3L, jdbc.queryForObject("SELECT training_program_id FROM tb_training_program_application", Long::class.java))
+    }
+
+    @Test
+    fun `legacy attribution training add and replace check standard conflicts and preserve new projection`() {
+        seedLegacyAttribution()
+        service.execute(command())
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val first = mapper.readTree(definition("1", "STANDARD"))
+        groups = groups + ("3" to UUID.randomUUID().toString())
+        noPolicyProgram = 0
+        windows = mapOf(("TRAINING" to 3L) to (first.path("startedAt").asString() to first.path("endedAt").asString()))
+        val body = """{"trainee":{"id":700,"expoId":"$EXPO"},"programs":[{"id":3,"expoId":"$EXPO","category":"CHOICE"}]}"""
+        mvc
+            .perform(
+                post("/internal/training-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isConflict)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isConflict)
+        assertEquals(1L, count("tb_training_program_application"))
+        windows = emptyMap()
+        mvc
+            .perform(
+                post("/internal/training-program-applications")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isCreated)
+        mvc
+            .perform(
+                put("/internal/training-program-applications/trainee/700")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isNoContent)
+        assertEquals(1L, count("tb_training_program_application"))
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val target =
+            mapper.readValue(
+                definition("3", "TRAINING"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(true, ledger.hasTimeConflict(target.copy(programType = ProgramSessionType.STANDARD, id = 4), 1))
+        val removed =
+            mapper.readValue(
+                definition("2", "TRAINING"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        assertEquals(false, ledger.hasTimeConflict(removed.copy(programType = ProgramSessionType.STANDARD, id = 4), 1))
+    }
+
+    private fun attribute(
+        id: UUID,
+        participant: Long = 1,
+        revoke: Boolean = false,
+    ): org.springframework.test.web.servlet.ResultActions =
+        mvc.perform(
+            post("/application/admin/expos/$EXPO/legacy-trainee-attributions" + if (revoke) "/revoke" else "")
+                .header("Authorization", "Bearer admin")
+                .header("X-User-Id", "9999")
+                .header("Idempotency-Key", id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"traineeId":700,"participantId":$participant,"reason":"원본 자료와 운영자 확인"}"""),
+        )
+
     private fun applied(
         participant: Long,
         value: Boolean,
@@ -2948,6 +3320,20 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var groups = mapOf<String, String>()
 
+        private val attributionCalls = ConcurrentLinkedQueue<String>()
+
+        @Volatile private var attributionStatus = 200
+
+        @Volatile private var attributionMalformed = false
+
+        @Volatile private var attributionParticipant: Long? = null
+
+        @Volatile private var attributionAfterUser: (() -> Unit)? = null
+
+        @Volatile private var attributionAccessStatus = 200
+
+        @Volatile private var attributionActor = 42L
+
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/") { exchange ->
@@ -2959,6 +3345,31 @@ class ProgramSessionApplicationTests {
                             exchange.requestHeaders.getFirst("X-Internal-Token") != "test-token" -> {
                                 status = 401
                                 "{}"
+                            }
+
+                            path.endsWith("/admin-application-cancel-access") || path.endsWith("/admin-access") -> {
+                                status = attributionAccessStatus
+                                val owner = path.substringAfter("/internal/expo/").substringBefore('/')
+                                val cancel = path.endsWith("/admin-application-cancel-access")
+                                """{"expoId":"$owner","adminId":$attributionActor,"permission":"${if (cancel) "APPLICATION_CANCEL" else "APPLICATION_READ"}","scope":"${if (cancel) "EXPO_ADMIN" else "GLOBAL_ADMIN"}","policyVersion":"${if (cancel) "EXPO_ADMIN_APPLICATION_CANCEL_V1" else "GLOBAL_ADMIN_APPLICATION_READ_V1"}"}"""
+                            }
+
+                            path.startsWith("/internal/trainees/participant-link") -> {
+                                attributionCalls.add(body)
+                                status = attributionStatus
+                                val request = ObjectMapper().readTree(body)
+                                val participant = request.path("participantId").asLong()
+                                val revoke = path.endsWith("/revoke")
+                                val changed = if (revoke) attributionParticipant != null else attributionParticipant != participant
+                                if (status == 200) {
+                                    attributionParticipant = if (revoke) null else participant
+                                    attributionAfterUser?.invoke()
+                                }
+                                if (attributionMalformed) {
+                                    "{"
+                                } else {
+                                    """{"traineeId":700,"participantId":$attributionParticipant,"changed":$changed}"""
+                                }
                             }
 
                             path == "/internal/forms/by-id/$FORM" -> {
@@ -3115,6 +3526,7 @@ class ProgramSessionApplicationTests {
 
         @DynamicPropertySource @JvmStatic
         fun properties(registry: DynamicPropertyRegistry) {
+            registry.add("application.legacy-trainee-attribution.enabled") { true }
             registry.add("application.program-sessions.enabled") { true }
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
             registry.add("application.registration.expo-internal-token") { "test-token" }

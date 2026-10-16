@@ -22,6 +22,8 @@ swagger:
   include-internal: ${SWAGGER_INCLUDE_INTERNAL:false}
 
 application:
+  legacy-trainee-attribution:
+    enabled: ${APPLICATION_LEGACY_TRAINEE_ATTRIBUTION_ENABLED:false}
   promotions:
     enabled: ${APPLICATION_PROMOTIONS_ENABLED:false}
     bootstrap-servers: ${APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS:}

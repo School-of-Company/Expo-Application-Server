@@ -23,6 +23,7 @@ import java.util.UUID
 class ProgramSessionApplicationRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
+    private val attribution: LegacyTraineeAttributionRepository,
 ) {
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
@@ -48,8 +49,14 @@ class ProgramSessionApplicationRepository(
     fun activeParticipants(definition: ProgramSessionDefinition): List<Long> =
         jdbc.query(
             "SELECT DISTINCT participant_id FROM tb_program_session_application " +
-                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status IN ('CONFIRMED', 'WAITING')",
+                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status IN ('CONFIRMED', 'WAITING') " +
+                "UNION SELECT l.participant_id FROM tb_legacy_trainee_attribution l " +
+                "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
+                "WHERE l.expo_id = ? AND ? = 'TRAINING' AND t.training_program_id = ?",
             { rs, _ -> rs.getLong(1) },
+            UUID.fromString(definition.expoId),
+            definition.programType.name,
+            definition.id,
             UUID.fromString(definition.expoId),
             definition.programType.name,
             definition.id,
@@ -58,7 +65,9 @@ class ProgramSessionApplicationRepository(
     fun hasTimeConflict(
         definition: ProgramSessionDefinition,
         participantId: Long,
+        excludingTraineeId: Long? = null,
     ): Boolean {
+        if (attribution.pending(UUID.fromString(definition.expoId), participantId)) return true
         val start = sessionTime(definition.startedAt)
         val end = sessionTime(definition.endedAt)
         if (!start.isBefore(end)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간 구간이 올바르지 않습니다.")
@@ -68,12 +77,30 @@ class ProgramSessionApplicationRepository(
                     "FROM tb_program_session_application a LEFT JOIN tb_program_session_state s " +
                     "ON s.expo_id = a.expo_id AND s.program_type = a.program_type AND s.program_id = a.program_id " +
                     "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') " +
-                    "AND NOT (a.program_type = ? AND a.program_id = ?)",
+                    "AND NOT (a.program_type = ? AND a.program_id = ?) " +
+                    "AND (CAST(? AS bigint) IS NULL OR a.trainee_id IS DISTINCT FROM ?) " +
+                    "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition) " +
+                    "FROM tb_legacy_trainee_attribution l " +
+                    "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
+                    "JOIN tb_legacy_trainee_program p ON p.trainee_id = t.trainee_id AND p.program_id = t.training_program_id " +
+                    "LEFT JOIN tb_program_session_state s ON s.expo_id = l.expo_id " +
+                    "AND s.program_type = 'TRAINING' AND s.program_id = p.program_id " +
+                    "WHERE l.expo_id = ? AND l.participant_id = ? " +
+                    "AND NOT (? = 'TRAINING' AND t.training_program_id = ?) " +
+                    "AND (CAST(? AS bigint) IS NULL OR l.trainee_id <> ?)",
                 { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) },
                 UUID.fromString(definition.expoId),
                 participantId,
                 definition.programType.name,
                 definition.id,
+                excludingTraineeId,
+                excludingTraineeId,
+                UUID.fromString(definition.expoId),
+                participantId,
+                definition.programType.name,
+                definition.id,
+                excludingTraineeId,
+                excludingTraineeId,
             )
         return existing.any {
             val otherStart = sessionTime(it.startedAt)
@@ -81,6 +108,93 @@ class ProgramSessionApplicationRepository(
             if (!otherStart.isBefore(otherEnd)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기존 프로그램 운영 시간이 올바르지 않습니다.")
             start.isBefore(otherEnd) && otherStart.isBefore(end)
         }
+    }
+
+    fun validateSessionTime(definition: ProgramSessionDefinition) {
+        if (!sessionTime(definition.startedAt).isBefore(sessionTime(definition.endedAt))) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간 구간이 올바르지 않습니다.")
+        }
+    }
+
+    fun requireAttributionReady(expoId: UUID) {
+        attribution.requireReady(expoId)
+    }
+
+    fun validateAttributedStandardChange(
+        expoId: String,
+        participantId: Long,
+        programIds: List<Long>,
+        definitions: List<ProgramSessionDefinition>,
+    ) {
+        val expo =
+            try {
+                UUID.fromString(expoId)
+            } catch (_: IllegalArgumentException) {
+                return
+            }
+        attribution.requireReady(expo, participantId)
+        if (!attribution.hasParticipant(expo, participantId)) return
+        lockSchedule(expo.toString())
+        if (definitions.map { it.id }.toSet() != programIds.toSet()) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "귀속된 참가자의 프로그램 정의가 필요합니다.")
+        }
+        if (definitions.any { hasTimeConflict(it, participantId) }) {
+            throw ProgramApplicationConflictException("신청한 프로그램과 운영 시간이 겹칩니다.")
+        }
+    }
+
+    fun validateAttributedTrainingChange(
+        expoId: String,
+        traineeId: Long,
+        programIds: List<Long>,
+        definitions: List<ProgramSessionDefinition>,
+        replacing: Boolean = false,
+    ) {
+        val expo =
+            try {
+                UUID.fromString(expoId)
+            } catch (_: IllegalArgumentException) {
+                return
+            }
+        attribution.requireReady(expo, traineeId = traineeId)
+        val participant = attribution.participant(expo, traineeId) ?: return
+        if (!tryLockParticipant(participant) || jdbc.queryForObject(
+                "SELECT pg_try_advisory_xact_lock_shared(46, hashtext(?))",
+                Boolean::class.java,
+                expo.toString(),
+            ) != true
+        ) {
+            throw ProgramApplicationConflictException("참가자 또는 일정 변경 중입니다. 재시도해 주세요.")
+        }
+        if (definitions.map { it.id }.toSet() != programIds.toSet()) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "귀속된 연수 신청의 프로그램 정의가 필요합니다.")
+        }
+        val currentIds =
+            jdbc
+                .query(
+                    "SELECT training_program_id FROM tb_training_program_application WHERE trainee_id = ?",
+                    { rs, _ -> rs.getLong(1) },
+                    traineeId,
+                ).toSet()
+        val removingOnly = replacing && programIds.all { it in currentIds }
+        if (!removingOnly) {
+            definitions.forEach { definition ->
+                validateSessionTime(definition)
+                if (hasTimeConflict(definition, participant, traineeId.takeIf { replacing })) {
+                    throw ProgramApplicationConflictException("신청한 프로그램과 운영 시간이 겹칩니다.")
+                }
+            }
+            if (definitions.any { a ->
+                    definitions.any { b ->
+                        a.id != b.id && sessionTime(a.startedAt) < sessionTime(b.endedAt) &&
+                            sessionTime(b.startedAt) < sessionTime(a.endedAt)
+                    }
+                }
+            ) {
+                throw ProgramApplicationConflictException("신청한 프로그램과 운영 시간이 겹칩니다.")
+            }
+        }
+        attribution.remember(traineeId, definitions)
     }
 
     private fun sessionTime(value: String?): Instant {

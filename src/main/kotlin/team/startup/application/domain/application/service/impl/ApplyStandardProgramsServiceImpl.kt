@@ -48,6 +48,7 @@ class ApplyStandardProgramsServiceImpl(
             throw ProgramApplicationConflictException("정책이 설정된 프로그램은 참가자와 폼 답변을 포함하는 신청이 필요합니다.")
         }
         ledger.lockParticipant(command.participant.id)
+        ledger.validateAttributedStandardChange(command.participant.expoId, command.participant.id, programIds, definitions)
         if (definitions.isNotEmpty() &&
             applications.findAllByParticipantId(command.participant.id).map { it.standardProgramId }.toSet() != oldIds
         ) {
