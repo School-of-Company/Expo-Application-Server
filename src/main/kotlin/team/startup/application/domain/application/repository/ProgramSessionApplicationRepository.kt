@@ -292,6 +292,16 @@ class ProgramSessionApplicationRepository(
                 traineeId,
             ).filter { it !in retainedIds }
             .forEach { programId ->
+                val linked =
+                    jdbc.queryForObject(
+                        "SELECT EXISTS(SELECT 1 FROM tb_program_session_application a " +
+                            "JOIN tb_program_guardian_member m ON m.application_id = a.id " +
+                            "WHERE a.program_type = 'TRAINING' AND a.trainee_id = ? AND a.program_id = ? AND a.status = 'CONFIRMED')",
+                        Boolean::class.java,
+                        traineeId,
+                        programId,
+                    )
+                if (linked == true) throw ProgramApplicationConflictException("학생·보호자 신청은 연계 취소 후 변경해야 합니다.")
                 jdbc.update(
                     "INSERT INTO tb_program_session_event (application_id, status) " +
                         "SELECT id, 'CANCELLED' FROM tb_program_session_application " +

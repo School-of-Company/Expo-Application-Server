@@ -50,11 +50,13 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyPreregisterSessionService
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
+import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
@@ -245,6 +247,8 @@ class OwnerApplicationTests {
                 DefaultListableBeanFactory().getBeanProvider(OwnerCancellationGuard::class.java),
                 TEST_CLOCK,
                 context.getBean(PreregisterWaitlist::class.java),
+                context.getBean(StudentGuardianBatchRepository::class.java),
+                context.getBean(CancelStudentGuardianApplicationService::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(cancelCommand("2")) }
         assertEquals("CONFIRMED", state(2))

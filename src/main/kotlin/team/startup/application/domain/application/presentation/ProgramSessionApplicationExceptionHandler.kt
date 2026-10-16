@@ -17,7 +17,13 @@ data class ProgramSessionError(
     @field:Schema(description = "참가자 신청 불가 사유. 제공되지 않는 오류에서는 null") val ineligibleReason: ProgramIneligibleReason? = null,
 )
 
-@RestControllerAdvice(assignableTypes = [ProgramSessionApplicationController::class, ManagedParticipantController::class])
+@RestControllerAdvice(
+    assignableTypes = [
+        ProgramSessionApplicationController::class,
+        ManagedParticipantController::class,
+        StudentGuardianBatchController::class,
+    ],
+)
 class ProgramSessionApplicationExceptionHandler {
     private val log = LoggerFactory.getLogger(javaClass)
 

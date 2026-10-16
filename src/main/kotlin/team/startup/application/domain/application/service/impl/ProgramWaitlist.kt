@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.service.impl
 
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
@@ -26,6 +27,7 @@ class ProgramWaitlist(
     private val operations: TrainingOperationRepository,
     private val gateway: RegistrationGateway,
     private val clock: Clock,
+    private val guardianBatches: ObjectProvider<StudentGuardianBatchPromotion>,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -75,6 +77,13 @@ class ProgramWaitlist(
                 )
             if (remaining <= 0) continue
             for (entry in repository.waiting(definition, remaining.toInt(), channel?.name)) {
+                val promoted = guardianBatches.ifAvailable?.promote(definition, entry)
+                if (promoted != null) {
+                    if (promoted == 0) continue@channels
+                    if (promoted > 0) budget -= promoted
+                    if (budget <= 0) return
+                    continue
+                }
                 // Submission takes participant before group locks, so promotion must never wait for a participant.
                 if (!ledger.tryLockParticipant(entry.participantId)) continue@channels
                 if (ledger.hasTimeConflict(definition, entry.participantId)) continue@channels

@@ -19,6 +19,7 @@ import team.startup.application.domain.application.repository.TrainingOperationR
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.domain.application.service.ProgramFormProvider
+import team.startup.application.domain.application.service.StudentGuardianEligibilityProvider
 import java.util.UUID
 
 @Service
@@ -31,6 +32,7 @@ class ApplyProgramSessionServiceImpl(
     private val forms: ObjectProvider<ProgramFormProvider>,
     private val waitlist: ProgramWaitlist,
     private val repository: ProgramWaitlistRepository,
+    private val guardianEligibility: ObjectProvider<StudentGuardianEligibilityProvider>,
 ) : ApplyProgramSessionService {
     @Transactional(noRollbackFor = [ProgramSessionAdmissionDeadlineException::class])
     override fun execute(request: ApplyProgramSessionCommand): ProgramSessionReceipt {
@@ -54,6 +56,7 @@ class ApplyProgramSessionServiceImpl(
             gateway.programDefinition(command.expoId, command.programType, command.programId)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정책 공급자가 준비되지 않았습니다.")
         val policy = definition.policy ?: conflict("참가자 신청 정책이 없는 프로그램입니다.")
+        guardianEligibility.ifAvailable?.validateSingle(command)
         if (!ledger.confirmedPreregister(command)) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED.name)
         }
