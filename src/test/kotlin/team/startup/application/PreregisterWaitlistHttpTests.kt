@@ -215,7 +215,7 @@ class PreregisterWaitlistHttpTests {
         assertEquals(201, submit("a", 3, "01000000001").status)
         waiting(submit("b", 3, "01000000002"), 1)
         waiting(submit("c", 1, "01000000003"), 2)
-        cancel(1)
+        cancel(2) // a companion; the representative must cancel last
         assertEquals("WAITING", state("b"))
         assertEquals("WAITING", state("c"))
         val session = repository.adminSummary(EXPO).sessions.single()
@@ -396,7 +396,8 @@ class PreregisterWaitlistHttpTests {
 
         private fun definition(id: Long) =
             """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"${startedAt.get()}","endedAt":"2030-01-01T01:00:00Z",""" +
-                """"place":"Place","capacity":${capacity.get()},"waitingCapacity":${waitingCapacity.get()},"closed":$closed,"revision":${revision.get()}}"""
+                """"place":"Place","capacity":${capacity.get()},"waitingCapacity":${waitingCapacity.get()},"closed":$closed,""" +
+                """"revision":${revision.get()},"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
 
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -408,7 +409,13 @@ class PreregisterWaitlistHttpTests {
                                 200 to """{"expoId":"$EXPO","phoneNumber":"$verifiedSessionPhone","expiresAt":"2100-01-01T00:00:00"}"""
                             }
 
-                            path.endsWith("/preregister-session") || path.contains("/standard-registrations/") -> {
+                            path == "/internal/standard-participants/admin-cancellation-status" -> {
+                                val id = json.readTree(exchange.requestBody.bufferedReader().readText()).path("participantId").asLong()
+                                200 to """{"participantId":$id,"entered":false,"traineeLinked":false,"linkedTraineeId":null}"""
+                            }
+
+                            path.endsWith("/preregister-session") || path.contains("/standard-registrations/") ||
+                                path.contains("cancellation-guard/") -> {
                                 204 to ""
                             }
 

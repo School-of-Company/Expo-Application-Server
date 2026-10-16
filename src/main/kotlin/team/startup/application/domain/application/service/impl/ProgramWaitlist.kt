@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.service.impl
 
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
@@ -104,7 +105,21 @@ class ProgramWaitlist(
         val traineeId =
             try {
                 gateway.resolveTrainee(definition.expoId, entry.participantId, programTrainingId(entry.questions, entry.answers))
-            } catch (_: ResponseStatusException) {
+            } catch (ex: ResponseStatusException) {
+                // User 404/409는 재시도해도 성공하지 않으므로 대기에서 내려 다음 순번이 차례대로 승급되게 한다(#116).
+                // shortcut: 빈자리는 이번 회차가 아니라 다음 승급 계기(스케줄러·취소·신청)에서 채운다.
+                if (ex.statusCode == HttpStatus.NOT_FOUND || ex.statusCode == HttpStatus.CONFLICT) {
+                    repository.transition(entry.id, "CANCELLED")
+                    log.warn(
+                        "프로그램 대기 취소: {} / {} / {} ({}, USER_{})",
+                        definition.expoId,
+                        definition.programType,
+                        definition.id,
+                        entry.id,
+                        ex.statusCode.value(),
+                    )
+                    return null
+                }
                 return defer(definition, "USER_UNAVAILABLE")
             }
         if (!trainings.tryLockTrainee(traineeId)) return defer(definition, "TRAINEE_BUSY")

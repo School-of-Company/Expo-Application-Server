@@ -28,6 +28,7 @@ import team.startup.application.domain.application.service.OwnerCancellationGuar
 import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
 import team.startup.application.domain.application.service.impl.OwnerCancellationGateway
+import team.startup.application.domain.application.service.impl.PreregisterCancellation
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
 import team.startup.application.domain.application.service.impl.PreregisterWaitlist
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -183,11 +184,8 @@ class OwnerCancellationGatewayTests {
             CancelOwnerApplicationServiceImpl(
                 registration,
                 owners,
-                mock(PreregisterSessionRepository::class.java),
-                mock(ProgramSessionApplicationRepository::class.java),
-                mock(TrainingProgramApplicationRepository::class.java),
+                mock(PreregisterCancellation::class.java),
                 ledger,
-                outbox,
                 mock(CancelProgramSessionService::class.java),
                 beans.getBeanProvider(OwnerCancellationGuard::class.java),
                 Clock.systemUTC(),

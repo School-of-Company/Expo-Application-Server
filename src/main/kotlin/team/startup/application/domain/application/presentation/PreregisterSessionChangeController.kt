@@ -48,14 +48,23 @@ class PreregisterSessionChangeController(
         @field:jakarta.validation.constraints.NotEmpty val applicationIds: List<Long>,
     )
 
-    @Operation(summary = "신뢰된 서비스의 일행 일부 또는 관리자 신청 취소")
+    @Operation(
+        summary = "신뢰된 서비스의 일행 일부 또는 관리자 신청 취소",
+        description =
+            "공개 소유자 취소와 같은 보호를 거친다: Attendance 관리자 취소 보호, 입장 여부, Expo 사전등록 취소 마감, " +
+                "활성 프로그램 신청(CONFIRMED/WAITING), 동행자가 남은 대표자 취소 거절. 한 요청은 최대 5건이며 대표자는 같은 요청의 동행자 뒤에 취소된다.",
+    )
     @ApiResponses(
         value = [
             ApiResponse(responseCode = "200", description = "조회 또는 처리 결과"),
+            ApiResponse(responseCode = "400", description = "잘못된 신청 목록(빈 목록, 중복, 6건 이상)"),
             ApiResponse(responseCode = "404", description = "회차 없음"),
-            ApiResponse(responseCode = "409", description = "신청, 정원, 버전 또는 변경 상태 충돌"),
-            ApiResponse(responseCode = "502", description = "Expo 응답 계약 오류"),
-            ApiResponse(responseCode = "503", description = "Expo 연동 불가"),
+            ApiResponse(
+                responseCode = "409",
+                description = "신청 소속·정원·버전·변경 상태 충돌, 취소 마감, 입장, 활성 프로그램 신청 또는 남은 동행자",
+            ),
+            ApiResponse(responseCode = "502", description = "Expo·User·Attendance 응답 계약 오류"),
+            ApiResponse(responseCode = "503", description = "Expo·User·Attendance 연동 불가 또는 출석 취소 전달 비활성"),
         ],
     )
     @DeleteMapping("/preregister-sessions/{sessionId}/applications")
