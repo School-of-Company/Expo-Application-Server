@@ -26,6 +26,7 @@ class PrepareProgramChangeServiceImpl(
     @Transactional
     override fun execute(command: PrepareProgramChangeCommand) {
         repository.lockChange(command.expoId)
+        ledger.lockSchedule(command.expoId.toString(), changing = true)
         val payload = mapper.writeValueAsString(command.payload)
         if (repository.changeReplay(command.expoId, command.changeId, payload)) return
         val mutations = command.payload.mutations
@@ -96,6 +97,13 @@ class PrepareProgramChangeServiceImpl(
             repository.stage(old, next, command.changeId)
             if (next == null) {
                 if (old.programType.name == "STANDARD") standards.markDeleted(old.id) else trainings.markDeleted(old.id)
+            }
+        }
+        for (mutation in mutations) {
+            val old = requireNotNull(mutation.previous)
+            val next = mutation.definition ?: continue
+            if (next.startedAt != old.startedAt || next.endedAt != old.endedAt) {
+                if (ledger.activeParticipants(old).any { ledger.hasTimeConflict(next, it) }) conflict()
             }
         }
         repository.saveChange(command.expoId, command.changeId, payload)

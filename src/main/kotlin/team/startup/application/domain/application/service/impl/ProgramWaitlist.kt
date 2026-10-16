@@ -34,6 +34,7 @@ class ProgramWaitlist(
     fun now(): Instant = clock.instant()
 
     fun lock(definition: ProgramSessionDefinition) {
+        ledger.lockSchedule(definition.expoId)
         ledger.lockGroups(listOf(definition))
         if (definition.programType ==
             ProgramSessionType.STANDARD
@@ -83,6 +84,9 @@ class ProgramWaitlist(
                     if (budget <= 0) return
                     continue
                 }
+                // Submission takes participant before group locks, so promotion must never wait for a participant.
+                if (!ledger.tryLockParticipant(entry.participantId)) continue@channels
+                if (ledger.hasTimeConflict(definition, entry.participantId)) continue@channels
                 val traineeId =
                     if (definition.programType ==
                         ProgramSessionType.TRAINING

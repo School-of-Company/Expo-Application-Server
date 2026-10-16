@@ -60,6 +60,7 @@ class StudentGuardianBatchPromotion(
         }
         val trainees = mutableMapOf<Long, Long>()
         try {
+            if (ids.any { ledger.hasTimeConflict(definition, it) }) return 0
             provider.validate(
                 StudentGuardianEligibilityQuery(
                     definition,

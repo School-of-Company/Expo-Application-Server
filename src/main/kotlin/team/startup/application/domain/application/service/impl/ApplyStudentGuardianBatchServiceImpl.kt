@@ -10,6 +10,7 @@ import team.startup.application.domain.application.entity.TrainingProgramApplica
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ApplyStudentGuardianBatchCommand
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchApplication
@@ -140,6 +141,9 @@ class ApplyStudentGuardianBatchServiceImpl(
             snapshots.values.any { now.isBefore(it.startedAt) || !now.isBefore(it.endedAt) }
         ) {
             conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
+        }
+        if (ids.any { ledger.hasTimeConflict(definition, it) }) {
+            throw ProgramApplicationConflictException("신청한 프로그램과 운영 시간이 겹칩니다.", ProgramIneligibleReason.TIME_CONFLICT)
         }
         newItems.forEach { item ->
             val individual = requireNotNull(commands[item.participantId])
