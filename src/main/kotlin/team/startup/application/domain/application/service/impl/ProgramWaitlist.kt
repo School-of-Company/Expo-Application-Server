@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
 import team.startup.application.domain.application.entity.TrainingProgramApplication
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -92,7 +93,7 @@ class ProgramWaitlist(
                         StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id),
                     )
                 }
-                repository.transition(entry.id, "CONFIRMED", traineeId)
+                repository.transition(entry.id, "CONFIRMED", ApplicationActorType.SYSTEM, traineeId)
                 budget--
             }
         }
@@ -109,7 +110,7 @@ class ProgramWaitlist(
                 // User 404/409는 재시도해도 성공하지 않으므로 대기에서 내려 다음 순번이 차례대로 승급되게 한다(#116).
                 // shortcut: 빈자리는 이번 회차가 아니라 다음 승급 계기(스케줄러·취소·신청)에서 채운다.
                 if (ex.statusCode == HttpStatus.NOT_FOUND || ex.statusCode == HttpStatus.CONFLICT) {
-                    repository.transition(entry.id, "CANCELLED")
+                    repository.transition(entry.id, "CANCELLED", ApplicationActorType.SYSTEM)
                     log.warn(
                         "프로그램 대기 취소: {} / {} / {} ({}, USER_{})",
                         definition.expoId,

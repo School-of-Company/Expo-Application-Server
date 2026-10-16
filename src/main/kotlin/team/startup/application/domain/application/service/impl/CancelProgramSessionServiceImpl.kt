@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -60,7 +61,12 @@ class CancelProgramSessionServiceImpl(
                 operations.incrementVersion(traineeId)
             }
         }
-        repository.transition(entry.id, "CANCELLED", actorId = command.actorId)
+        repository.transition(
+            entry.id,
+            "CANCELLED",
+            if (command.actorId == null) ApplicationActorType.USER else ApplicationActorType.ADMIN,
+            actorId = command.actorId,
+        )
         waitlist.promote(definition, now)
     }
 }

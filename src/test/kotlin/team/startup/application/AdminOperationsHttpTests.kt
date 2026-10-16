@@ -203,6 +203,13 @@ class AdminOperationsHttpTests {
         assertEquals("CANCELLED", status())
         assertEquals("CONFIRMED", status(waiting))
         assertEquals(
+            listOf("ADMIN:CONFIRMED:CANCELLED:true", "SYSTEM:WAITING:CONFIRMED:true"),
+            jdbc.query(
+                "SELECT actor_type, previous_status, status, previous_status_recorded FROM tb_program_session_history " +
+                    "WHERE actor_type <> 'UNKNOWN' ORDER BY id",
+            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" },
+        )
+        assertEquals(
             1L,
             jdbc.queryForObject(
                 "SELECT actor_id FROM tb_program_session_history WHERE application_id = ? AND status = 'CANCELLED'",

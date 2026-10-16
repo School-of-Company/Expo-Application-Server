@@ -706,6 +706,12 @@ class ProgramSessionApplicationTests {
         applied(2, false)
         cancel(confirmed.applicationId)
         applied(2, true)
+        assertEquals(
+            listOf("USER:null:CONFIRMED:true", "USER:null:WAITING:true", "USER:CONFIRMED:CANCELLED:true", "SYSTEM:WAITING:CONFIRMED:true"),
+            jdbc.query(
+                "SELECT actor_type, previous_status, status, previous_status_recorded FROM tb_program_session_history ORDER BY id",
+            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" },
+        )
         assertEquals(waiting, service.execute(command(participant = 2)))
         cancel(confirmed.applicationId)
         assertEquals(
