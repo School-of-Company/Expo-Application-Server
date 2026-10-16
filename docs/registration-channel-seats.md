@@ -2,7 +2,7 @@
 
 ## 현재 계약과 구현 (2026-10-17)
 
-Application 기준은 `origin/develop` `9b25487dda55cd143ee78a757dac68c0b3286aba`이다. #126 시간 충돌과 #128 학생·보호자 묶음 신청이 이미 포함되어 있다. 아래의 2026-10-16 기록은 #134 당시의 판단이며 현재 기능 상태가 아니다.
+Application 초기 기준은 `origin/develop` `9b25487dda55cd143ee78a757dac68c0b3286aba`이며 #126 시간 충돌과 #128 학생·보호자 묶음 신청을 포함한다. PR #138 CI 수정 시 #137 관리자 취소 회귀 수정이 머지된 develop `1cd2151`을 추가 반영했다. #134의 2026-10-16 보류 판단은 현재 기능 상태가 아니다.
 
 [Expo PR #128](https://github.com/School-of-Company/Expo-Expo-Server/pull/128)은 `aba115d4e7ef55c7130d2e77565522d1e8ea03ac`으로 머지되었다. 따라서 과거 기록의 “Expo OPEN이므로 필드 없음”이라는 보류 근거는 폐기한다. 공급자는 `preRegistrationCapacity`/`onsiteCapacity`를 필수 정수로 제공하며 각각 0 이상, `capacity`는 두 값의 합이자 1 이상이다. `allowedOccupations`는 자격이고 역할별 `channels`는 새 공급자 계약에서 제거되었다. 공급자도 현장 개방·권한·대기 정책을 정하지 않았다.
 
@@ -66,6 +66,9 @@ Attendance develop `537b1af471d5a02b6495d546de364772b7b95679`의 계약을 확�
 검증 결과는 아래 최신 검증 기록에 별도로 남긴다. 과거 #134의 482건 통과를 이번 구현의 결과로 사용하지 않는다.
 
 ## 최신 검증 기록
+
+- PR #138 CI 후속 수정: 테스트 줄바꿈 위반을 수정하고, 변경 중에도 게시된 정의를 읽는 기존 계약을 복구했다. 조회는 로컬 현재/준비 정의 중 일치하는 정의를 허용하며 미승인 revision과 삭제 정의는 계속 거절한다. 신청의 pending 차단은 유지한다.
+- 후속 순차 검증은 참가자 조회 11건 + 좌석 핵심 13건 + 관리자 현재 회차 조회 2건 = 26/26 통과(1분 13초), 최신 develop 반영 뒤 관리자 취소 13/13 통과(39초)다. 두 실행의 ktlintCheck·spotlessCheck 및 diff-check가 통과했다. 새 CI 결과는 GitHub PR에서 확인한다.
 
 - 최신 핵심 회귀: `./gradlew test --tests 'team.startup.application.ProgramSessionApplicationTests.split seats*' --no-daemon --max-workers=1` 성공, **12/12 통과**, 실패/오류/스킵 0, Gradle 1분/XML 테스트 21.017초. 다른 워크스페이스 Gradle 종료 뒤 순차 실행했으며 wrapper/Test Executor 종료를 확인했다.
 - 표준·연수 취소/멱등/불변 경로, 마지막 사전 좌석 경쟁, ONSITE 위조, 잔여석, 저장 실패 롤백·재시도, 묶음 원자성, 공급자 비정상 정원, 경로별 축소/변경, 기존 미상 행과 대기 회차 전환 보호를 검증했다. 추가한 guardianPolicy 보존/공급자 누락503 2건과 ONSITE 원장 취소 1건도 이번 12건에 포함한다. ONSITE 테스트는 신뢰된 원장 행을 직접 준비한 취소 검증이며 현장 신청 API 성공을 뜻하지 않는다.
