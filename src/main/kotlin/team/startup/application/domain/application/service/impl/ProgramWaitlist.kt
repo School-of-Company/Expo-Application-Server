@@ -59,6 +59,7 @@ class ProgramWaitlist(
         now: Instant = now(),
     ) {
         val policy = definition.policy ?: return
+        if (policy.hasAdmissionCapacities()) return
         if (policy.closed || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
             !now.isBefore(policy.promotionEndedAt)
         ) {

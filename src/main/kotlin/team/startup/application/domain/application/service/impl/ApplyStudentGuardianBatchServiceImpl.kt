@@ -67,7 +67,7 @@ class ApplyStudentGuardianBatchServiceImpl(
         val definition =
             gateway.programDefinition(command.key.expoId.toString(), command.key.programType, command.key.programId) ?: unavailable()
         val policy = definition.policy ?: conflict("참가자 신청 정책이 없습니다.")
-        if (!policy.channelsValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY)
+        if (!policy.channelsValid() || !policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY)
         val occupations = ids.associateWith { id -> party.participants.single { it.participantId == id }.occupation }
         if (occupations.values.any { it == null || it !in policy.allowedOccupations }) throw ResponseStatusException(HttpStatus.FORBIDDEN)
         val channels = occupations.mapValues { (_, occupation) -> policy.channels?.let { policy.channelOf(requireNotNull(occupation)) } }
@@ -162,6 +162,11 @@ class ApplyStudentGuardianBatchServiceImpl(
         }
         waitlist.promote(definition, now)
         val needed = newItems.size
+        if (policy.hasAdmissionCapacities() &&
+            (ledger.preRegistrationRemaining(definition) < needed || repository.waitingCount(definition) > 0)
+        ) {
+            conflict("일괄 신청을 수용할 사전 접수 좌석이 없거나 대기 정책 확인이 필요합니다.")
+        }
         val waiting =
             repository.waitingCount(definition, channel?.name) > 0 ||
                 ledger.confirmedCount(definition.programType, definition.id) + needed > policy.capacity ||

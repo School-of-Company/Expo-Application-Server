@@ -67,7 +67,7 @@ class ApplyProgramSessionServiceImpl(
         if (occupation == null || occupation !in policy.allowedOccupations) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED.name)
         }
-        if (!policy.channelsValid()) badGateway()
+        if (!policy.channelsValid() || !policy.admissionCapacitiesValid()) badGateway()
         val channel = policy.channels?.let { policy.channelOf(occupation) ?: badGateway() }
         val provider =
             forms.ifAvailable
@@ -104,6 +104,11 @@ class ApplyProgramSessionServiceImpl(
             )
         }
         waitlist.promote(definition, now)
+        if (policy.hasAdmissionCapacities() &&
+            (ledger.preRegistrationRemaining(definition) < 1 || repository.waitingCount(definition) > 0)
+        ) {
+            conflict("사전 접수 좌석이 없거나 대기 정책 확인이 필요합니다.")
+        }
         // A channel never borrows another channel's vacancy; the session total still covers legacy rows without a channel.
         val waitingCount = repository.waitingCount(definition, channel?.name)
         val waiting =

@@ -47,6 +47,8 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
+import team.startup.application.domain.application.presentation.dto.ProgramGuardianPolicy
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchRequest
@@ -134,6 +136,7 @@ class ProgramSessionApplicationTests {
         protectedParticipants = emptySet()
         allowed = "[\"TEACHER\"]"
         channels = null
+        admissionCapacities = null
         closed = false
         expired = false
         badExpo = false
@@ -2672,6 +2675,299 @@ class ProgramSessionApplicationTests {
         assertEquals(0L, count("tb_program_change_receipt"))
     }
 
+    @ParameterizedTest
+    @CsvSource("STANDARD", "TRAINING")
+    fun `split seats enforce pre registration quota with replay cancellation and immutable route`(type: ProgramSessionType) {
+        capacity = 3
+        waitingCapacity = 5
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val first = service.execute(command(type = type))
+        assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
+        assertEquals(first, service.execute(command(type = type).copy(sessionId = "renewed-session")))
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2, type = type)) }
+        assertEquals(1L, count("tb_program_session_application"))
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update("UPDATE tb_program_session_application SET admission_route = 'ONSITE' WHERE id = ?", first.applicationId)
+        }
+        cancel(first.applicationId)
+        cancel(first.applicationId)
+        val replacement = service.execute(command(participant = 2, type = type))
+        assertEquals("PRE_REGISTRATION", column("admission_route", replacement.applicationId))
+        assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
+    }
+
+    @Test
+    fun `split seats serialize the last pre seat without borrowing onsite seats`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val results = concurrent(command(), command(participant = 2))
+        assertEquals(1, results.count { it == "ok" })
+        assertEquals(1, results.count { it == "conflict" })
+        assertEquals(1L, count("tb_standard_program_application"))
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `split seats block forged onsite selection and expose both quotas without double counting`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications?admissionRoute=ONSITE")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                    .header("Idempotency-Key", "forged")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":2,"formVersion":1,"answers":{"101":"a"},"admissionRoute":"ONSITE"}"""),
+            ).andExpect(status().isConflict)
+        mvc
+            .perform(
+                get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.capacity.confirmedCount").value(1))
+            .andExpect(jsonPath("$.admissionSeats.preRegistration.capacity").value(1))
+            .andExpect(jsonPath("$.admissionSeats.preRegistration.remaining").value(0))
+            .andExpect(jsonPath("$.admissionSeats.onsite.capacity").value(2))
+            .andExpect(jsonPath("$.admissionSeats.onsite.confirmedCount").value(0))
+            .andExpect(jsonPath("$.admissionSeats.onsite.remaining").value(2))
+            .andExpect(jsonPath("$.admissionSeats.onsiteAdmissionEnabled").value(false))
+            .andExpect(jsonPath("$.admissionSeats.waitingEnabled").value(false))
+    }
+
+    @Test
+    fun `split seats rollback failures and retry uses the same route exactly once`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        jdbc.execute("ALTER TABLE tb_program_session_event ADD CONSTRAINT test_split_event CHECK (status <> 'CONFIRMED')")
+        try {
+            assertThrows(DataIntegrityViolationException::class.java) { service.execute(command()) }
+            assertEquals(0L, count("tb_program_session_application"))
+            assertEquals(0L, count("tb_standard_program_application"))
+            assertEquals(0L, count("tb_program_session_receipt"))
+        } finally {
+            jdbc.execute("ALTER TABLE tb_program_session_event DROP CONSTRAINT test_split_event")
+        }
+        val result = service.execute(command())
+        assertEquals(result, service.execute(command()))
+        assertEquals("PRE_REGISTRATION", column("admission_route", result.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `split seats reject atomic guardian batches that would borrow onsite capacity`() {
+        enableGuardianPolicy(4, 5)
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
+        assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1, 2)) }
+        assertEquals(0L, count("tb_program_guardian_batch"))
+        assertEquals(0L, count("tb_program_session_application"))
+        val result = batchService.execute(guardianBatch(1))
+        assertTrue(result.applications.all { it.application.status == "CONFIRMED" })
+        assertEquals(result, batchService.execute(guardianBatch(1)))
+        result.applications.forEach { assertEquals("PRE_REGISTRATION", column("admission_route", it.application.applicationId)) }
+    }
+
+    @Test
+    fun `split seats reject malformed provider quotas before linking a trainee`() {
+        capacity = 3
+        for (fields in listOf(
+            "\"preRegistrationCapacity\":1",
+            "\"preRegistrationCapacity\":null,\"onsiteCapacity\":null",
+            "\"preRegistrationCapacity\":1.5,\"onsiteCapacity\":2",
+            "\"preRegistrationCapacity\":\"1\",\"onsiteCapacity\":2",
+            "\"onsiteCapacity\":2",
+            "\"preRegistrationCapacity\":-1,\"onsiteCapacity\":4",
+            "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1",
+            "\"preRegistrationCapacity\":2147483647,\"onsiteCapacity\":2147483647",
+        )) {
+            admissionCapacities = fields
+            val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(type = ProgramSessionType.TRAINING)) }
+            assertEquals(502, error.statusCode.value())
+        }
+        assertEquals(0, linkCalls.get())
+        assertEquals(0L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `split seats cannot shrink an occupied route or revert to total only capacity`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        for (remove in listOf(false, true)) {
+            val next = previous.deepCopy().asObject().apply { put("revision", 2) }
+            next.path("policy").asObject().apply {
+                if (remove) {
+                    remove("preRegistrationCapacity")
+                    remove("onsiteCapacity")
+                } else {
+                    put("preRegistrationCapacity", 0)
+                    put("onsiteCapacity", 3)
+                }
+            }
+            mvc
+                .perform(
+                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                ).andExpect(status().isConflict)
+        }
+        assertEquals(0L, count("tb_program_change_receipt"))
+        change {
+            it.put("onsiteCapacity", 3)
+            it.put("capacity", 4)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":3"
+        reconcile()
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2)) }
+    }
+
+    @Test
+    fun `split seats never reclassify legacy confirmed rows and reject adoption with waiting parties`() {
+        capacity = 4
+        service.execute(command())
+        change {
+            it.put("preRegistrationCapacity", 2)
+            it.put("onsiteCapacity", 2)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
+        reconcile()
+        val definition =
+            mapper.readValue(
+                definition("1", "STANDARD"),
+                team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition::class.java,
+            )
+        val seats = requireNotNull(context.getBean(ProgramSessionApplicationRepository::class.java).admissionSeats(definition))
+        assertEquals(1L, seats.unknownConfirmedCount)
+        assertEquals(1L, seats.preRegistration.remaining)
+        assertEquals(1L, seats.onsite.remaining)
+        assertEquals(null, jdbc.queryForObject("SELECT admission_route FROM tb_program_session_application", String::class.java))
+        reset()
+        waitingCapacity = 2
+        service.execute(command())
+        service.execute(command(participant = 2))
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val next = previous.deepCopy().asObject().apply { put("revision", 2) }
+        next.path("policy").asObject().apply {
+            put("capacity", 3)
+            put("preRegistrationCapacity", 1)
+            put("onsiteCapacity", 2)
+        }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+    }
+
+    @Test
+    fun `split seats preserve enabled guardian policy in supplier decoding and saved snapshots`() {
+        capacity = 3
+        val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
+        val supplied =
+            requireNotNull(context.getBean(RegistrationGateway::class.java).programDefinition(EXPO, ProgramSessionType.STANDARD, 1))
+        assertEquals(guardian, supplied.policy?.guardianPolicy)
+        assertEquals(1, supplied.policy?.preRegistrationCapacity)
+        assertEquals(2, supplied.policy?.onsiteCapacity)
+        assertEquals(supplied, mapper.readValue(mapper.writeValueAsString(supplied), supplied.javaClass))
+        val result = service.execute(command())
+        val snapshot =
+            jdbc.queryForObject(
+                "SELECT definition_snapshot::text FROM tb_program_session_application WHERE id = ?",
+                String::class.java,
+                result.applicationId,
+            )
+        assertEquals(supplied, mapper.readValue(snapshot, supplied.javaClass))
+    }
+
+    @Test
+    fun `split seats enabled guardian policy fails closed when eligibility provider is missing`() {
+        capacity = 3
+        val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
+        val withoutGuardian =
+            ApplyProgramSessionServiceImpl(
+                context.getBean(ProgramSessionApplicationRepository::class.java),
+                context.getBean(StandardProgramApplicationRepository::class.java),
+                context.getBean(TrainingProgramApplicationRepository::class.java),
+                context.getBean(TrainingOperationRepository::class.java),
+                context.getBean(RegistrationGateway::class.java),
+                context.getBeanProvider(ProgramFormProvider::class.java),
+                context.getBean(ProgramWaitlist::class.java),
+                context.getBean(ProgramWaitlistRepository::class.java),
+                DefaultListableBeanFactory().getBeanProvider(StudentGuardianEligibilityProvider::class.java),
+            )
+        val error =
+            assertThrows(ResponseStatusException::class.java) {
+                transactions.execute { withoutGuardian.execute(command()) }
+            }
+        assertEquals(503, error.statusCode.value())
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `split seats retain a seeded onsite route on cancellation and return only that quota`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        val pre = service.execute(command())
+        val onsite = UUID.randomUUID()
+        jdbc.update(
+            "INSERT INTO tb_program_session_application " +
+                "(id, expo_id, program_type, program_id, group_id, participant_id, status, " +
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, admission_route) " +
+                "SELECT ?, expo_id, program_type, program_id, group_id, 2, 'CONFIRMED', " +
+                "definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, 'ONSITE' " +
+                "FROM tb_program_session_application WHERE id = ?",
+            onsite,
+            pre.applicationId,
+        )
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (2, 1)")
+        val definition = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        val ledger = context.getBean(ProgramSessionApplicationRepository::class.java)
+        val before = requireNotNull(ledger.admissionSeats(definition))
+        assertEquals(1L, before.onsite.confirmedCount)
+        assertEquals(0L, before.unknownConfirmedCount)
+        cancel(onsite)
+        val after = requireNotNull(ledger.admissionSeats(definition))
+        assertEquals(before.preRegistration, after.preRegistration)
+        assertEquals(0L, after.onsite.confirmedCount)
+        assertEquals(before.onsite.remaining + 1, after.onsite.remaining)
+        assertEquals("ONSITE", column("admission_route", onsite))
+        assertEquals("PRE_REGISTRATION", column("admission_route", pre.applicationId))
+    }
+
+    @Test
+    fun `split seats allow current and prepared definition reads while rejecting unrelated revisions`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        service.execute(command())
+        val current = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        change {
+            it.put("capacity", 4)
+            it.put("onsiteCapacity", 3)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":3"
+        val prepared = mapper.readValue(definition("1", "STANDARD"), ProgramSessionDefinition::class.java)
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        transactions.execute {
+            context.getBean(ProgramSessionApplicationRepository::class.java).lockCapacityReads(listOf(current))
+            repository.checkDefinition(current.copy(pendingRevision = prepared.revision))
+            repository.checkDefinition(prepared)
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                repository.checkDefinition(prepared.copy(revision = prepared.revision + 1))
+            }
+        }
+        pending = true
+        val error = assertThrows(ResponseStatusException::class.java) { service.execute(command(participant = 2)) }
+        assertEquals(409, error.statusCode.value())
+    }
+
     private fun applied(
         participant: Long,
         value: Boolean,
@@ -3091,6 +3387,8 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var places: Map<String, String?> = emptyMap()
 
+        @Volatile private var admissionCapacities: String? = null
+
         private fun definition(
             id: String,
             type: String,
@@ -3100,6 +3398,10 @@ class ProgramSessionApplicationTests {
                     ",\"channels\":$it"
                 } ?: ""}}}"""
             val json = ObjectMapper().readTree(response).asObject()
+            admissionCapacities?.let { fields ->
+                val policy = json.path("policy").asObject()
+                ObjectMapper().readTree("{$fields}").properties().forEach { (name, value) -> policy.set(name, value) }
+            }
             val start = Instant.parse("2030-01-01T00:00:00Z").plusSeconds(id.toLong() * 7200 + if (type == "TRAINING") 86400 else 0)
             val window = windows[type to id.toLong()] ?: (start.toString() to start.plusSeconds(3600).toString())
             json.put("startedAt", window.first)

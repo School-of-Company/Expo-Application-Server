@@ -85,6 +85,7 @@ data class AdminApplicationRow(
     val answers: JsonNode,
     val history: List<AdminApplicationHistory>,
     val participant: AdminParticipantDetail? = null,
+    val admissionRoute: String? = null,
 )
 
 data class AdminApplicationReadCommand(

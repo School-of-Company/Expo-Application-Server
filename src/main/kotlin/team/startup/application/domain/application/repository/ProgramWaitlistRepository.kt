@@ -109,6 +109,29 @@ class ProgramWaitlistRepository(
             ),
         )
 
+    fun checkDefinition(definition: ProgramSessionDefinition) {
+        jdbc
+            .query(
+                "SELECT definition, pending_definition, deleted FROM tb_program_session_state " +
+                    "WHERE expo_id = ? AND program_type = ? AND program_id = ?",
+                { rs, _ ->
+                    Triple(
+                        mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java),
+                        rs.getString(2)?.let { mapper.readValue(it, ProgramSessionDefinition::class.java) },
+                        rs.getBoolean(3),
+                    )
+                },
+                UUID.fromString(definition.expoId),
+                definition.programType.name,
+                definition.id,
+            ).singleOrNull()
+            ?.let { (current, pending, deleted) ->
+                if (deleted || definition.copy(pendingRevision = null) !in listOf(current, pending)) {
+                    conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+                }
+            }
+    }
+
     fun observe(definition: ProgramSessionDefinition) {
         jdbc.update(
             "INSERT INTO tb_program_session_state (expo_id, program_type, program_id, definition) VALUES (?, ?, ?, CAST(? AS jsonb)) ON CONFLICT DO NOTHING",

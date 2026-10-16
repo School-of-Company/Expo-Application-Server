@@ -6,6 +6,7 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
+import tools.jackson.databind.annotation.JsonDeserialize
 import java.time.Instant
 import java.util.UUID
 
@@ -15,6 +16,7 @@ enum class ProgramSessionType { STANDARD, TRAINING }
 data class ProgramSessionPolicy(
     val formId: UUID,
     val allowedOccupations: Set<String>,
+    @field:JsonDeserialize(using = AdmissionCapacityDeserializer::class)
     val capacity: Int,
     val waitingCapacity: Int,
     val applicationStartedAt: Instant,
@@ -23,15 +25,30 @@ data class ProgramSessionPolicy(
     val cancelEndedAt: Instant,
     val promotionEndedAt: Instant,
     val groupId: UUID? = null,
-    // Absent means one capacity for the whole session; omitted when null so stored receipts and snapshots stay byte-identical.
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val channels: List<ProgramSessionChannel>? = null,
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    @field:JsonDeserialize(using = AdmissionCapacityDeserializer::class)
+    val preRegistrationCapacity: Int? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    @field:JsonDeserialize(using = AdmissionCapacityDeserializer::class)
+    val onsiteCapacity: Int? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val guardianPolicy: ProgramGuardianPolicy? = null,
 ) {
+    fun hasAdmissionCapacities(): Boolean = preRegistrationCapacity != null || onsiteCapacity != null
+
+    fun admissionCapacitiesValid(): Boolean =
+        if (!hasAdmissionCapacities()) {
+            true
+        } else {
+            capacity > 0 && waitingCapacity >= 0 && preRegistrationCapacity != null && onsiteCapacity != null &&
+                preRegistrationCapacity >= 0 && onsiteCapacity >= 0 && channels == null &&
+                preRegistrationCapacity.toLong() + onsiteCapacity.toLong() == capacity.toLong()
+        }
+
     fun channelOf(occupation: String): ProgramSessionChannel? = channels?.firstOrNull { occupation in it.allowedOccupations }
 
-    // Expo's contract: disjoint occupations whose union and capacity totals equal the session values.
     fun channelsValid(): Boolean {
         val channels = channels ?: return true
         val occupations = channels.flatMap { it.allowedOccupations }
@@ -47,7 +64,7 @@ data class ProgramSessionPolicy(
     fun channelLayout(): Set<Pair<String, Set<String>>>? = channels?.map { it.name to it.allowedOccupations }?.toSet()
 }
 
-@Schema(description = "회차 직업별 모집 채널. 사전·현장 접수 경로와 별개이며 채널 간 정원·대기 정원을 공유하지 않음")
+@Schema(description = "과거 정의 스냅샷의 직업별 모집 채널. 현재 Expo 정의는 제공하지 않으며 사전·현장 접수 경로와 별개")
 data class ProgramSessionChannel(
     val name: String,
     val allowedOccupations: Set<String>,
