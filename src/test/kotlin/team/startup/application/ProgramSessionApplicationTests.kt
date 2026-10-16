@@ -131,6 +131,7 @@ class ProgramSessionApplicationTests {
         formEnd = applicationEnd
         testClock.current = Instant.parse("2026-10-11T10:00:00Z")
         linkFailure = false
+        linkRejections = emptyMap()
         linkCompletedAt = null
         delayedLinkParticipant = null
         title = "Session"
@@ -773,13 +774,13 @@ class ProgramSessionApplicationTests {
         val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
         assertEquals("WAITING", waiting.status)
         assertEquals(null, waiting.traineeId)
-        assertEquals(1, linkCalls.get())
+        assertEquals(2, linkCalls.get())
         mvc
             .perform(
                 get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
             ).andExpect(jsonPath("$.applied").value(false))
         cancel(confirmed.applicationId)
-        assertEquals(2, linkCalls.get())
+        assertEquals(3, linkCalls.get())
         mvc
             .perform(
                 get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
@@ -809,12 +810,12 @@ class ProgramSessionApplicationTests {
         val head = service.execute(headCommand)
         assertEquals("WAITING", head.status)
         assertEquals(null, head.traineeId)
-        assertEquals(1, linkCalls.get())
+        assertEquals(2, linkCalls.get())
         savedQuestions.get(1).asObject().put("id", 908)
         formQuestions = savedQuestions.toString()
         val tail = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
         assertEquals("WAITING", tail.status)
-        assertEquals(1, linkCalls.get())
+        assertEquals(3, linkCalls.get())
         linkFailure = true
         cancel(confirmed.applicationId)
         val repository = context.getBean(ProgramWaitlistRepository::class.java)
@@ -826,7 +827,7 @@ class ProgramSessionApplicationTests {
         linkFailure = false
         repeat(2) { reconcile(ProgramSessionType.TRAINING) }
         val headRequests = linkRequests.map { mapper.readTree(it) }.filter { it.path("participantId").asLong() == 2L }
-        assertEquals(2, headRequests.size)
+        assertEquals(3, headRequests.size)
         headRequests.forEach {
             assertEquals(EXPO, it.path("expoId").stringValue())
             assertEquals("INSTITUTE-48", it.path("trainingId").stringValue())
@@ -843,7 +844,7 @@ class ProgramSessionApplicationTests {
         )
         assertEquals(headCommand.answers, promoted.answers)
         assertEquals(head, service.execute(headCommand))
-        assertEquals(3, linkCalls.get())
+        assertEquals(5, linkCalls.get())
         mvc
             .perform(get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"))
             .andExpect(jsonPath("$.applied").value(true))
@@ -860,7 +861,7 @@ class ProgramSessionApplicationTests {
         val tailRequest = mapper.readTree(linkRequests.last())
         assertEquals(3L, tailRequest.path("participantId").asLong())
         assertTrue(tailRequest.has("trainingId") && tailRequest.path("trainingId").isNull)
-        assertEquals(4, linkCalls.get())
+        assertEquals(6, linkCalls.get())
         assertEquals(1L, count("tb_training_program_application"))
         assertEquals(7L, count("tb_program_session_history"))
         assertEquals(7L, count("tb_program_session_event"))
@@ -887,7 +888,7 @@ class ProgramSessionApplicationTests {
             if (variant == "blank") answers.put("907", " ")
             val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING).copy(answers = answers))
             assertEquals("WAITING", waiting.status)
-            assertEquals(1, linkCalls.get())
+            assertEquals(2, linkCalls.get())
             cancel(confirmed.applicationId)
             val request = mapper.readTree(linkRequests.last())
             assertEquals(2L, request.path("participantId").asLong())
@@ -896,7 +897,7 @@ class ProgramSessionApplicationTests {
             assertEquals("CONFIRMED", promoted.status)
             assertEquals(502L, promoted.traineeId)
             repeat(2) { reconcile(ProgramSessionType.TRAINING) }
-            assertEquals(2, linkCalls.get())
+            assertEquals(3, linkCalls.get())
             mvc
                 .perform(get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"))
                 .andExpect(jsonPath("$.applied").value(true))
@@ -1124,6 +1125,77 @@ class ProgramSessionApplicationTests {
                     next.applicationId,
                 ),
             )
+        }
+    }
+
+    @Test
+    fun `legacy group conflict rejects training waiting so the next waiter is promoted once`() {
+        waitingCapacity = 2
+        addParticipant(3)
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        jdbc.update("INSERT INTO tb_training_program_application (trainee_id, training_program_id) VALUES (502, 2)")
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        }
+        assertEquals(
+            0L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE participant_id = 2", Long::class.java),
+        )
+        val next = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+        assertEquals("WAITING", next.status)
+        cancel(confirmed.applicationId)
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals("CONFIRMED", column("status", next.applicationId))
+        assertEquals(
+            1L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_history WHERE application_id = ? AND status = 'CONFIRMED'",
+                Long::class.java,
+                next.applicationId,
+            ),
+        )
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_training_program_application WHERE training_program_id = 1", Long::class.java),
+        )
+    }
+
+    @Test
+    fun `User outage holds the FIFO head and promotes in order after recovery`() {
+        waitingCapacity = 2
+        addParticipant(3)
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        val next = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+        linkFailure = true
+        cancel(confirmed.applicationId)
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals("WAITING", column("status", head.applicationId))
+        assertEquals("WAITING", column("status", next.applicationId))
+        linkFailure = false
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals("CONFIRMED", column("status", head.applicationId))
+        assertEquals("WAITING", column("status", next.applicationId))
+        cancel(head.applicationId)
+        assertEquals("CONFIRMED", column("status", next.applicationId))
+    }
+
+    @Test
+    fun `permanent User rejection cancels only the head and the next waiter keeps FIFO`() {
+        for (rejection in listOf(404, 409)) {
+            reset()
+            waitingCapacity = 2
+            addParticipant(3)
+            val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+            val head = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+            val next = service.execute(command(participant = 3, type = ProgramSessionType.TRAINING))
+            linkRejections = mapOf(2L to rejection)
+            cancel(confirmed.applicationId)
+            assertEquals("CANCELLED", column("status", head.applicationId))
+            assertEquals("WAITING", column("status", next.applicationId))
+            reconcile(ProgramSessionType.TRAINING)
+            assertEquals("CONFIRMED", column("status", next.applicationId))
+            assertEquals("CANCELLED", column("status", head.applicationId))
         }
     }
 
@@ -1404,7 +1476,7 @@ class ProgramSessionApplicationTests {
         assertEquals((1L..firstBatch).toList(), confirmedParticipants)
         repeat(14) { reconcile(ProgramSessionType.TRAINING) }
         assertEquals(15L, count("tb_training_program_application"))
-        assertEquals(15, linkCalls.get())
+        assertEquals(29, linkCalls.get())
         assertEquals(29L, count("tb_program_session_event"))
         assertEquals(waiting.first(), service.execute(command(participant = 2, type = ProgramSessionType.TRAINING)))
     }
@@ -1545,9 +1617,9 @@ class ProgramSessionApplicationTests {
             assertEquals("CONFIRMED", repository.entry(tail.applicationId)?.status)
             assertEquals(502L, repository.entry(head.applicationId)?.traineeId)
             assertEquals(503L, repository.entry(tail.applicationId)?.traineeId)
-            assertEquals(listOf(1L, 2L, 3L, 4L), linkRequests.map { mapper.readTree(it).path("participantId").asLong() })
+            assertEquals(listOf(1L, 2L, 3L, 2L, 3L, 4L), linkRequests.map { mapper.readTree(it).path("participantId").asLong() })
             repeat(2) { reconcile(ProgramSessionType.TRAINING) }
-            assertEquals(4, linkCalls.get())
+            assertEquals(6, linkCalls.get())
             assertEquals(3L, count("tb_training_program_application"))
             assertEquals(3L, count("tb_program_session_application"))
             assertEquals(3L, count("tb_program_session_receipt"))
@@ -1939,6 +2011,8 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var linkFailure = false
 
+        @Volatile private var linkRejections = mapOf<Long, Int>()
+
         @Volatile private var linkCompletedAt: Instant? = null
 
         @Volatile private var delayedLinkParticipant: Long? = null
@@ -2027,6 +2101,7 @@ class ProgramSessionApplicationTests {
                                 linkRequests.add(body)
                                 if (linkFailure) status = 503
                                 val participantId = ObjectMapper().readTree(body).path("participantId").asLong()
+                                linkRejections[participantId]?.let { status = it }
                                 if (delayedLinkParticipant == null || delayedLinkParticipant == participantId) {
                                     linkCompletedAt?.let { testClock.current = it }
                                 }
