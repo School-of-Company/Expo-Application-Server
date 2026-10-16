@@ -158,7 +158,11 @@ class ProgramSessionApplicationRepository(
             mapper.writeValueAsString(command.answers),
             channel,
         )
-        jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, ?)", receipt.applicationId, receipt.status)
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded) VALUES (?, ?, 'USER', TRUE)",
+            receipt.applicationId,
+            receipt.status,
+        )
         jdbc.update(
             "INSERT INTO tb_program_session_receipt (expo_id, participant_id, idempotency_key, command, receipt, application_id) " +
                 "VALUES (?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?)",
@@ -182,8 +186,9 @@ class ProgramSessionApplicationRepository(
             programId,
         )
         jdbc.update(
-            "INSERT INTO tb_program_session_history (application_id, status) " +
-                "SELECT id, 'CANCELLED' FROM tb_program_session_application WHERE program_type = ? AND program_id = ? AND status <> 'CANCELLED'",
+            "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status, previous_status_recorded) " +
+                "SELECT id, 'CANCELLED', 'SYSTEM', status, TRUE FROM tb_program_session_application " +
+                "WHERE program_type = ? AND program_id = ? AND status <> 'CANCELLED'",
             type.name,
             programId,
         )
@@ -213,8 +218,9 @@ class ProgramSessionApplicationRepository(
                     programId,
                 )
                 jdbc.update(
-                    "INSERT INTO tb_program_session_history (application_id, status) " +
-                        "SELECT id, 'CANCELLED' FROM tb_program_session_application " +
+                    "INSERT INTO tb_program_session_history " +
+                        "(application_id, status, actor_type, previous_status, previous_status_recorded) " +
+                        "SELECT id, 'CANCELLED', 'SYSTEM', status, TRUE FROM tb_program_session_application " +
                         "WHERE program_type = 'TRAINING' AND trainee_id = ? AND program_id = ? AND status = 'CONFIRMED'",
                     traineeId,
                     programId,

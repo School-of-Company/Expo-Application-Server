@@ -1,7 +1,11 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.stereotype.Service
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
 import team.startup.application.domain.application.presentation.dto.AdminApplicationActivityPage
 import team.startup.application.domain.application.presentation.dto.AdminApplicationActivityQuery
 import team.startup.application.domain.application.repository.AdminApplicationActivityRepository
@@ -11,10 +15,23 @@ import java.util.UUID
 @Service
 class GetAdminApplicationActivityServiceImpl(
     private val repository: AdminApplicationActivityRepository,
+    private val participants: AdminParticipantGateway,
+    transactionManager: PlatformTransactionManager,
 ) : GetAdminApplicationActivityService {
-    @Transactional(readOnly = true)
+    private val reads =
+        TransactionTemplate(transactionManager).apply {
+            isReadOnly = true
+            isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+        }
+
+    @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(
         expoId: UUID,
         query: AdminApplicationActivityQuery,
-    ): AdminApplicationActivityPage = repository.find(expoId, query)
+    ): AdminApplicationActivityPage {
+        val candidates = participants.resolve(expoId, query.q, null)
+        val page = requireNotNull(reads.execute { repository.find(expoId, query, candidates) })
+        val details = participants.details(expoId, page.items.map { it.participantId }.distinct())
+        return page.copy(items = page.items.map { it.copy(participant = details.getValue(it.participantId)) })
+    }
 }
