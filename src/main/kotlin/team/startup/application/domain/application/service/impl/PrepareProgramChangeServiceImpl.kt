@@ -77,6 +77,7 @@ class PrepareProgramChangeServiceImpl(
             val active = repository.activeCount(old)
             val confirmed = ledger.confirmedCount(old.programType, old.id)
             val waiting = repository.waitingCount(old)
+            if ((active > 0 || confirmed > 0) && next != null && next.policy?.guardianPolicy != old.policy?.guardianPolicy) conflict()
             if ((next == null && (active > 0 || confirmed > 0)) ||
                 (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
                 (next?.policy != null && (next.policy.capacity < confirmed || next.policy.waitingCapacity < waiting))
@@ -86,7 +87,6 @@ class PrepareProgramChangeServiceImpl(
             // Existing applications are never reclassified: with any history the channel layout is frozen,
             // and each channel may only shrink down to its own confirmed and waiting rows.
             next?.policy?.let { policy ->
-                if ((active > 0 || confirmed > 0) && policy.guardianPolicy != old.policy?.guardianPolicy) conflict()
                 if (old.policy?.hasAdmissionCapacities() == true && !policy.hasAdmissionCapacities()) conflict()
                 if (policy.hasAdmissionCapacities()) {
                     val unknown = ledger.unknownAdmissionCount(old)

@@ -62,4 +62,5 @@ data class StudentGuardianEligibilityQuery(
     val links: List<StudentGuardianLink>,
     val phase: StudentGuardianValidationPhase,
     val reusedGuardianIds: Set<Long> = emptySet(),
+    val submissions: List<StudentGuardianSubmission> = emptyList(),
 )

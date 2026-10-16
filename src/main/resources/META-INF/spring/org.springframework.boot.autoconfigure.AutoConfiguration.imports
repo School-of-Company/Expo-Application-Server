@@ -1,1 +1,2 @@
 team.startup.application.domain.application.service.impl.ProgramFormAdapterConfig
+team.startup.application.domain.application.service.impl.StudentGuardianEligibilityAdapterConfig
