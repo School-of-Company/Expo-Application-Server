@@ -45,7 +45,7 @@ data class ProgramSessionPolicy(
     fun channelLayout(): Set<Pair<String, Set<String>>>? = channels?.map { it.name to it.allowedOccupations }?.toSet()
 }
 
-@Schema(description = "회차 신청 채널. 채널마다 정원·대기 정원을 따로 쓰고 빈자리를 다른 채널과 나누지 않음")
+@Schema(description = "회차 직업별 모집 채널. 사전·현장 접수 경로와 별개이며 채널 간 정원·대기 정원을 공유하지 않음")
 data class ProgramSessionChannel(
     val name: String,
     val allowedOccupations: Set<String>,
