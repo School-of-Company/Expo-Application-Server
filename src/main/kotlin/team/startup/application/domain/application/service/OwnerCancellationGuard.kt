@@ -1,5 +1,7 @@
 package team.startup.application.domain.application.service
 
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import java.time.Instant
@@ -19,6 +21,12 @@ interface OwnerCancellationGuard {
         participantId: Long,
         sessionId: Long,
     ): Permit
+
+    fun acquireAdminProgram(
+        command: CancelOwnerApplicationCommand,
+        participantId: Long,
+        programId: Long,
+    ): Permit = throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "관리자 프로그램 취소 보호 공급자가 준비되지 않았습니다.")
 
     interface Permit : AutoCloseable {
         val linkedTraineeId: Long?
