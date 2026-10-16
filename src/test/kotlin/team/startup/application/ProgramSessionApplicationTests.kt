@@ -2869,7 +2869,8 @@ class ProgramSessionApplicationTests {
         capacity = 3
         val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
         admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
-        val supplied = requireNotNull(context.getBean(RegistrationGateway::class.java).programDefinition(EXPO, ProgramSessionType.STANDARD, 1))
+        val supplied =
+            requireNotNull(context.getBean(RegistrationGateway::class.java).programDefinition(EXPO, ProgramSessionType.STANDARD, 1))
         assertEquals(guardian, supplied.policy?.guardianPolicy)
         assertEquals(1, supplied.policy?.preRegistrationCapacity)
         assertEquals(2, supplied.policy?.onsiteCapacity)
