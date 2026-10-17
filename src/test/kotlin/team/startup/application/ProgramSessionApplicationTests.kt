@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
+import org.postgresql.PGConnection
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.boot.test.context.SpringBootTest
@@ -188,6 +189,38 @@ class ProgramSessionApplicationTests {
         attributionAfterUser = null
         attributionAccessStatus = 200
         attributionActor = 42
+    }
+
+    @Test
+    fun `admin change signal follows committed apply cancel and promotion but not rejected applications`() {
+        // #162: 관리자 SSE는 V28 트리거의 커밋 후 NOTIFY만 따른다. 실제 신청·취소·승급 경로로 확인한다.
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("LISTEN application_admin_changes") }
+            val notifications = connection.unwrap(PGConnection::class.java)
+
+            fun signals(): Int {
+                Thread.sleep(200)
+                return notifications.getNotifications(200).orEmpty().count { it.parameter == EXPO }
+            }
+            signals()
+            waitingCapacity = 1
+            val confirmed = service.execute(command())
+            assertEquals(1, signals())
+            assertEquals("WAITING", service.execute(command(participant = 2)).status)
+            assertEquals(1, signals())
+            assertEquals(confirmed, service.execute(command()))
+            assertEquals(0, signals())
+            // 사전등록 확정 행 추가도 관리자 집계 변경이다.
+            addParticipant(3)
+            assertEquals(1, signals())
+            assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3)) }
+            assertEquals(0, signals())
+            // 취소와 대기 승급은 한 트랜잭션이라 신호 하나로 합쳐진다.
+            cancel(confirmed.applicationId)
+            assertEquals(1, signals())
+            cancel(confirmed.applicationId)
+            assertEquals(0, signals())
+        }
     }
 
     @Test

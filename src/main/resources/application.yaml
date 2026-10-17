@@ -35,6 +35,13 @@ application:
     bootstrap-servers: ${APPLICATION_PROMOTION_OFFERS_BOOTSTRAP_SERVERS:}
     response-url: ${APPLICATION_PROMOTION_OFFERS_RESPONSE_URL:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  # #162 관리자 신청 현황 변경 SSE(docs/admin-data-change-events.md). Gateway의 text/event-stream 전달을 확인한 뒤 켠다.
+  admin-events:
+    enabled: ${APPLICATION_ADMIN_EVENTS_ENABLED:false}
+    max-connections: ${APPLICATION_ADMIN_EVENTS_MAX_CONNECTIONS:500}
+    max-connections-per-expo: ${APPLICATION_ADMIN_EVENTS_MAX_CONNECTIONS_PER_EXPO:50}
+    connection-lifetime: ${APPLICATION_ADMIN_EVENTS_CONNECTION_LIFETIME:PT30M}
+    heartbeat-interval: ${APPLICATION_ADMIN_EVENTS_HEARTBEAT_INTERVAL:PT25S}
   admin-group-messaging:
     expo-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_EXPO_URL:}
     user-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_USER_URL:}
