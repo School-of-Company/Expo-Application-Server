@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
@@ -25,7 +26,9 @@ class WithdrawOwnerPreregisterWaitlistServiceImpl(
                     ledger.lock(command.expoId)
                     val reservation =
                         reservations.waitlistedByPhone(command.expoId, phone) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
-                    if (!reservations.withdraw(reservation)) conflict("승급 처리 중입니다. 확정 뒤 신청 취소를 이용해 주세요.")
+                    if (!reservations.withdraw(reservation, ApplicationActorType.USER)) {
+                        conflict("승급 처리 중입니다. 확정 뒤 신청 취소를 이용해 주세요.")
+                    }
                     reservation.sessionId
                 },
             )

@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.stereotype.Component
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -35,6 +36,8 @@ class PreregisterCancellation(
         participantId: Long,
         representativeId: Long?,
         permit: OwnerCancellationGuard.Permit,
+        // The authenticated representative for owner cancellation; null (UNKNOWN) for unauthenticated internal callers.
+        actorParticipantId: Long?,
     ) {
         if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
         ledger.ensureAvailable(expoId, sessionId)
@@ -44,7 +47,12 @@ class PreregisterCancellation(
         if (participantId == representativeId && owners.activeCompanions(expoId, participantId)) {
             conflict("동행자의 사전등록을 먼저 취소해야 합니다.")
         }
-        preregister.status(applicationId, "CANCELLED")
+        preregister.status(
+            applicationId,
+            "CANCELLED",
+            if (actorParticipantId == null) ApplicationActorType.UNKNOWN else ApplicationActorType.USER,
+            actorParticipantId,
+        )
         val outboxId = attendance.cancelled(expoId, participantId)
         permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L))
     }

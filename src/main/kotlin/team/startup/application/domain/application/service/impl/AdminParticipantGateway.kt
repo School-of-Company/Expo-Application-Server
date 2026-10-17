@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -24,6 +25,7 @@ class AdminParticipantGateway(
     @Value("\${application.registration.user-internal-token:}") token: String,
 ) {
     private val http = AdminSourceHttp(mapper, url, token)
+    private val log = LoggerFactory.getLogger(javaClass)
 
     fun resolve(
         expoId: UUID,
@@ -74,6 +76,40 @@ class AdminParticipantGateway(
         }
         confirm(expoId, wanted.sorted())
         return results
+    }
+
+    /**
+     * Current User names for optional actor display. User answers all-or-nothing, so a missing ID (404) or an
+     * upstream/contract failure returns null for the whole batch instead of failing the readable history.
+     */
+    fun names(
+        expoId: UUID,
+        participantIds: List<Long>,
+    ): Map<Long, String>? {
+        if (participantIds.isEmpty()) return emptyMap()
+        // ponytail: one call; callers pass at most one admin page (<= 5001 rows), under User's 10,000-ID limit.
+        val ids = participantIds.distinct().sorted()
+        return try {
+            val tree =
+                http.read(
+                    "/internal/standard-participants/names",
+                    mapOf("expoId" to expoId.toString(), "participantIds" to ids),
+                    propagatedStatuses = setOf(404),
+                )
+            http.valid {
+                require(tree.isArray && tree.size() == ids.size)
+                (0 until tree.size())
+                    .associate { index ->
+                        val node = tree[index]
+                        val id = node["participantId"]
+                        require(id?.isIntegralNumber == true && id.canConvertToLong() && node["name"]?.isString == true)
+                        id.asLong() to node["name"].stringValue()
+                    }.also { require(it.keys == ids.toSet()) }
+            }
+        } catch (exception: ResponseStatusException) {
+            log.warn("Actor names unavailable for expo {}: {}", expoId, exception.statusCode)
+            null
+        }
     }
 
     private fun confirm(

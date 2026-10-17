@@ -129,6 +129,9 @@ class PreregisterWaitlistHttpTests {
                 .response.contentAsString,
         )
 
+    private fun withdrawnActor(key: String): String? =
+        jdbc.queryForObject("SELECT withdrawn_actor_type FROM tb_preregister_reservation WHERE request_id = ?", String::class.java, key)
+
     private fun state(key: String): String =
         jdbc.queryForObject("SELECT state FROM tb_preregister_reservation WHERE request_id = ?", String::class.java, key)!!
 
@@ -238,6 +241,8 @@ class PreregisterWaitlistHttpTests {
         assertEquals(204, withdraw("b"))
         assertEquals(409, withdraw("c"))
         assertEquals(2, userRequests.size)
+        // The internal path carries no authenticated identity, and the replay keeps the first record.
+        assertEquals("UNKNOWN", withdrawnActor("b"))
     }
 
     @Test
@@ -313,6 +318,7 @@ class PreregisterWaitlistHttpTests {
                         .header("X-CSRF-TOKEN", requireNotNull(lookup.response.getHeader("X-CSRF-TOKEN"))),
                 ).andReturn()
         assertEquals(204, withdrawal.response.status)
+        assertEquals("USER", withdrawnActor("b"))
         val after =
             mvc.perform(
                 get("/application/expos/$EXPO/my-applications/preregister-waitlist").cookie(Cookie("PARTICIPANT_SESSION", "owner")),

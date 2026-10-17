@@ -247,14 +247,16 @@ class ProgramWaitlistRepository(
         actorType: ApplicationActorType,
         traineeId: Long? = null,
         actorId: Long? = null,
+        actorParticipantId: Long? = null,
     ) {
         jdbc.update(
             "INSERT INTO tb_program_session_history " +
-                "(application_id, status, actor_type, actor_id, previous_status, previous_status_recorded) " +
-                "SELECT id, ?, ?, ?, status, TRUE FROM tb_program_session_application WHERE id = ?",
+                "(application_id, status, actor_type, actor_id, actor_participant_id, previous_status, previous_status_recorded) " +
+                "SELECT id, ?, ?, ?, ?, status, TRUE FROM tb_program_session_application WHERE id = ?",
             status,
             actorType.name,
             actorId,
+            actorParticipantId,
             id,
         )
         jdbc.update(

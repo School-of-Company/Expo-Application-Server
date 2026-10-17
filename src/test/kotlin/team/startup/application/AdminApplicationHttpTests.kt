@@ -70,6 +70,7 @@ class AdminApplicationHttpTests {
         userStatus = 200
         userBody = null
         batchBody = null
+        namesStatus = 200
         userRequests.clear()
         expoStatus = 200
         expoBody = null
@@ -256,6 +257,227 @@ class AdminApplicationHttpTests {
     }
 
     private fun summary(query: String = "") = read("/summary$query")
+
+    @Test
+    fun `처리 이력은 취소 대상과 실행 대표자를 구분하고 이름 실패에도 실행자를 유지한다`() {
+        jdbc.update(
+            "INSERT INTO tb_program_session_history " +
+                "(application_id, status, actor_type, actor_participant_id, previous_status, previous_status_recorded, created_at) " +
+                "VALUES (?, 'CANCELLED', 'USER', 1, 'CONFIRMED', TRUE, '2026-10-12T00:02:00Z')",
+            first,
+        )
+        // A pre-#143 USER cancellation stays unidentified rather than being inferred from the target or representative.
+        jdbc.update(
+            "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded, created_at) " +
+                "VALUES (?, 'CANCELLED', 'USER', FALSE, '2026-10-12T00:01:00Z')",
+            second,
+        )
+        val path = "/application/admin/expos/$expoId/program-session-applications/activities?action=CANCELLED"
+
+        fun items() =
+            mapper
+                .readTree(
+                    mvc
+                        .perform(get(path).header("Authorization", "Bearer original-admin-jwt"))
+                        .andReturn()
+                        .response
+                        .also { assertEquals(200, it.status, it.contentAsString) }
+                        .contentAsString,
+                )["items"]
+                .toList()
+
+        val target = jdbc.queryForObject("SELECT participant_id FROM tb_program_session_application WHERE id = ?", Long::class.java, first)
+        val (current, legacy) = items()
+        assertEquals(target, current["participantId"].asLong())
+        assertTrue(target != 1L)
+        assertEquals("USER", current["actorType"].asString())
+        assertTrue(current["actorId"].isNull)
+        assertEquals(1, current["actorUser"]["participantId"].asInt())
+        assertTrue(current["actorUser"]["reservationRequestId"].isNull)
+        assertEquals("REPRESENTATIVE", current["actorUser"]["role"].asString())
+        assertEquals("Now 1", current["actorUser"]["name"].asString())
+        assertEquals("CURRENT_USER", current["actorUser"]["nameSource"].asString())
+        assertEquals("USER", legacy["actorType"].asString())
+        assertTrue(legacy["actorUser"] == null || legacy["actorUser"].isNull)
+        assertEquals(listOf("names:$expoId:[1]"), userRequests.filter { it.startsWith("names:") })
+        for (status in listOf(404, 500)) {
+            namesStatus = status
+            val failed = items().first()
+            assertEquals(1, failed["actorUser"]["participantId"].asInt())
+            assertTrue(failed["actorUser"]["name"].isNull)
+            assertEquals("Person $target", failed["participant"]["name"].asString())
+        }
+        assertEquals(3, userRequests.count { it.startsWith("names:") })
+        assertEquals(
+            "1",
+            jdbc.queryForObject(
+                "SELECT actor_participant_id::text FROM tb_program_session_history WHERE application_id = ? AND status = 'CANCELLED'",
+                String::class.java,
+                first,
+            ),
+        )
+    }
+
+    @Test
+    fun `사전등록 행은 확정 취소와 대기 철회의 시각과 실행 대표자를 출처와 함께 제공한다`() {
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+        val ids =
+            listOf(1L, 2L, 3L).map { participant ->
+                requireNotNull(
+                    jdbc.queryForObject(
+                        "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                            "VALUES (?, 1, 1, ?, ?) RETURNING id",
+                        Long::class.java,
+                        expoId,
+                        participant,
+                        if (participant == 1L) "CONFIRMED" else "CANCELLED",
+                    ),
+                )
+            }
+        jdbc.update(
+            "INSERT INTO tb_preregister_transition " +
+                "(application_id, expo_id, session_id, participant_id, status, actor_type, actor_participant_id) " +
+                "VALUES (?, ?, 1, 2, 'CANCELLED', 'USER', 1)",
+            ids[1],
+            expoId,
+        )
+        // Participant 3 is a historic cancellation without a recorded time or actor.
+        jdbc.update(
+            "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status, created_at) " +
+                "VALUES (?, ?, 1, 3, 'CANCELLED', NULL)",
+            ids[2],
+            expoId,
+        )
+        val snapshot = """{"name":"Applied name","phoneNumber":"010-3333-4444","informationJson":"{}","questions":[]}"""
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq, " +
+                "withdrawn_at, withdrawn_actor_type) " +
+                "VALUES (?, 'owner', 1, '{}', ?, 2, 'REJECTED', 1, '2026-10-12T00:00:00Z', 'USER'), " +
+                "(?, 'legacy', 1, '{}', ?, 2, 'REJECTED', 2, '2026-10-12T00:01:00Z', NULL), " +
+                "(?, 'wait', 1, '{}', ?, 2, 'WAITING', 3, NULL, NULL)",
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+        )
+        participantIds = listOf(1L, 2L, 3L)
+
+        fun rows() =
+            mapper
+                .readTree(
+                    mvc
+                        .perform(
+                            get("/application/admin/expos/$expoId/preregistrations").header("Authorization", "Bearer original-admin-jwt"),
+                        ).andReturn()
+                        .response
+                        .also { assertEquals(200, it.status, it.contentAsString) }
+                        .contentAsString,
+                )["items"]
+                .associateBy { it["key"].asString() }
+
+        val rows = rows()
+
+        fun row(key: String) = rows.getValue(key)
+        val confirmed = row("APPLICATION:$expoId:${ids[0]}")
+        assertTrue(confirmed["cancelledAt"].isNull && confirmed["cancellationActorType"].isNull)
+        val cancelled = row("APPLICATION:$expoId:${ids[1]}")
+        assertTrue(!cancelled["cancelledAt"].isNull)
+        assertEquals("USER", cancelled["cancellationActorType"].asString())
+        assertEquals(2, cancelled["participantId"].asInt())
+        assertEquals(1, cancelled["cancellationActorUser"]["participantId"].asInt())
+        assertEquals("Now 1", cancelled["cancellationActorUser"]["name"].asString())
+        assertEquals("CURRENT_USER", cancelled["cancellationActorUser"]["nameSource"].asString())
+        val historic = row("APPLICATION:$expoId:${ids[2]}")
+        assertTrue(historic["cancelledAt"].isNull)
+        assertEquals("UNKNOWN", historic["cancellationActorType"].asString())
+        assertTrue(historic["cancellationActorUser"].isNull)
+        val owner = row("RESERVATION:$expoId:owner")
+        assertEquals("CANCELLED", owner["status"].asString())
+        assertEquals("2026-10-12T00:00:00Z", owner["cancelledAt"].asString())
+        assertEquals("USER", owner["cancellationActorType"].asString())
+        assertTrue(owner["cancellationActorUser"]["participantId"].isNull)
+        assertEquals("owner", owner["cancellationActorUser"]["reservationRequestId"].asString())
+        assertEquals("REPRESENTATIVE", owner["cancellationActorUser"]["role"].asString())
+        assertEquals("Applied name", owner["cancellationActorUser"]["name"].asString())
+        assertEquals("REGISTRATION_SNAPSHOT", owner["cancellationActorUser"]["nameSource"].asString())
+        assertEquals("UNKNOWN", row("RESERVATION:$expoId:legacy")["cancellationActorType"].asString())
+        assertTrue(row("RESERVATION:$expoId:legacy")["cancellationActorUser"].isNull)
+        assertTrue(row("RESERVATION:$expoId:wait")["cancellationActorType"].isNull)
+        namesStatus = 503
+        val degraded = rows()
+        assertTrue(degraded.getValue("APPLICATION:$expoId:${ids[1]}")["cancellationActorUser"]["name"].isNull)
+        assertEquals(1, degraded.getValue("APPLICATION:$expoId:${ids[1]}")["cancellationActorUser"]["participantId"].asInt())
+        assertEquals("Applied name", degraded.getValue("RESERVATION:$expoId:owner")["cancellationActorUser"]["name"].asString())
+    }
+
+    @Test
+    fun `V26 업그레이드는 과거 취소 시각과 실행자를 추정하지 않고 새 전이부터 시각을 기록한다`() {
+        val schema = "actor_upgrade_" + UUID.randomUUID().toString().replace("-", "")
+        val source = requireNotNull(jdbc.dataSource)
+        Flyway
+            .configure()
+            .dataSource(source)
+            .schemas(schema)
+            .defaultSchema(schema)
+            .target("25")
+            .load()
+            .migrate()
+        try {
+            source.connection.use { connection ->
+                connection.schema = schema
+                try {
+                    val scoped = JdbcTemplate(SingleConnectionDataSource(connection, true))
+                    scoped.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expoId)
+                    scoped.update(
+                        "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status) " +
+                            "VALUES (1, ?, 1, 2, 'CANCELLED')",
+                        expoId,
+                    )
+                    scoped.update(
+                        "INSERT INTO tb_preregister_reservation " +
+                            "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq, withdrawn_at) " +
+                            "VALUES (?, 'old', 1, '{}', '{}', 1, 'REJECTED', 1, CURRENT_TIMESTAMP)",
+                        expoId,
+                    )
+                    Flyway
+                        .configure()
+                        .dataSource(source)
+                        .schemas(schema)
+                        .defaultSchema(schema)
+                        .load()
+                        .migrate()
+                    scoped.update(
+                        "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status) " +
+                            "VALUES (2, ?, 1, 3, 'CANCELLED')",
+                        expoId,
+                    )
+                    assertEquals(
+                        listOf("UNKNOWN:null:false", "UNKNOWN:null:true"),
+                        scoped.query(
+                            "SELECT actor_type, actor_participant_id, created_at IS NOT NULL FROM tb_preregister_transition ORDER BY id",
+                        ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getBoolean(3)}" },
+                    )
+                    assertEquals(
+                        null,
+                        scoped.queryForObject(
+                            "SELECT withdrawn_actor_type FROM tb_preregister_reservation WHERE request_id = 'old'",
+                            String::class.java,
+                        ),
+                    )
+                    assertThrows(org.springframework.dao.DataIntegrityViolationException::class.java) {
+                        scoped.update("UPDATE tb_preregister_transition SET actor_participant_id = 1 WHERE actor_type = 'UNKNOWN'")
+                    }
+                } finally {
+                    connection.schema = "public"
+                }
+            }
+        } finally {
+            jdbc.execute("DROP SCHEMA $schema CASCADE")
+        }
+    }
 
     @Test
     fun `V21 업그레이드는 과거 주체와 이전 상태를 추정하지 않는다`() {
@@ -1299,6 +1521,7 @@ class AdminApplicationHttpTests {
         private var userStatus = 200
         private var userBody: String? = null
         private var batchBody: String? = null
+        private var namesStatus = 200
         private val userRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
         private var expoStatus = 200
         private var expoBody: String? = null
@@ -1330,6 +1553,20 @@ class AdminApplicationHttpTests {
                         }
                     val bytes = body.toByteArray()
                     exchange.sendResponseHeaders(userStatus, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                createContext("/internal/standard-participants/names") { exchange ->
+                    assertEquals("user-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                    val request = ObjectMapper().readTree(exchange.requestBody.bufferedReader().readText())
+                    val ids = request["participantIds"]
+                    userRequests.add("names:${request["expoId"].asString()}:$ids")
+                    val body =
+                        (0 until ids.size()).joinToString(",", "[", "]") {
+                            """{"participantId":${ids[it].asLong()},"name":"Now ${ids[it].asLong()}"}"""
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(namesStatus, bytes.size.toLong())
                     exchange.responseBody.use { it.write(bytes) }
                     exchange.close()
                 }

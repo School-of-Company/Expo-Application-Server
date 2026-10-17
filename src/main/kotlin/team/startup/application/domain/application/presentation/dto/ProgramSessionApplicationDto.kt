@@ -165,7 +165,15 @@ data class ProgramSessionKey(
     val programId: Long,
 )
 
+/** The actor comes only from verified admin access or the authenticated managed party; internal calls stay UNKNOWN. */
 data class CancelProgramSessionCommand(
     val applicationId: UUID,
+    val actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
     val actorId: Long? = null,
-)
+    val actorParticipantId: Long? = null,
+) {
+    init {
+        require((actorType == ApplicationActorType.ADMIN) == (actorId != null))
+        require((actorType == ApplicationActorType.USER) == (actorParticipantId != null))
+    }
+}

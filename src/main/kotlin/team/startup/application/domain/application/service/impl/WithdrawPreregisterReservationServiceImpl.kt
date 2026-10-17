@@ -5,6 +5,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.PreregisterReservationKey
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.WithdrawPreregisterReservationService
@@ -23,7 +24,10 @@ class WithdrawPreregisterReservationServiceImpl(
                 val reservation =
                     reservations.find(command.expoId, command.requestId, "") ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
                 if (reservation.withdrawn) return@execute null
-                if (!reservations.withdraw(reservation)) conflict("대기 중인 신청만 취소할 수 있습니다.")
+                // The internal path carries no authenticated human identity.
+                if (!reservations.withdraw(reservation, ApplicationActorType.UNKNOWN)) {
+                    conflict("대기 중인 신청만 취소할 수 있습니다.")
+                }
                 reservation.sessionId
             } ?: return
         waitlist.promoteQuietly(command.expoId, sessionId)

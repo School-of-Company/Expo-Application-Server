@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.AdminCancellationResult
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.CancelAdminApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
@@ -84,7 +85,7 @@ class CancelAdminApplicationServiceImpl(
                         conflict("취소 대상 신청이 변경되었습니다.")
                     }
                     if (!clock.instant().isBefore(deadline)) conflict("신청 취소 기간이 끝났습니다.")
-                    cancel.execute(CancelProgramSessionCommand(command.applicationId, access.adminId))
+                    cancel.execute(CancelProgramSessionCommand(command.applicationId, ApplicationActorType.ADMIN, actorId = access.adminId))
                     deliveries.abort(operationId)
                 }
             } catch (exception: Exception) {

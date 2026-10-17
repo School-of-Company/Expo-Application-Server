@@ -2,6 +2,7 @@ package team.startup.application.domain.application.presentation.dto
 
 import com.fasterxml.jackson.annotation.JsonAnySetter
 import com.fasterxml.jackson.annotation.JsonFormat
+import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
 import jakarta.validation.constraints.AssertTrue
 import jakarta.validation.constraints.Max
@@ -47,6 +48,18 @@ data class AdminPreregistrationRow(
     val createdAt: Instant?,
     val participant: AdminParticipantDetail? = null,
     val reservation: JsonNode? = null,
+    @field:Schema(
+        description = "취소·대기 철회 시각. 취소가 아니거나 #143 이전 확정 취소처럼 시각이 기록되지 않았으면 null",
+    )
+    val cancelledAt: Instant? = null,
+    @field:Schema(description = "취소 주체. 취소가 아니면 null, 과거 미기록·인증 주체 없는 내부 철회는 UNKNOWN")
+    val cancellationActorType: ApplicationActorType? = null,
+    @field:Schema(
+        description =
+            "USER 취소의 실제 실행 대표자. 확정 취소는 User 참가자 ID와 현재 이름, " +
+                "대기 철회는 예약 requestId와 신청 당시 이름",
+    )
+    val cancellationActorUser: ApplicationUserActor? = null,
 )
 
 data class AdminPreregistrationPage(
