@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ManagedParticipantCommand
@@ -26,15 +27,16 @@ class ManagedParticipantController(
     private val qr: GetParticipantQrService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val cookieName: String,
 ) {
-    @Operation(summary = "대표자 관리 참가자와 프로그램 역할 자격 조회")
+    @Operation(summary = "대표자 관리 참가자와 프로그램 역할 자격 조회. onsite=true이면 현장 신청 자격(사전등록 확정 또는 현장 등록)으로 판정")
     @GetMapping("/application/expos/{expoId}/program-sessions/{programType}/{programId}/participants")
     fun participants(
         @PathVariable expoId: UUID,
         @PathVariable programType: ProgramSessionType,
         @PathVariable programId: Long,
+        @RequestParam(defaultValue = "false") onsite: Boolean,
         request: HttpServletRequest,
     ) = ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(
-        participants.execute(ProgramParticipantsCommand(owner(expoId, request), programType, positive(programId))),
+        participants.execute(ProgramParticipantsCommand(owner(expoId, request), programType, positive(programId), onsite)),
     )
 
     @Operation(summary = "대표자 소유 확정 참가자의 개인 QR 조회")

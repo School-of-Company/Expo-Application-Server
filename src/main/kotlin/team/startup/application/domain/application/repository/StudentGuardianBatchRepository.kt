@@ -44,7 +44,10 @@ class StudentGuardianBatchRepository(
             ).singleOrNull()
 
     private fun snapshot(command: ApplyStudentGuardianBatchCommand): String =
-        mapper.writeValueAsString(mapOf("key" to command.key, "request" to command.request))
+        mapper.writeValueAsString(
+            mapOf("key" to command.key, "request" to command.request) +
+                if (command.onsite) mapOf("admissionRoute" to "ONSITE") else emptyMap(),
+        )
 
     fun save(
         command: ApplyStudentGuardianBatchCommand,

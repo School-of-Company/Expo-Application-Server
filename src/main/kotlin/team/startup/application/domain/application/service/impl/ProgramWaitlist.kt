@@ -59,7 +59,6 @@ class ProgramWaitlist(
         now: Instant = now(),
     ) {
         val policy = definition.policy ?: return
-        if (policy.hasAdmissionCapacities()) return
         if (policy.closed || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
             !now.isBefore(policy.promotionEndedAt)
         ) {
@@ -74,6 +73,8 @@ class ProgramWaitlist(
                 minOf(
                     policy.capacity - ledger.confirmedCount(definition.programType, definition.id),
                     channel?.let { (it.capacity - repository.confirmedCount(definition, it.name)).toLong() } ?: Long.MAX_VALUE,
+                    // 분리 회차의 대기는 사전 좌석으로만 승급한다. 현장 좌석은 쓰지 않는다.
+                    if (policy.hasAdmissionCapacities()) ledger.preRegistrationRemaining(definition) else Long.MAX_VALUE,
                     budget.toLong(),
                 )
             if (remaining <= 0) continue

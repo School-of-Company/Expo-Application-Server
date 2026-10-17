@@ -14,6 +14,7 @@ data class ProgramParticipantsCommand(
     val owner: ManagedParticipantCommand,
     val type: ProgramSessionType,
     val programId: Long,
+    val onsite: Boolean = false,
 )
 
 data class ProgramParticipantItem(
@@ -36,7 +37,9 @@ data class ProgramAdmissionSeats(
     val preRegistration: ProgramAdmissionCapacity,
     val onsite: ProgramAdmissionCapacity,
     val unknownConfirmedCount: Long,
+    @field:Schema(description = "사전 좌석이 없을 때 사전 대기를 받는 회차인지(대기 정원 > 0). 현장 접수는 대기가 없다")
     val waitingEnabled: Boolean = false,
+    @field:Schema(description = "현장 정원이 있어 현장 신청 진입점을 쓸 수 있는 회차인지. 개방 여부는 신청 시 프로그램 폼 기간으로 판정한다")
     val onsiteAdmissionEnabled: Boolean = false,
 )
 

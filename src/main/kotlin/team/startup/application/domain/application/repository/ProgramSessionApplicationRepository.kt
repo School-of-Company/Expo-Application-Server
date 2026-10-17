@@ -263,7 +263,7 @@ class ProgramSessionApplicationRepository(
                 "participantId" to command.participantId,
                 "formVersion" to command.formVersion,
                 "answers" to command.answers,
-            ),
+            ) + if (command.onsite) mapOf("admissionRoute" to "ONSITE") else emptyMap(),
         )
 
     fun confirmedPreregister(command: ApplyProgramSessionCommand): Boolean =
@@ -334,6 +334,11 @@ class ProgramSessionApplicationRepository(
         return (capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition)).coerceAtLeast(0)
     }
 
+    fun onsiteRemaining(definition: ProgramSessionDefinition): Long {
+        val capacity = requireNotNull(requireNotNull(definition.policy).onsiteCapacity)
+        return (capacity - admissionConfirmedCount(definition, "ONSITE") - unknownAdmissionCount(definition)).coerceAtLeast(0)
+    }
+
     fun admissionSeats(definition: ProgramSessionDefinition): ProgramAdmissionSeats? {
         val policy = definition.policy?.takeIf { it.hasAdmissionCapacities() } ?: return null
         if (!policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "접수 경로별 정원 정의가 올바르지 않습니다.")
@@ -352,6 +357,8 @@ class ProgramSessionApplicationRepository(
                 (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
             ),
             unknown,
+            waitingEnabled = policy.waitingCapacity > 0,
+            onsiteAdmissionEnabled = policy.onsiteCapacity > 0 && policy.admissionWindow(onsite = true) != null,
         )
     }
 
@@ -438,7 +445,11 @@ class ProgramSessionApplicationRepository(
             mapper.writeValueAsString(form.questions),
             mapper.writeValueAsString(command.answers),
             channel,
-            if (definition.policy?.hasAdmissionCapacities() == true) "PRE_REGISTRATION" else null,
+            when {
+                definition.policy?.hasAdmissionCapacities() != true -> null
+                command.onsite -> "ONSITE"
+                else -> "PRE_REGISTRATION"
+            },
         )
         jdbc.update(
             "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded) VALUES (?, ?, 'USER', TRUE)",

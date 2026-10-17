@@ -47,7 +47,8 @@ class GetProgramParticipantsServiceImpl(
                     party.participants.map { participant ->
                         val reason =
                             when {
-                                !repository.confirmed(command.owner.expoId, participant.participantId) -> {
+                                !repository.confirmed(command.owner.expoId, participant.participantId) &&
+                                    !(command.onsite && participant.fieldRegistered) -> {
                                     ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
                                 }
 
