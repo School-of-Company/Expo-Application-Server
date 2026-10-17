@@ -1401,6 +1401,31 @@ class ProgramSessionApplicationTests {
         )
     }
 
+    @ParameterizedTest
+    @CsvSource("STANDARD,false", "TRAINING,false", "STANDARD,true", "TRAINING,true")
+    fun `stale waiting from cancelled preregistration does not block new confirmation`(
+        type: ProgramSessionType,
+        channelSeats: Boolean,
+    ) {
+        if (channelSeats) useChannels() else waitingCapacity = 1
+        val confirmed = service.execute(command(type = type))
+        val stale = service.execute(command(participant = 2, type = type))
+        assertEquals("WAITING", stale.status)
+        jdbc.update(
+            "UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE expo_id = ? AND participant_id = 2",
+            UUID.fromString(EXPO),
+        )
+        cancel(confirmed.applicationId)
+        addParticipant(3)
+        val current = mapper.readValue(definition("1", type.name), ProgramSessionDefinition::class.java)
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        assertTrue(repository.waiting(current, 10).isEmpty())
+        assertEquals("CONFIRMED", service.execute(command(participant = 3, type = type)).status)
+        assertEquals(0, repository.waitingCount(current))
+        if (channelSeats) assertEquals(0, repository.waitingCount(current, "교원"))
+        assertEquals("WAITING", column("status", stale.applicationId))
+    }
+
     @Test
     fun `FIFO uses server reception time then stable UUID for equal timestamps`() {
         waitingCapacity = 3

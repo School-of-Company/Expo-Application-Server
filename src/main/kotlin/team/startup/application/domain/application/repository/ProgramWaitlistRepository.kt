@@ -98,7 +98,10 @@ class ProgramWaitlistRepository(
             jdbc.queryForObject(
                 "SELECT count(*) FROM tb_program_session_application " +
                     "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = ? " +
-                    "AND (CAST(? AS text) IS NULL OR channel = ?)",
+                    "AND (CAST(? AS text) IS NULL OR channel = ?) " +
+                    "AND (status <> 'WAITING' OR EXISTS (" +
+                    "SELECT 1 FROM tb_preregister_application p WHERE p.expo_id = tb_program_session_application.expo_id " +
+                    "AND p.participant_id = tb_program_session_application.participant_id AND p.status = 'CONFIRMED'))",
                 Int::class.java,
                 UUID.fromString(definition.expoId),
                 definition.programType.name,
