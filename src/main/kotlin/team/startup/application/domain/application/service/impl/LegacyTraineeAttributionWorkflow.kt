@@ -9,6 +9,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ChangeLegacyTraineeAttributionCommand
 import team.startup.application.domain.application.presentation.dto.LegacyTraineeAttributionResult
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.LegacyTraineeAttributionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -51,24 +52,43 @@ class LegacyTraineeAttributionWorkflow(
                     throw ProgramApplicationConflictException("다른 귀속 변경 작업과 충돌합니다.")
                 }
             operation.result?.let { return it }
-            if (operation.state == "REJECTED") throw ResponseStatusException(HttpStatus.valueOf(requireNotNull(operation.errorStatus)))
-            val ids = trainings.findAllByTraineeId(request.traineeId).map { it.trainingProgramId }.sorted()
-            val definitions =
-                if (revoke) {
-                    emptyList()
-                } else {
-                    gateway.programDefinitions(
-                        command.expoId.toString(),
-                        ProgramSessionType.TRAINING,
-                        ids,
-                        existing = true,
-                    )
-                }
-            if (!revoke && definitions.map { it.id }.sorted() != ids) {
-                throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "레거시 신청의 프로그램 정의를 모두 확인할 수 없습니다.")
+            if (operation.state in setOf("REJECTED", "FAILED")) {
+                throw ResponseStatusException(HttpStatus.valueOf(requireNotNull(operation.errorStatus)))
             }
-            definitions.forEach(ledger::validateSessionTime)
-            transactions.executeWithoutResult { repository.attempt(operation.id) }
+            val ids: List<Long>
+            val definitions: List<ProgramSessionDefinition>
+            try {
+                ids = trainings.findAllByTraineeId(request.traineeId).map { it.trainingProgramId }.sorted()
+                definitions =
+                    if (revoke) {
+                        transactions.executeWithoutResult {
+                            lock(command)
+                            repository.requireRevocable(operation)
+                        }
+                        emptyList()
+                    } else {
+                        gateway.programDefinitions(
+                            command.expoId.toString(),
+                            ProgramSessionType.TRAINING,
+                            ids,
+                            existing = true,
+                        )
+                    }
+                if (!revoke && definitions.map { it.id }.sorted() != ids) {
+                    throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "레거시 신청의 프로그램 정의를 모두 확인할 수 없습니다.")
+                }
+                definitions.forEach(ledger::validateSessionTime)
+                transactions.executeWithoutResult { repository.attempt(operation.id) }
+            } catch (exception: Exception) {
+                val status =
+                    when (exception) {
+                        is ResponseStatusException -> exception.statusCode.value()
+                        is ProgramApplicationConflictException -> 409
+                        else -> 503
+                    }
+                transactions.executeWithoutResult { repository.fail(operation, status, beforeUser = true) }
+                throw exception
+            }
             val result =
                 try {
                     user.changeVerified(command.expoId, request, operation.actorId, revoke)

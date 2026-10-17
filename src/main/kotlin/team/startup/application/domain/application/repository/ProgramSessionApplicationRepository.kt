@@ -12,6 +12,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramFormS
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
@@ -24,6 +25,7 @@ class ProgramSessionApplicationRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
     private val attribution: LegacyTraineeAttributionRepository,
+    private val gateway: RegistrationGateway,
 ) {
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
@@ -73,13 +75,13 @@ class ProgramSessionApplicationRepository(
         if (!start.isBefore(end)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간 구간이 올바르지 않습니다.")
         val existing =
             jdbc.query(
-                "SELECT COALESCE(s.pending_definition, s.definition, a.definition_snapshot) " +
+                "SELECT COALESCE(s.pending_definition, s.definition, a.definition_snapshot), false " +
                     "FROM tb_program_session_application a LEFT JOIN tb_program_session_state s " +
                     "ON s.expo_id = a.expo_id AND s.program_type = a.program_type AND s.program_id = a.program_id " +
                     "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') " +
                     "AND NOT (a.program_type = ? AND a.program_id = ?) " +
                     "AND (CAST(? AS bigint) IS NULL OR a.trainee_id IS DISTINCT FROM ?) " +
-                    "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition) " +
+                    "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition), s.pending_definition IS NULL " +
                     "FROM tb_legacy_trainee_attribution l " +
                     "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
                     "JOIN tb_legacy_trainee_program p ON p.trainee_id = t.trainee_id AND p.program_id = t.training_program_id " +
@@ -88,7 +90,7 @@ class ProgramSessionApplicationRepository(
                     "WHERE l.expo_id = ? AND l.participant_id = ? " +
                     "AND NOT (? = 'TRAINING' AND t.training_program_id = ?) " +
                     "AND (CAST(? AS bigint) IS NULL OR l.trainee_id <> ?)",
-                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) },
+                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) to rs.getBoolean(2) },
                 UUID.fromString(definition.expoId),
                 participantId,
                 definition.programType.name,
@@ -102,9 +104,21 @@ class ProgramSessionApplicationRepository(
                 excludingTraineeId,
                 excludingTraineeId,
             )
-        return existing.any {
-            val otherStart = sessionTime(it.startedAt)
-            val otherEnd = sessionTime(it.endedAt)
+        val legacyIds =
+            existing
+                .filter { it.second }
+                .map { it.first.id }
+                .distinct()
+                .sorted()
+        val current = gateway.programDefinitions(definition.expoId, ProgramSessionType.TRAINING, legacyIds, existing = true)
+        if (current.map { it.id }.sorted() != legacyIds) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "귀속된 연수 신청의 현재 프로그램 정의를 모두 확인할 수 없습니다.")
+        }
+        val currentById = current.associateBy { it.id }
+        return existing.any { (stored, _) ->
+            val other = if (stored.programType == ProgramSessionType.TRAINING) currentById[stored.id] ?: stored else stored
+            val otherStart = sessionTime(other.startedAt)
+            val otherEnd = sessionTime(other.endedAt)
             if (!otherStart.isBefore(otherEnd)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기존 프로그램 운영 시간이 올바르지 않습니다.")
             start.isBefore(otherEnd) && otherStart.isBefore(end)
         }

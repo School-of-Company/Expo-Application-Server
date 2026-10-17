@@ -87,7 +87,12 @@ class ProgramWaitlist(
                 }
                 // Submission takes participant before group locks, so promotion must never wait for a participant.
                 if (!ledger.tryLockParticipant(entry.participantId)) continue@channels
-                if (ledger.hasTimeConflict(definition, entry.participantId)) continue@channels
+                try {
+                    if (ledger.hasTimeConflict(definition, entry.participantId)) continue@channels
+                } catch (_: ResponseStatusException) {
+                    defer(definition, "EXPO_UNAVAILABLE")
+                    continue@channels
+                }
                 val traineeId =
                     if (definition.programType ==
                         ProgramSessionType.TRAINING

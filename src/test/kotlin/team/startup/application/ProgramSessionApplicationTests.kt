@@ -2917,6 +2917,13 @@ class ProgramSessionApplicationTests {
         assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
         attribute(UUID.randomUUID(), revoke = true).andExpect(status().isConflict)
         attributionMalformed = false
+        windows = mapOf(("TRAINING" to 2L) to ("invalid" to "invalid"))
+        attribute(id).andExpect(status().isBadGateway)
+        assertEquals(
+            "PENDING",
+            jdbc.queryForObject("SELECT state FROM tb_legacy_trainee_attribution_operation WHERE id = ?", String::class.java, id),
+        )
+        windows = emptyMap()
         attribute(id).andExpect(status().isOk).andExpect(jsonPath("$.changed").value(false))
         assertEquals(1L, count("tb_legacy_trainee_attribution"))
         assertEquals(1L, count("tb_training_program_application"))
@@ -3069,6 +3076,89 @@ class ProgramSessionApplicationTests {
             .andExpect(jsonPath("$.state").value("APPLIED"))
             .andExpect(jsonPath("$.reason").doesNotExist())
             .andExpect(jsonPath("$.authorization").doesNotExist())
+    }
+
+    @ParameterizedTest
+    @CsvSource("INVALID,502", "MISSING_TIME,503", "DELETED,503", "UNAVAILABLE,503")
+    fun `legacy attribution pre User validation failure releases gates and records FAILED`(
+        failure: String,
+        code: Int,
+    ) {
+        seedLegacyAttribution()
+        val id = UUID.randomUUID()
+        when (failure) {
+            "INVALID" -> windows = mapOf(("TRAINING" to 2L) to ("invalid" to "invalid"))
+            "MISSING_TIME" -> windows = mapOf(("TRAINING" to 2L) to ("" to ""))
+            "DELETED" -> missingProgram = 2
+            "UNAVAILABLE" -> unavailableLookup = 2
+        }
+        attribute(id).andExpect(status().`is`(code))
+        assertEquals(0, attributionCalls.size)
+        assertEquals(
+            "FAILED",
+            jdbc.queryForObject("SELECT state FROM tb_legacy_trainee_attribution_operation WHERE id = ?", String::class.java, id),
+        )
+        assertEquals(
+            0,
+            jdbc.queryForObject("SELECT attempts FROM tb_legacy_trainee_attribution_operation WHERE id = ?", Int::class.java, id),
+        )
+        attribute(id).andExpect(status().`is`(code))
+        windows = emptyMap()
+        missingProgram = null
+        unavailableLookup = null
+        change { it.put("capacity", capacity + 1) }
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+    }
+
+    @Test
+    fun `legacy attribution revoke rejects active trainee ledger entries until cancelled`() {
+        seedLegacyAttribution()
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val receipt = service.execute(command(program = 3, type = ProgramSessionType.TRAINING))
+        for (state in listOf("CONFIRMED", "WAITING")) {
+            jdbc.update("UPDATE tb_program_session_application SET status = ? WHERE id = ?", state, receipt.applicationId)
+            attribute(UUID.randomUUID(), revoke = true).andExpect(status().isConflict)
+            assertEquals(1L, attributionParticipant)
+            assertEquals(1L, count("tb_legacy_trainee_attribution"))
+        }
+        jdbc.update("UPDATE tb_program_session_application SET status = 'CONFIRMED' WHERE id = ?", receipt.applicationId)
+        cancel(receipt.applicationId)
+        attribute(UUID.randomUUID(), revoke = true).andExpect(status().isOk)
+        assertEquals(null, attributionParticipant)
+    }
+
+    @Test
+    fun `legacy attribution time conflicts refresh policyless training after Expo time change`() {
+        seedLegacyAttribution()
+        noPolicyProgram = 2
+        val old = "2030-01-01T10:00:00+09:00" to "2030-01-01T11:00:00+09:00"
+        val current = "2030-01-01T13:00:00+09:00" to "2030-01-01T14:00:00+09:00"
+        windows = mapOf(("TRAINING" to 2L) to old)
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        windows = mapOf(("TRAINING" to 2L) to current, ("STANDARD" to 1L) to current)
+        val error = assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertEquals("TIME_CONFLICT", error.ineligibleReason?.name)
+        windows = windows + (("STANDARD" to 1L) to old)
+        assertEquals("CONFIRMED", service.execute(command()).status)
+    }
+
+    @Test
+    fun `legacy attribution unavailable current times defer promotion without rolling back cancellation`() {
+        capacity = 1
+        waitingCapacity = 1
+        val confirmed = service.execute(command(participant = 2))
+        seedLegacyAttribution()
+        attribute(UUID.randomUUID()).andExpect(status().isOk)
+        val waiting = service.execute(command())
+        assertEquals("WAITING", waiting.status)
+        unavailableLookup = 2
+        cancel(confirmed.applicationId)
+        assertEquals("CANCELLED", column("status", confirmed.applicationId))
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        unavailableLookup = null
+        reconcile()
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
     }
 
     private fun seedLegacyAttribution() {
@@ -3839,7 +3929,7 @@ class ProgramSessionApplicationTests {
                                 if (delayedLinkParticipant == null || delayedLinkParticipant == participantId) {
                                     linkCompletedAt?.let { testClock.current = it }
                                 }
-                                val id = participantId + 500
+                                val id = if (attributionParticipant == participantId) 700 else participantId + 500
                                 """{"traineeId":$id,"created":true}"""
                             }
 
