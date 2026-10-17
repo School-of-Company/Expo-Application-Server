@@ -306,8 +306,10 @@ class PreregisterWaitlistHttpTests {
             mvc
                 .perform(
                     post("/application/expos/$EXPO/my-applications/preregister-waitlist/cancellation")
-                        .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
-                        .session(lookup.request.session as MockHttpSession)
+                        // The shared context may hold the session-backed repository installed by csrf() elsewhere.
+                        .cookie(
+                            *listOfNotNull(Cookie("PARTICIPANT_SESSION", "owner"), lookup.response.getCookie("XSRF-TOKEN")).toTypedArray(),
+                        ).session(lookup.request.session as MockHttpSession)
                         .header("X-CSRF-TOKEN", requireNotNull(lookup.response.getHeader("X-CSRF-TOKEN"))),
                 ).andReturn()
         assertEquals(204, withdrawal.response.status)

@@ -2,6 +2,7 @@ package team.startup.application
 
 import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.verify
@@ -13,6 +14,8 @@ import org.springframework.context.annotation.Import
 import org.springframework.http.HttpStatus
 import org.springframework.mock.web.MockHttpSession
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
+import org.springframework.test.annotation.DirtiesContext
+import org.springframework.test.annotation.DirtiesContext.MethodMode
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.test.web.servlet.MockMvc
@@ -62,6 +65,8 @@ class OwnerApplicationHttpTests {
     }
 
     @Test
+    // csrf() swaps the shared filter's repository for a session-backed test one.
+    @DirtiesContext(methodMode = MethodMode.BEFORE_METHOD)
     fun `GET token and session authorize POST without exposing participant session`() {
         `when`(query.execute(GetOwnerApplicationsCommand(EXPO, "owner")))
             .thenReturn(OwnerApplicationsResponse(emptyList(), emptyList()))
@@ -71,12 +76,30 @@ class OwnerApplicationHttpTests {
                 .andExpect(status().isOk)
                 .andReturn()
         assertEquals("no-store", result.response.getHeader("Cache-Control"))
+        assertNull(result.request.getSession(false))
+        val csrfCookie = requireNotNull(result.response.getCookie("XSRF-TOKEN"))
+        val token = requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))
+        // A fresh session stands in for another instance or a restarted one.
         mvc
             .perform(
                 post("$PATH/PREREGISTER/2/cancellation")
+                    .session(MockHttpSession())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"), csrfCookie),
+            ).andExpect(status().isForbidden)
+        mvc
+            .perform(
+                post("$PATH/PREREGISTER/2/cancellation")
+                    .session(MockHttpSession())
                     .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
-                    .session(result.request.session as MockHttpSession)
-                    .header("X-CSRF-TOKEN", requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))),
+                    .header("X-CSRF-TOKEN", token),
+            ).andExpect(status().isForbidden)
+        verifyNoInteractions(cancel)
+        mvc
+            .perform(
+                post("$PATH/PREREGISTER/2/cancellation")
+                    .session(MockHttpSession())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"), csrfCookie)
+                    .header("X-CSRF-TOKEN", token),
             ).andExpect(status().isNoContent)
         verify(cancel).execute(COMMAND)
     }
@@ -109,13 +132,14 @@ class OwnerApplicationHttpTests {
     }
 
     @Test
+    // csrf() swaps the shared filter's repository for a session-backed test one.
+    @DirtiesContext(methodMode = MethodMode.BEFORE_METHOD)
     fun `waitlist lookup and withdrawal require the participant session and CSRF`() {
         val owner = OwnerPreregisterWaitlistCommand(EXPO, "owner")
         mvc.perform(get("$PATH/preregister-waitlist")).andExpect(status().isUnauthorized)
         mvc
             .perform(post("$PATH/preregister-waitlist/cancellation").cookie(Cookie("PARTICIPANT_SESSION", "owner")))
             .andExpect(status().isForbidden)
-        mvc.perform(post("$PATH/preregister-waitlist/cancellation").with(csrf())).andExpect(status().isUnauthorized)
         verifyNoInteractions(waitlist, withdraw)
         `when`(waitlist.execute(owner)).thenReturn(OwnerPreregisterWaitlist(1, 3, "WAITING", 2))
         val result =
@@ -135,11 +159,12 @@ class OwnerApplicationHttpTests {
         mvc
             .perform(
                 post("$PATH/preregister-waitlist/cancellation")
-                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
-                    .session(result.request.session as MockHttpSession)
+                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"), requireNotNull(result.response.getCookie("XSRF-TOKEN")))
+                    .session(MockHttpSession())
                     .header("X-CSRF-TOKEN", requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))),
             ).andExpect(status().isNoContent)
         verify(withdraw).execute(owner)
+        mvc.perform(post("$PATH/preregister-waitlist/cancellation").with(csrf())).andExpect(status().isUnauthorized)
         verifyNoInteractions(query, cancel)
     }
 
