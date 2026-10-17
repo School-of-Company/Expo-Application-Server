@@ -770,6 +770,15 @@ class ProgramSessionApplicationTests {
                 .application.applicationId,
         )
         assertEquals(0L, count("tb_standard_program_application"))
+        // The guardian cascade records the same session representative (1), never the student or guardian target.
+        assertEquals(
+            listOf("1:USER:null:1", "2:USER:null:1", "3:USER:null:1"),
+            jdbc.query(
+                "SELECT a.participant_id, h.actor_type, h.actor_id, h.actor_participant_id FROM tb_program_session_history h " +
+                    "JOIN tb_program_session_application a ON a.id = h.application_id " +
+                    "WHERE h.status = 'CANCELLED' ORDER BY a.participant_id",
+            ) { rs, _ -> "${rs.getLong(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getString(4)}" },
+        )
     }
 
     @Test
@@ -1426,10 +1435,17 @@ class ProgramSessionApplicationTests {
         cancel(confirmed.applicationId)
         applied(2, true)
         assertEquals(
-            listOf("USER:null:CONFIRMED:true", "USER:null:WAITING:true", "USER:CONFIRMED:CANCELLED:true", "SYSTEM:WAITING:CONFIRMED:true"),
+            // The unauthenticated internal cancellation is UNKNOWN; promotion stays SYSTEM without a user actor.
+            listOf(
+                "USER:null:CONFIRMED:true:null",
+                "USER:null:WAITING:true:null",
+                "UNKNOWN:CONFIRMED:CANCELLED:true:null",
+                "SYSTEM:WAITING:CONFIRMED:true:null",
+            ),
             jdbc.query(
-                "SELECT actor_type, previous_status, status, previous_status_recorded FROM tb_program_session_history ORDER BY id",
-            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" },
+                "SELECT actor_type, previous_status, status, previous_status_recorded, actor_participant_id " +
+                    "FROM tb_program_session_history ORDER BY id",
+            ) { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}:${rs.getString(5)}" },
         )
         assertEquals(waiting, service.execute(command(participant = 2)))
         cancel(confirmed.applicationId)

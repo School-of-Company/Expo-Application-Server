@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSessionSummary
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSummary
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
@@ -336,15 +337,25 @@ class PreregisterSessionRepository(
     fun status(
         id: Long,
         status: String,
+        actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
+        actorParticipantId: Long? = null,
     ) {
         jdbc.update("UPDATE tb_preregister_application SET status = ? WHERE id = ?", status, id)
-        transition(id)
+        transition(id, actorType, actorParticipantId)
     }
 
-    private fun transition(id: Long) {
+    // Registration confirmations keep the column default UNKNOWN; only cancellations carry their executing actor.
+    private fun transition(
+        id: Long,
+        actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
+        actorParticipantId: Long? = null,
+    ) {
         jdbc.update(
-            "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status) " +
-                "SELECT id, expo_id, session_id, participant_id, status FROM tb_preregister_application WHERE id = ?",
+            "INSERT INTO tb_preregister_transition " +
+                "(application_id, expo_id, session_id, participant_id, status, actor_type, actor_participant_id) " +
+                "SELECT id, expo_id, session_id, participant_id, status, ?, ? FROM tb_preregister_application WHERE id = ?",
+            actorType.name,
+            actorParticipantId,
             id,
         )
     }

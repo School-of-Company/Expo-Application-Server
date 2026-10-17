@@ -32,6 +32,15 @@ class GetAdminApplicationActivityServiceImpl(
         val candidates = participants.resolve(expoId, query.q, null)
         val page = requireNotNull(reads.execute { repository.find(expoId, query, candidates) })
         val details = participants.details(expoId, page.items.map { it.participantId }.distinct())
-        return page.copy(items = page.items.map { it.copy(participant = details.getValue(it.participantId)) })
+        val names = participants.names(expoId, page.items.mapNotNull { it.actorUser?.participantId })
+        return page.copy(
+            items =
+                page.items.map { item ->
+                    item.copy(
+                        participant = details.getValue(item.participantId),
+                        actorUser = item.actorUser?.let { it.copy(name = names?.get(it.participantId)) },
+                    )
+                },
+        )
     }
 }

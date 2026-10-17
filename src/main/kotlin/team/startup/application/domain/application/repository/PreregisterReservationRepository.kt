@@ -2,6 +2,7 @@ package team.startup.application.domain.application.repository
 
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
@@ -197,10 +198,15 @@ class PreregisterReservationRepository(
             reservation.requestId,
         ) == 1
 
-    fun withdraw(reservation: PreregisterReservation): Boolean =
+    // USER is the reservation's own representative after the session phone ownership check; the row is the reference.
+    fun withdraw(
+        reservation: PreregisterReservation,
+        actorType: ApplicationActorType,
+    ): Boolean =
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP " +
-                "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
+                "withdrawn_actor_type = ? WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            actorType.name,
             reservation.expoId,
             reservation.requestId,
         ) == 1

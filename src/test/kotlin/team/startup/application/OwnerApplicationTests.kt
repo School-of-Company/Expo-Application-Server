@@ -286,6 +286,10 @@ class OwnerApplicationTests {
         cancel.execute(cancelCommand("1"))
         assertEquals(3L, count("tb_session_attendance_outbox"))
         assertEquals(7L, count("tb_preregister_transition"))
+        assertEquals(
+            listOf("1:USER:1:true", "2:USER:1:true", "4:USER:1:true"),
+            cancelledTransitions(),
+        )
         assertEquals(5, closedPermits.get())
         val applications = query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications
         assertTrue(applications.all { !it.applied && !it.cancellable })
@@ -298,6 +302,17 @@ class OwnerApplicationTests {
         failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("2")) }
         cancel.execute(cancelCommand(confirmed.applicationId.toString(), OwnerApplicationType.STANDARD))
         cancel.execute(cancelCommand(confirmed.applicationId.toString(), OwnerApplicationType.STANDARD))
+        // The companion (target 2) was cancelled by the session's representative (1); the replay adds no second actor row.
+        assertEquals(
+            listOf("2:USER:1"),
+            jdbc.query(
+                "SELECT a.participant_id, h.actor_type, h.actor_participant_id FROM tb_program_session_history h " +
+                    "JOIN tb_program_session_application a ON a.id = h.application_id " +
+                    "WHERE h.application_id = ? AND h.status = 'CANCELLED'",
+                { rs, _ -> "${rs.getLong(1)}:${rs.getString(2)}:${rs.getString(3)}" },
+                confirmed.applicationId,
+            ),
+        )
         assertFalse(
             requireNotNull(
                 jdbc.queryForObject(
@@ -343,6 +358,8 @@ class OwnerApplicationTests {
         closedPermits.set(0)
         assertEquals(200, internalCancel("""{"representativeId":1,"applicationIds":[1,2]}"""))
         assertEquals(listOf("CANCELLED", "CANCELLED"), listOf(state(1), state(2)))
+        // The request representativeId only scopes ownership; an unauthenticated internal caller is not the actor.
+        assertEquals(listOf("1:UNKNOWN:null:true", "2:UNKNOWN:null:true"), cancelledTransitions())
         assertEquals(listOf(2L, 1L), adminGuards.toList())
         assertEquals(2, closedPermits.get())
         assertEquals(2L, count("tb_session_attendance_outbox"))
@@ -662,6 +679,12 @@ class OwnerApplicationTests {
         jdbc.queryForObject("SELECT status FROM tb_program_session_application WHERE id = ?", String::class.java, id)
 
     private fun state(id: Long) = jdbc.queryForObject("SELECT status FROM tb_preregister_application WHERE id = ?", String::class.java, id)
+
+    private fun cancelledTransitions() =
+        jdbc.query(
+            "SELECT participant_id, actor_type, actor_participant_id, created_at IS NOT NULL FROM tb_preregister_transition " +
+                "WHERE status = 'CANCELLED' ORDER BY participant_id",
+        ) { rs, _ -> "${rs.getLong(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" }
 
     private fun count(table: String) = jdbc.queryForObject("SELECT count(*) FROM $table", Long::class.java)
 
