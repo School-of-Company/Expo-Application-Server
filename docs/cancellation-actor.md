@@ -15,9 +15,9 @@
 
 - 본인 취소, 동행자 대리 취소, 학생·보호자 연계 취소에서는 모든 전이에 같은 대표자 참가자 ID를 기록한다. 동행자(취소 대상)를 실행자로 기록하지 않는다.
 - 대기 예약 실행자에게는 가짜 User ID를 만들지 않는다. 식별은 예약 단위로만 하며, 여러 예약에 걸친 동일인 ID는 없다.
-- 내부 호출 `POST /internal/program-session-applications/{id}/cancellation`, `DELETE /internal/expos/{expoId}/preregister-sessions/{sessionId}/applications`(요청 `representativeId`는 소속 검사용일 뿐 실행자가 아님), `POST /internal/expos/{expoId}/preregister-reservations/{requestId}/withdrawal`은 운영자나 서비스의 신원을 전달하지 않는다. 그래서 새 기록은 `UNKNOWN`으로 남긴다. 취소 기능과 HTTP 계약은 바뀌지 않는다.
-  - 주체·출석 보호가 없는 내부 프로그램 취소 경로의 정리는 #156에서 다룬다.
-  - #143 이전에는 첫 번째 내부 호출을 `USER`로 기록했다. 그 과거 행은 `USER`이면서 `actor_participant_id=NULL`로 남고, 이는 실행 대표자 미기록을 뜻한다. 신청(APPLIED) 이력의 `USER`도 실행자 참조를 기록하지 않는다.
+- 내부 호출 `DELETE /internal/expos/{expoId}/preregister-sessions/{sessionId}/applications`(요청 `representativeId`는 소속 검사용일 뿐 실행자가 아님)와 `POST /internal/expos/{expoId}/preregister-reservations/{requestId}/withdrawal`은 운영자나 서비스의 신원을 전달하지 않는다. 그래서 새 기록은 `UNKNOWN`으로 남긴다. 취소 기능과 HTTP 계약은 바뀌지 않는다.
+  - 내부 프로그램 취소 `POST /internal/program-session-applications/{id}/cancellation`은 #156에서 제거했다. 이 경로는 실행 주체를 받지 않았고, 소유자·관리자 취소가 거치는 Attendance 입장·출석 보호와 Expo `APPLICATION_CANCEL` 권한 확인 없이 취소 기간만 확인했다. 같은 기능은 관리자 취소 `POST /application/admin/expos/{expoId}/program-session-applications/{applicationId}/cancellation`으로 제공한다. 같은 컨트롤러의 프로그램 정의 변경과 reconciliation 내부 경로는 유지한다.
+  - 이 경로로 남은 과거 기록은 수정하거나 추정하지 않는다. #143 이전 행은 `USER`이면서 `actor_participant_id=NULL`(실행 대표자 미기록)이고, #143부터 제거 전까지의 행은 `UNKNOWN`이다. 신청(APPLIED) 이력의 `USER`도 실행자 참조를 기록하지 않는다.
 - 과거 행은 대상 참가자나 현재 대표자로부터 역추정하지 않는다. 사전등록 전이 `created_at`은 과거 행이 NULL이고, 새 전이부터 기록한다.
 - 재시도와 복구는 기존처럼 잠금 뒤 `CANCELLED`/`withdrawn`를 다시 확인한다. 따라서 전이가 새로 생기지 않고 최초 실행자 기록도 바뀌지 않는다.
 - 연락처와 세션 토큰은 실행자 기록에 저장하지 않는다.
