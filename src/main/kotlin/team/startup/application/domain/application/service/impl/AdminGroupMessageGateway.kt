@@ -152,6 +152,13 @@ class AdminGroupMessageGateway(
         return adminId.longValue()
     }
 
+    // 카카오 `#{행사명}`: 발송하는 박람회의 현재 제목. 공백 제목은 없는 값으로 보고 대상별 누락으로 처리한다.
+    fun expoName(expoId: UUID): String? {
+        val title = node(call(Provider.EXPO, expoUrl, "/internal/expo/$expoId", token = expoToken)).get("title")
+        if (title?.isString != true) invalidProviderResponse("박람회")
+        return title.stringValue().trim().takeIf { it.isNotEmpty() }
+    }
+
     fun participants(
         expoId: UUID,
         participantIds: Collection<Long>,
@@ -230,7 +237,7 @@ class AdminGroupMessageGateway(
                         "targetFingerprint" to fingerprint,
                         "applicationCount" to applicationCount,
                         "channel" to source.channel,
-                        "fallbackToSms" to false,
+                        "fallbackToSms" to source.fallbackToSms,
                         "targets" to targets,
                     ).also { request -> source.templateId?.let { request["templateId"] = it } },
                 ),

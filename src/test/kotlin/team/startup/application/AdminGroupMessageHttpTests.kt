@@ -58,6 +58,8 @@ class AdminGroupMessageHttpTests {
         userStatus.set(200)
         notificationStatus.set(200)
         slowNotification = false
+        kakaoEnabled = false
+        expoTitle = "광주 박람회"
         calls.clear()
         targetTokens.clear()
         requests.clear()
@@ -223,6 +225,57 @@ class AdminGroupMessageHttpTests {
         assertEquals(422, response.status, response.contentAsString)
         assertTrue(calls.contains("notification-config"))
         assertTrue((0 until requests.size).map(requests::get).none { it["requestId"]?.stringValue() == requestId.toString() })
+    }
+
+    @Test
+    fun `kakao template receives expo name status and KST session time and forwards sms fallback`() {
+        kakaoEnabled = true
+        val response = kakaoPreview(selected(standard), fallbackToSms = true)
+        assertEquals(201, response.status, response.contentAsString)
+        val outbound = requests.last()
+        assertTrue(outbound["fallbackToSms"].asBoolean(), outbound.toString())
+        assertEquals("K6", outbound["templateId"].stringValue())
+        val target = outbound["targets"][0]
+        val variables = target["templateVariables"]
+        assertEquals("광주 박람회", variables["expoName"].stringValue())
+        assertEquals("확정", variables["status"].stringValue())
+        assertEquals("10.12(월) 09:00~10:00", variables["sessionName"].stringValue())
+        assertEquals("[광주 박람회] 대표님 프로그램1 10.12(월) 09:00~10:00 확정", target["content"].stringValue())
+        assertEquals(1, calls.count { it == "expo-title" })
+
+        val sms = preview(selected(standard), "{일시}")
+        assertEquals(201, sms.status, sms.contentAsString)
+        assertEquals("10.12(월) 09:00~10:00", requests.last()["targets"][0]["content"].stringValue())
+        assertFalse(requests.last()["fallbackToSms"].asBoolean())
+        assertEquals(1, calls.count { it == "expo-title" })
+    }
+
+    @Test
+    fun `kakao expo name without a title stays missing and title changes invalidate the fingerprint`() {
+        kakaoEnabled = true
+        val first = mapper.readTree(kakaoPreview(selected(standard), fallbackToSms = false).contentAsString)
+        expoTitle = "다른 박람회"
+        val second = mapper.readTree(kakaoPreview(selected(standard), fallbackToSms = false).contentAsString)
+        assertFalse(first["targetFingerprint"] == second["targetFingerprint"])
+        expoTitle = "   "
+        val response = kakaoPreview(selected(standard), fallbackToSms = false)
+        assertEquals(201, response.status, response.contentAsString)
+        val target = requests.last()["targets"][0]
+        assertEquals("TEMPLATE_DATA_MISSING", target["missingReason"].stringValue())
+        assertFalse(target.has("templateVariables"))
+        assertFalse(target.has("content"))
+        assertFalse(target.has("recipientPhone"))
+    }
+
+    @Test
+    fun `sms fallback is accepted only for kakao`() {
+        kakaoEnabled = true
+        val sent = requests.size
+        val sms = previewSource(selected(standard), mapOf("channel" to "SMS", "body" to "공통 안내", "fallbackToSms" to true))
+        assertEquals(400, sms.status, sms.contentAsString)
+        assertEquals(sent, requests.size)
+        assertEquals(201, kakaoPreview(selected(standard), fallbackToSms = true).status)
+        assertEquals(201, kakaoPreview(selected(standard), fallbackToSms = false).status)
     }
 
     @Test
@@ -417,6 +470,28 @@ class AdminGroupMessageHttpTests {
             ).andReturn()
             .response
 
+    private fun kakaoPreview(
+        scope: String,
+        fallbackToSms: Boolean,
+    ): MockHttpServletResponse = previewSource(scope, mapOf("channel" to "KAKAO", "templateId" to "K6", "fallbackToSms" to fallbackToSms))
+
+    private fun previewSource(
+        scope: String,
+        source: Map<String, Any>,
+    ): MockHttpServletResponse =
+        mvc
+            .perform(
+                post("$base/previews")
+                    .header("Authorization", "Bearer admin")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(
+                        mapper.writeValueAsString(
+                            mapOf("requestId" to UUID.randomUUID(), "source" to mapOf("scope" to mapper.readTree(scope)) + source),
+                        ),
+                    ),
+            ).andReturn()
+            .response
+
     private fun execution(
         fingerprint: String,
         scope: String,
@@ -445,12 +520,29 @@ class AdminGroupMessageHttpTests {
         private val targetTokens = CopyOnWriteArraySet<String>()
 
         @Volatile private var slowNotification = false
+
+        @Volatile private var kakaoEnabled = false
+
+        @Volatile private var expoTitle = "광주 박람회"
+        private const val KAKAO_DISABLED = """{"enabled":false,"templates":[]}"""
+        private val KAKAO_CHANNEL =
+            """
+            {"enabled":true,"templates":[{"id":"K6","name":"프로그램 참가 안내",
+            "content":"[#{행사명}] #{이름}님 #{프로그램} #{일시} #{상태}",
+            "variableMapping":{"expoName":"#{행사명}","name":"#{이름}","programName":"#{프로그램}","sessionName":"#{일시}","status":"#{상태}"},
+            "variables":["#{행사명}","#{이름}","#{프로그램}","#{일시}","#{상태}"]}]}
+            """.trimIndent()
         private const val JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         private val previewId = UUID.fromString("0190abcd-0000-7000-8000-000000000099")
         private val mapper = ObjectMapper()
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/internal/expo/") { exchange ->
+                    if (exchange.requestURI.path == "/internal/expo/0190abcd-0000-7000-8000-000000000001") {
+                        calls.add("expo-title")
+                        respond(exchange, 200, mapper.writeValueAsString(mapOf("title" to expoTitle, "startedDay" to "2026-10-12")))
+                        return@createContext
+                    }
                     calls.add(
                         "expo:${exchange.requestHeaders.getFirst("Authorization")}:" +
                             exchange.requestHeaders.getFirst("X-Internal-Token"),
@@ -502,7 +594,7 @@ class AdminGroupMessageHttpTests {
                                 """
                                 {
                                     "enabled":true,
-                                    "channels":{"SMS":{"enabled":true,"templates":[]},"KAKAO":{"enabled":false,"templates":[]}},
+                                    "channels":{"SMS":{"enabled":true,"templates":[]},"KAKAO":${if (kakaoEnabled) KAKAO_CHANNEL else KAKAO_DISABLED}},
                                     "smsFallbackDefault":false
                                 }
                                 """.trimIndent(),
