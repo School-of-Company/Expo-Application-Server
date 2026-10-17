@@ -55,11 +55,11 @@ data class AdminGroupMessageSource(
     @field:Size(min = 1, max = 200) val templateId: String? = null,
     val fallbackToSms: Boolean = false,
 ) : StrictAdminGroupMessageRequest() {
-    @get:AssertTrue(message = "SMS requires body and KAKAO requires templateId")
+    @get:AssertTrue(message = "SMS requires body and KAKAO requires templateId; fallbackToSms is only valid for KAKAO")
     @get:JsonIgnore
     val isContentValid: Boolean
         get() =
-            !fallbackToSms &&
+            (!fallbackToSms || channel == AdminGroupMessageChannel.KAKAO) &&
                 when (channel) {
                     AdminGroupMessageChannel.SMS -> !body.isNullOrBlank() && templateId == null
                     AdminGroupMessageChannel.KAKAO -> body == null && !templateId.isNullOrBlank()
@@ -79,10 +79,12 @@ data class ExecuteAdminGroupMessageRequest(
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class AdminGroupMessageTemplateVariables(
+    val expoName: String?,
     val name: String?,
     val programName: String?,
     val sessionName: String?,
     val location: String?,
+    val status: String?,
 )
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -124,10 +126,12 @@ data class AdminGroupMessageTemplate(
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class AdminGroupMessageTemplateVariableMapping(
+    val expoName: String? = null,
     val name: String? = null,
     val programName: String? = null,
     val sessionName: String? = null,
     val location: String? = null,
+    val status: String? = null,
 )
 
 data class AdminGroupMessagePreview(

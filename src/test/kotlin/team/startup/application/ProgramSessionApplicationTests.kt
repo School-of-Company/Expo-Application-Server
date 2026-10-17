@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.CsvSource
+import org.postgresql.PGConnection
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.boot.test.context.SpringBootTest
@@ -44,8 +45,10 @@ import team.startup.application.domain.application.presentation.dto.ApplyProgram
 import team.startup.application.domain.application.presentation.dto.ApplyStudentGuardianBatchCommand
 import team.startup.application.domain.application.presentation.dto.ApplyTrainingProgramsCommand
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
+import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
+import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramGuardianPolicy
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
@@ -65,6 +68,8 @@ import team.startup.application.domain.application.service.ApplyOnsiteProgramSes
 import team.startup.application.domain.application.service.ApplyOnsiteStudentGuardianBatchService
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.domain.application.service.ApplyStudentGuardianBatchService
+import team.startup.application.domain.application.service.CancelOwnerApplicationService
+import team.startup.application.domain.application.service.CancelProgramSessionService
 import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
 import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
@@ -184,6 +189,53 @@ class ProgramSessionApplicationTests {
         attributionAfterUser = null
         attributionAccessStatus = 200
         attributionActor = 42
+    }
+
+    @Test
+    fun `admin change signal follows committed apply cancel and promotion but not rejected applications`() {
+        // #162: 관리자 SSE는 V28 트리거의 커밋 후 NOTIFY만 따른다. 실제 신청·취소·승급 경로로 확인한다.
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { it.execute("LISTEN application_admin_changes") }
+            val notifications = connection.unwrap(PGConnection::class.java)
+
+            fun signals(): Int {
+                Thread.sleep(200)
+                return notifications.getNotifications(200).orEmpty().count { it.parameter == EXPO }
+            }
+            signals()
+            waitingCapacity = 1
+            val confirmed = service.execute(command())
+            assertEquals(1, signals())
+            assertEquals("WAITING", service.execute(command(participant = 2)).status)
+            assertEquals(1, signals())
+            assertEquals(confirmed, service.execute(command()))
+            assertEquals(0, signals())
+            // 사전등록 확정 행 추가도 관리자 집계 변경이다.
+            addParticipant(3)
+            assertEquals(1, signals())
+            assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3)) }
+            assertEquals(0, signals())
+            // 취소와 대기 승급은 한 트랜잭션이라 신호 하나로 합쳐진다.
+            cancel(confirmed.applicationId)
+            assertEquals(1, signals())
+            cancel(confirmed.applicationId)
+            assertEquals(0, signals())
+        }
+    }
+
+    @Test
+    fun `sessions observed before the Expo V37 split keep accepting applications and reading participants`() {
+        // #163: Expo V37은 기존 정책을 승인 요청 없이 사전 정원 = 전체 정원, 현장 0으로 바꿨다.
+        capacity = 2
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        val stored = "SELECT definition->'policy'->>'preRegistrationCapacity' FROM tb_program_session_state"
+        assertEquals(null, jdbc.queryForObject(stored, String::class.java))
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":0"
+        assertEquals("CONFIRMED", service.execute(command(participant = 2)).status)
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1"
+        assertThrows(
+            ProgramApplicationConflictException::class.java,
+        ) { service.execute(command(program = 1, participant = 2, key = "split")) }
     }
 
     @Test
@@ -897,13 +949,7 @@ class ProgramSessionApplicationTests {
             "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_guardian_promotion_failure CHECK (application_id <> '$guardian' OR status <> 'CONFIRMED')",
         )
         try {
-            assertThrows(jakarta.servlet.ServletException::class.java) {
-                mvc.perform(
-                    post(
-                        "/internal/program-session-applications/${single.applicationId}/cancellation",
-                    ).header("X-Internal-Token", "test-token"),
-                )
-            }
+            assertThrows(DataIntegrityViolationException::class.java) { cancel(single.applicationId) }
             assertEquals(1L, count("tb_standard_program_application"))
             assertEquals(
                 3L,
@@ -1002,16 +1048,20 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
-    fun `direct cancellation cannot bypass guardian links and policy off keeps the single route`() {
+    fun `single cancellation cannot bypass guardian links and owner cancellation takes the guardian route`() {
         enableGuardianPolicy(2, 0)
         val first = batchService.execute(guardianBatch(1))
-        mvc
-            .perform(
-                post(
-                    "/internal/program-session-applications/${first.applications.first().application.applicationId}/cancellation",
-                ).header("X-Internal-Token", "test-token"),
-            ).andExpect(status().isConflict)
+        val student =
+            first.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
+        // 소유자·관리자 취소가 공유하는 단건 취소는 연계 신청을 직접 취소하지 않는다.
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            context.getBean(CancelProgramSessionService::class.java).execute(CancelProgramSessionCommand(student))
+        }
         assertEquals(2L, count("tb_standard_program_application"))
+        cancel(student)
+        assertEquals(0L, count("tb_standard_program_application"))
         reset()
         assertEquals("CONFIRMED", service.execute(command()).status)
     }
@@ -1442,11 +1492,11 @@ class ProgramSessionApplicationTests {
         cancel(confirmed.applicationId)
         applied(2, true)
         assertEquals(
-            // The unauthenticated internal cancellation is UNKNOWN; promotion stays SYSTEM without a user actor.
+            // Owner cancellation records the session representative; promotion stays SYSTEM without a user actor.
             listOf(
                 "USER:null:CONFIRMED:true:null",
                 "USER:null:WAITING:true:null",
-                "UNKNOWN:CONFIRMED:CANCELLED:true:null",
+                "USER:CONFIRMED:CANCELLED:true:1",
                 "SYSTEM:WAITING:CONFIRMED:true:null",
             ),
             jdbc.query(
@@ -1793,12 +1843,7 @@ class ProgramSessionApplicationTests {
         val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
         val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
         linkFailure = true
-        mvc
-            .perform(
-                post(
-                    "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
-                ).header("X-Internal-Token", "test-token"),
-            ).andExpect(status().isNoContent)
+        cancel(confirmed.applicationId)
         assertEquals(
             "CANCELLED",
             jdbc.queryForObject(
@@ -1863,20 +1908,7 @@ class ProgramSessionApplicationTests {
             cancelEnd = boundary
             val confirmed = service.execute(command())
             testClock.current = boundary.plusNanos(offset)
-            mvc
-                .perform(
-                    post(
-                        "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
-                    ).header("X-Internal-Token", "test-token"),
-                ).andExpect(
-                    if (offset <
-                        0
-                    ) {
-                        status().isNoContent
-                    } else {
-                        status().isConflict
-                    },
-                )
+            assertEquals(if (offset < 0) 204 else 409, cancelStatus(confirmed.applicationId))
             if (offset < 0) {
                 testClock.current = boundary.plusSeconds(1)
                 cancel(confirmed.applicationId)
@@ -2309,13 +2341,7 @@ class ProgramSessionApplicationTests {
             "ALTER TABLE tb_program_session_history ADD CONSTRAINT test_promotion_failure CHECK (application_id <> '${waiting.applicationId}' OR status <> 'CONFIRMED')",
         )
         try {
-            assertThrows(jakarta.servlet.ServletException::class.java) {
-                mvc.perform(
-                    post(
-                        "/internal/program-session-applications/${confirmed.applicationId}/cancellation",
-                    ).header("X-Internal-Token", "test-token"),
-                )
-            }
+            assertThrows(DataIntegrityViolationException::class.java) { cancel(confirmed.applicationId) }
             assertEquals(
                 "CONFIRMED",
                 jdbc.queryForObject(
@@ -2569,12 +2595,7 @@ class ProgramSessionApplicationTests {
                     (1..2).map {
                         pool.submit<Int> {
                             assertTrue(start.await(10, TimeUnit.SECONDS))
-                            mvc
-                                .perform(
-                                    post("/internal/program-session-applications/${confirmed.applicationId}/cancellation")
-                                        .header("X-Internal-Token", "test-token"),
-                                ).andReturn()
-                                .response.status
+                            cancelStatus(confirmed.applicationId)
                         }
                     }
                 val approval =
@@ -4073,12 +4094,29 @@ class ProgramSessionApplicationTests {
             ).andExpect(jsonPath("$.applied").value(value))
     }
 
+    // 소유자 취소 경로로 취소한다. 세션 `owner-cancel-{참가자}`는 현재 관리 일행에 대상 참가자를 더해 돌려준다.
     private fun cancel(id: UUID) {
-        mvc
-            .perform(
-                post("/internal/program-session-applications/$id/cancellation").header("X-Internal-Token", "test-token"),
-            ).andExpect(status().isNoContent)
+        val target =
+            jdbc.queryForMap("SELECT participant_id, program_type FROM tb_program_session_application WHERE id = ?", id)
+        context.getBean(CancelOwnerApplicationService::class.java).execute(
+            CancelOwnerApplicationCommand(
+                UUID.fromString(EXPO),
+                "owner-cancel-${target["participant_id"]}",
+                OwnerApplicationType.valueOf(target["program_type"] as String),
+                id.toString(),
+            ),
+        )
     }
+
+    private fun cancelStatus(id: UUID): Int =
+        try {
+            cancel(id)
+            204
+        } catch (exception: ResponseStatusException) {
+            exception.statusCode.value()
+        } catch (_: ProgramApplicationConflictException) {
+            409
+        }
 
     private fun reconcile(type: ProgramSessionType = ProgramSessionType.STANDARD) {
         mvc
@@ -4202,7 +4240,8 @@ class ProgramSessionApplicationTests {
                 private fun permit(participantId: Long): OwnerCancellationGuard.Permit {
                     if (participantId in protectedParticipants) throw ResponseStatusException(HttpStatus.CONFLICT)
                     return object : OwnerCancellationGuard.Permit {
-                        override val linkedTraineeId = participantId + 500
+                        // User 연결 결과와 같게 legacy 귀속 참가자는 700, 나머지는 참가자 + 500으로 연결한다.
+                        override val linkedTraineeId = if (attributionParticipant == participantId) 700 else participantId + 500
                         override val cancelEndedAt = cancelEnd
 
                         override fun close() {}
@@ -4248,6 +4287,7 @@ class ProgramSessionApplicationTests {
     companion object {
         private const val EXPO = "aaaaaaaa-0000-0000-0000-000000000043"
         private const val FORM = "00000000-0000-0000-0000-000000000001"
+        private const val OWNER_CANCEL_PHONE = "0107000"
         private const val GROUP = "00000000-0000-0000-0000-000000000002"
         private const val CHANNELS =
             """[{"name":"교원","allowedOccupations":["TEACHER"],"capacity":1,"waitingCapacity":1},""" +
@@ -4403,7 +4443,17 @@ class ProgramSessionApplicationTests {
                             }
 
                             path.endsWith("participant-sessions/resolve") -> {
-                                if (body.contains("expired")) {
+                                val ownerCancel =
+                                    Regex("owner-cancel-([0-9]+)")
+                                        .find(body)
+                                        ?.groupValues
+                                        ?.get(1)
+                                        ?.toLong()
+                                if (ownerCancel != null) {
+                                    """{"expoId":"$EXPO","phoneNumber":"${OWNER_CANCEL_PHONE}${"%04d".format(
+                                        ownerCancel,
+                                    )}","expiresAt":"2100-01-01T00:00:00"}"""
+                                } else if (body.contains("expired")) {
                                     status = 401
                                     """{"code":"SESSION_EXPIRED"}"""
                                 } else {
@@ -4413,8 +4463,24 @@ class ProgramSessionApplicationTests {
                             }
 
                             path.endsWith("standard-participants/managed") -> {
+                                val ownerCancel =
+                                    Regex("\"$OWNER_CANCEL_PHONE([0-9]{4})\"")
+                                        .find(body)
+                                        ?.groupValues
+                                        ?.get(1)
+                                        ?.toLong()
                                 val people =
-                                    managedIds.joinToString(",") { id ->
+                                    (
+                                        ownerCancel?.let {
+                                            if (it in
+                                                managedIds
+                                            ) {
+                                                managedIds
+                                            } else {
+                                                managedIds.take(4) + it
+                                            }
+                                        } ?: managedIds
+                                    ).joinToString(",") { id ->
                                         """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L},"applicationType":"${if (id in fieldIds) "FIELD" else "PRE"}"}"""
                                     }
                                 """{"registered":true,"participants":[$people]}"""

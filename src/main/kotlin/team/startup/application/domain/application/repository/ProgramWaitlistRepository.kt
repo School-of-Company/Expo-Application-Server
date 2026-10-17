@@ -4,6 +4,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.exception.ProgramDefinitionMismatchException
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
@@ -144,10 +145,24 @@ class ProgramWaitlistRepository(
                 definition.id,
             ).singleOrNull()
             ?.let { (current, pending, deleted) ->
-                if (deleted || definition.copy(pendingRevision = null) !in listOf(current, pending)) {
-                    conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+                val remote = definition.copy(pendingRevision = null)
+                // 신청(lockDefinition)과 같이 정책 없는 회차는 Expo가 승인 요청 없이 바꾼 제목·시간·장소를 받아들인다.
+                val policyless = pending == null && current.policy == null && remote.policy == null && remote.revision >= current.revision
+                if (deleted || (!policyless && listOfNotNull(current, pending).none { remote.matchesApproved(it) })) {
+                    throw ProgramDefinitionMismatchException(definition.programType, definition.id)
                 }
             }
+    }
+
+    /**
+     * Expo V37은 기존 정책을 승인 요청 없이 "전체 정원 = 사전 정원, 현장 0"으로 바꿨다.
+     * 정원 분리·직업 채널이 없는 예전 승인 정의는 그 변환 결과와 같은 정의로 본다. 직업 채널이 있던 정의는 자동 전환하지 않는다.
+     */
+    private fun ProgramSessionDefinition.matchesApproved(stored: ProgramSessionDefinition): Boolean {
+        if (this == stored) return true
+        val policy = stored.policy ?: return false
+        if (policy.channels != null || policy.preRegistrationCapacity != null || policy.onsiteCapacity != null) return false
+        return this == stored.copy(policy = policy.copy(preRegistrationCapacity = policy.capacity, onsiteCapacity = 0))
     }
 
     fun observe(definition: ProgramSessionDefinition) {
@@ -194,7 +209,7 @@ class ProgramWaitlistRepository(
             return
         }
         val expected = state.second ?: state.first
-        if (expected != definition) conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
+        if (!definition.matchesApproved(expected)) conflict("프로그램 정책 변경 중이거나 승인되지 않은 정의입니다.")
         if (state.second !=
             null
         ) {
