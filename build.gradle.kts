@@ -26,7 +26,7 @@ extra["springCloudVersion"] = "2025.1.3"
 
 dependencies {
     implementation("org.apache.kafka:kafka-clients")
-    runtimeOnly("org.postgresql:postgresql")
+    implementation("org.postgresql:postgresql")
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
     testImplementation("org.testcontainers:testcontainers-postgresql")
     testImplementation("org.testcontainers:testcontainers-kafka")
