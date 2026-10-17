@@ -35,11 +35,27 @@ data class ProgramSessionPolicy(
     val onsiteCapacity: Int? = null,
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val guardianPolicy: ProgramGuardianPolicy? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    val onsiteStartedAt: Instant? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    val onsiteEndedAt: Instant? = null,
 ) {
     fun hasAdmissionCapacities(): Boolean = preRegistrationCapacity != null || onsiteCapacity != null
 
+    /** 접수 경로의 신청 기간. 현장 기간이 설정되지 않았으면 null이며 사전 모집 기간으로 대신 열지 않는다. */
+    fun admissionWindow(onsite: Boolean): Pair<Instant, Instant>? =
+        if (onsite) {
+            onsiteStartedAt?.let { start -> onsiteEndedAt?.let { start to it } }
+        } else {
+            applicationStartedAt to applicationEndedAt
+        }
+
     fun admissionCapacitiesValid(): Boolean =
-        if (!hasAdmissionCapacities()) {
+        if ((onsiteStartedAt == null) != (onsiteEndedAt == null) ||
+            (onsiteStartedAt != null && !onsiteStartedAt.isBefore(onsiteEndedAt))
+        ) {
+            false
+        } else if (!hasAdmissionCapacities()) {
             true
         } else {
             capacity > 0 && waitingCapacity >= 0 && preRegistrationCapacity != null && onsiteCapacity != null &&
@@ -115,6 +131,7 @@ data class ApplyProgramSessionCommand(
     val answers: JsonNode,
     val sessionId: String,
     val idempotencyKey: String,
+    val onsite: Boolean = false,
 ) {
     override fun toString() = "ApplyProgramSessionCommand(expoId=$expoId, programId=$programId, participantId=$participantId)"
 }
@@ -165,7 +182,15 @@ data class ProgramSessionKey(
     val programId: Long,
 )
 
+/** The actor comes only from verified admin access or the authenticated managed party; internal calls stay UNKNOWN. */
 data class CancelProgramSessionCommand(
     val applicationId: UUID,
+    val actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
     val actorId: Long? = null,
-)
+    val actorParticipantId: Long? = null,
+) {
+    init {
+        require((actorType == ApplicationActorType.ADMIN) == (actorId != null))
+        require((actorType == ApplicationActorType.USER) == (actorParticipantId != null))
+    }
+}

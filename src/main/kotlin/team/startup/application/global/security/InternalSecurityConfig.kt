@@ -13,6 +13,7 @@ import org.springframework.security.config.Customizer.withDefaults
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.web.SecurityFilterChain
 import org.springframework.security.web.authentication.HttpStatusEntryPoint
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher
 import org.springframework.stereotype.Component
 import java.security.MessageDigest
@@ -38,6 +39,9 @@ class InternalSecurityConfig(
             ).map { PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, it) }
         return http
             .csrf { csrf ->
+                // Double-submit cookie keeps owner cancellation valid across instances and restarts.
+                // Keep the X-CSRF-TOKEN header contract instead of the cookie repository's X-XSRF-TOKEN default.
+                csrf.csrfTokenRepository(CookieCsrfTokenRepository().apply { setHeaderName("X-CSRF-TOKEN") })
                 csrf.ignoringRequestMatchers(internal)
                 csrf.ignoringRequestMatchers(adminGroupMessages)
                 csrf.ignoringRequestMatchers(pageViews)
@@ -61,6 +65,13 @@ class InternalSecurityConfig(
                     .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications/preregister-waitlist")
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-waitlist/cancellation")
+                    .permitAll()
+                    // #144 offers: the participant session cookie authenticates, and the POSTs stay CSRF protected.
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications/promotion-offers")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/promotion-offers/{offerId}/acceptance")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/promotion-offers/{offerId}/decline")
                     .permitAll()
                     .requestMatchers(adminGroupMessages)
                     .permitAll()

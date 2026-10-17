@@ -9,7 +9,10 @@ import team.startup.application.domain.application.presentation.dto.AdminApplica
 import team.startup.application.domain.application.presentation.dto.AdminApplicationActivityPage
 import team.startup.application.domain.application.presentation.dto.AdminApplicationActivityQuery
 import team.startup.application.domain.application.presentation.dto.AdminApplicationStatus
+import team.startup.application.domain.application.presentation.dto.ApplicationActorNameSource
+import team.startup.application.domain.application.presentation.dto.ApplicationActorRole
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
+import team.startup.application.domain.application.presentation.dto.ApplicationUserActor
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import tools.jackson.databind.ObjectMapper
 import java.sql.Timestamp
@@ -74,7 +77,7 @@ class AdminApplicationActivityRepository(
         val events =
             "WITH e AS (SELECT h.id, h.application_id, a.participant_id, a.program_type, a.program_id, " +
                 "a.receipt_number, a.definition_snapshot, h.status, h.created_at, h.actor_id, " +
-                "h.actor_type, h.previous_status, h.previous_status_recorded, " +
+                "h.actor_type, h.actor_participant_id, h.previous_status, h.previous_status_recorded, " +
                 "CASE WHEN h.status = 'CANCELLED' THEN 'CANCELLED' " +
                 "WHEN (CASE WHEN h.previous_status_recorded THEN h.previous_status " +
                 "ELSE lag(h.status) OVER (PARTITION BY h.application_id ORDER BY h.created_at, h.id) END) = 'WAITING' " +
@@ -102,6 +105,16 @@ class AdminApplicationActivityRepository(
                     rs.getBoolean("previous_status_recorded"),
                     rs.getLong("receipt_number"),
                     mapper.readTree(rs.getString("definition_snapshot")),
+                    actorUser =
+                        rs.getObject("actor_participant_id", Long::class.javaObjectType)?.let {
+                            ApplicationUserActor(
+                                it,
+                                null,
+                                ApplicationActorRole.REPRESENTATIVE,
+                                null,
+                                ApplicationActorNameSource.CURRENT_USER,
+                            )
+                        },
                 )
             }
         return AdminApplicationActivityPage(items, count, query.page, query.size)

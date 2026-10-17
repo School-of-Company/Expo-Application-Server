@@ -2,6 +2,7 @@ package team.startup.application.domain.application.repository
 
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
@@ -138,8 +139,10 @@ class PreregisterReservationRepository(
     ): PreregisterReservation? =
         jdbc
             .query(
-                "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? AND state = 'WAITING' " +
-                    "ORDER BY queue_seq LIMIT 1",
+                "SELECT * FROM tb_preregister_reservation r WHERE expo_id = ? AND session_id = ? AND state = 'WAITING' " +
+                    // A party already holding seats for an offer (#144) is no longer the head waiting for one.
+                    "AND NOT EXISTS (SELECT 1 FROM tb_promotion_offer o WHERE o.expo_id = r.expo_id AND o.request_id = r.request_id " +
+                    "AND o.state IN ${PromotionOfferRepository.ACTIVE}) ORDER BY queue_seq LIMIT 1",
                 { rs, _ -> reservation(rs) },
                 expoId,
                 sessionId,
@@ -163,12 +166,17 @@ class PreregisterReservationRepository(
             "SELECT r.expo_id, r.session_id FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
                 "ON st.expo_id = r.expo_id AND st.session_id = r.session_id " +
                 "WHERE r.state = 'WAITING' AND NOT st.deleted AND NOT (st.definition::jsonb ->> 'closed')::boolean " +
+                "AND NOT EXISTS (SELECT 1 FROM tb_promotion_offer o WHERE o.expo_id = r.expo_id AND o.request_id = r.request_id " +
+                "AND o.state IN ${PromotionOfferRepository.ACTIVE}) " +
                 "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
                 "GROUP BY r.expo_id, r.session_id, st.definition " +
                 "HAVING (array_agg(r.applicants ORDER BY r.queue_seq))[1] <= (st.definition::jsonb ->> 'capacity')::bigint " +
                 "- (SELECT count(*) FROM tb_preregister_application a WHERE a.expo_id = r.expo_id AND a.session_id = r.session_id " +
                 "AND a.status = 'CONFIRMED') - (SELECT coalesce(sum(x.applicants), 0) FROM tb_preregister_reservation x " +
                 "WHERE x.expo_id = r.expo_id AND x.session_id = r.session_id AND x.state = 'RESERVED') " +
+                "- (SELECT coalesce(sum(o.seats), 0) FROM tb_promotion_offer o JOIN tb_preregister_reservation h " +
+                "ON h.expo_id = o.expo_id AND h.request_id = o.request_id AND h.state = 'WAITING' " +
+                "WHERE o.expo_id = r.expo_id AND o.session_id = r.session_id AND o.state IN ${PromotionOfferRepository.ACTIVE}) " +
                 "ORDER BY min(r.queue_seq) LIMIT 100",
             { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
             java.sql.Timestamp.from(now),
@@ -197,10 +205,15 @@ class PreregisterReservationRepository(
             reservation.requestId,
         ) == 1
 
-    fun withdraw(reservation: PreregisterReservation): Boolean =
+    // USER is the reservation's own representative after the session phone ownership check; the row is the reference.
+    fun withdraw(
+        reservation: PreregisterReservation,
+        actorType: ApplicationActorType,
+    ): Boolean =
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP " +
-                "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
+                "withdrawn_actor_type = ? WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+            actorType.name,
             reservation.expoId,
             reservation.requestId,
         ) == 1

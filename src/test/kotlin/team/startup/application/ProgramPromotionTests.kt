@@ -452,7 +452,7 @@ class ProgramPromotionTests {
                 .andExpect(jsonPath("$.programName").value("Program"))
                 .andExpect(jsonPath("$.startedAt").value("2026-10-13T10:00:00+09:00"))
                 .andExpect(jsonPath("$.endedAt").value("2026-10-13T11:00:00+09:00"))
-                .andExpect(jsonPath("$.location").isEmpty)
+                .andExpect(jsonPath("$.location").value("Hall"))
         }
         assertEquals(listOf(2L, 1L, 2L, 1L), requestedIds)
     }
@@ -504,9 +504,18 @@ class ProgramPromotionTests {
     @Test
     fun `Expo outages malformed identity and invalid session times are errors`() {
         val event = application()
-        for (mode in listOf("outage", "missing", "wrong-id", "malformed", "no-offset", "reversed", "missing-title")) {
+        for (mode in listOf("outage", "missing", "wrong-id", "malformed", "invalid-time", "reversed", "missing-title", "long-place")) {
             expoMode = mode
             check(event).andExpect(status().is5xxServerError)
+        }
+    }
+
+    @Test
+    fun `promotion accepts Expo places from 101 to 255 code points`() {
+        val event = application()
+        for (length in listOf(101, 255)) {
+            expoMode = "place-$length"
+            check(event).andExpect(status().isOk).andExpect(jsonPath("$.location").value("\uD840\uDC00".repeat(length)))
         }
     }
 
@@ -552,6 +561,14 @@ class ProgramPromotionTests {
                             """[{"participantId":${if (mode == "wrong-id") 99 else id},"name":"${if (id == 2L) "Companion" else "Representative"}","representativeId":${if (id == 2L) 1 else "null"}${if (mode == "absent-phone") "" else ",\"phoneNumber\":$phone"},"notificationPhoneNumber":"01099998888"}]"""
                         } else {
                             callback()
+                            val separator = if (exchange.requestURI.path.endsWith("batch")) " " else "T"
+                            val place =
+                                when (mode) {
+                                    "place-101" -> "\uD840\uDC00".repeat(101)
+                                    "place-255" -> "\uD840\uDC00".repeat(255)
+                                    "long-place" -> "a".repeat(256)
+                                    else -> "Hall"
+                                }
                             val program = """{"id":${if (mode == "wrong-id") 99 else 3},"expoId":"$EXPO","programType":"${if (exchange.requestURI.path
                                     .endsWith(
                                         "batch",
@@ -560,11 +577,12 @@ class ProgramPromotionTests {
                                 "TRAINING"
                             } else {
                                 "STANDARD"
-                            }}","title":${if (mode == "missing-title") "null" else "\"Program\""},"startedAt":"2026-10-13T10:00:00${if (mode == "no-offset") "" else "+09:00"}","endedAt":"2026-10-13T${if (mode == "reversed") "09" else "11"}:00:00+09:00"}"""
+                            }}","title":${if (mode == "missing-title") "null" else "\"Program\""},"startedAt":"2026-10-13${separator}10:00","endedAt":"2026-10-13$separator${if (mode == "reversed") "09" else "11"}:00","place":"$place"}"""
                             val response =
                                 when (mode) {
                                     "past" -> program.replace("2026-10-13", "2020-01-01")
                                     "upper-expo" -> program.replace(EXPO.toString(), EXPO.toString().uppercase())
+                                    "invalid-time" -> program.replace("10:00", "invalid")
                                     else -> program
                                 }
                             if (exchange.requestURI.path.endsWith("batch")) "[$response]" else response

@@ -152,6 +152,7 @@ class CancelStudentGuardianApplicationServiceImpl(
                         "CANCELLED",
                         if (adminId == null) ApplicationActorType.USER else ApplicationActorType.ADMIN,
                         actorId = adminId,
+                        actorParticipantId = party?.let { requireNotNull(it.representativeId) },
                     )
                 }
                 permits.forEach { it.second.committed() }

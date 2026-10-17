@@ -44,7 +44,10 @@ class StudentGuardianBatchRepository(
             ).singleOrNull()
 
     private fun snapshot(command: ApplyStudentGuardianBatchCommand): String =
-        mapper.writeValueAsString(mapOf("key" to command.key, "request" to command.request))
+        mapper.writeValueAsString(
+            mapOf("key" to command.key, "request" to command.request) +
+                if (command.onsite) mapOf("admissionRoute" to "ONSITE") else emptyMap(),
+        )
 
     fun save(
         command: ApplyStudentGuardianBatchCommand,
@@ -159,6 +162,11 @@ class StudentGuardianBatchRepository(
                 StudentGuardianLink(entry.participantId, guardian.participantId)
             }
         }
+
+    fun representative(batchId: UUID): Long? =
+        jdbc
+            .query("SELECT representative_id FROM tb_program_guardian_batch WHERE id = ?", { rs, _ -> rs.getLong(1) }, batchId)
+            .singleOrNull()
 
     fun channel(id: UUID): String? =
         jdbc.queryForObject("SELECT channel FROM tb_program_session_application WHERE id = ?", String::class.java, id)

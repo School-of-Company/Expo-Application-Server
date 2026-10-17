@@ -12,12 +12,11 @@ import team.startup.application.domain.application.presentation.dto.ProgramFormS
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.service.impl.RegistrationGateway
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.time.Instant
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
@@ -26,6 +25,7 @@ class ProgramSessionApplicationRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
     private val attribution: LegacyTraineeAttributionRepository,
+    private val gateway: RegistrationGateway,
 ) {
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
@@ -75,13 +75,13 @@ class ProgramSessionApplicationRepository(
         if (!start.isBefore(end)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간 구간이 올바르지 않습니다.")
         val existing =
             jdbc.query(
-                "SELECT COALESCE(s.pending_definition, s.definition, a.definition_snapshot) " +
+                "SELECT COALESCE(s.pending_definition, s.definition, a.definition_snapshot), false " +
                     "FROM tb_program_session_application a LEFT JOIN tb_program_session_state s " +
                     "ON s.expo_id = a.expo_id AND s.program_type = a.program_type AND s.program_id = a.program_id " +
                     "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') " +
                     "AND NOT (a.program_type = ? AND a.program_id = ?) " +
                     "AND (CAST(? AS bigint) IS NULL OR a.trainee_id IS DISTINCT FROM ?) " +
-                    "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition) " +
+                    "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition), s.pending_definition IS NULL " +
                     "FROM tb_legacy_trainee_attribution l " +
                     "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
                     "JOIN tb_legacy_trainee_program p ON p.trainee_id = t.trainee_id AND p.program_id = t.training_program_id " +
@@ -90,7 +90,7 @@ class ProgramSessionApplicationRepository(
                     "WHERE l.expo_id = ? AND l.participant_id = ? " +
                     "AND NOT (? = 'TRAINING' AND t.training_program_id = ?) " +
                     "AND (CAST(? AS bigint) IS NULL OR l.trainee_id <> ?)",
-                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) },
+                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) to rs.getBoolean(2) },
                 UUID.fromString(definition.expoId),
                 participantId,
                 definition.programType.name,
@@ -104,9 +104,21 @@ class ProgramSessionApplicationRepository(
                 excludingTraineeId,
                 excludingTraineeId,
             )
-        return existing.any {
-            val otherStart = sessionTime(it.startedAt)
-            val otherEnd = sessionTime(it.endedAt)
+        val legacyIds =
+            existing
+                .filter { it.second }
+                .map { it.first.id }
+                .distinct()
+                .sorted()
+        val current = gateway.programDefinitions(definition.expoId, ProgramSessionType.TRAINING, legacyIds, existing = true)
+        if (current.map { it.id }.sorted() != legacyIds) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "귀속된 연수 신청의 현재 프로그램 정의를 모두 확인할 수 없습니다.")
+        }
+        val currentById = current.associateBy { it.id }
+        return existing.any { (stored, _) ->
+            val other = if (stored.programType == ProgramSessionType.TRAINING) currentById[stored.id] ?: stored else stored
+            val otherStart = sessionTime(other.startedAt)
+            val otherEnd = sessionTime(other.endedAt)
             if (!otherStart.isBefore(otherEnd)) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "기존 프로그램 운영 시간이 올바르지 않습니다.")
             start.isBefore(otherEnd) && otherStart.isBefore(end)
         }
@@ -202,13 +214,9 @@ class ProgramSessionApplicationRepository(
     private fun sessionTime(value: String?): Instant {
         if (value.isNullOrBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 운영 시간이 제공되지 않았습니다.")
         return try {
-            OffsetDateTime.parse(value).toInstant()
-        } catch (_: DateTimeParseException) {
-            try {
-                LocalDateTime.parse(value).atZone(ZoneId.of("Asia/Seoul")).toInstant()
-            } catch (ex: DateTimeParseException) {
-                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간이 올바르지 않습니다.", ex)
-            }
+            ExpoProgramTime.parse(value).toInstant()
+        } catch (ex: DateTimeParseException) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 운영 시간이 올바르지 않습니다.", ex)
         }
     }
 
@@ -255,7 +263,7 @@ class ProgramSessionApplicationRepository(
                 "participantId" to command.participantId,
                 "formVersion" to command.formVersion,
                 "answers" to command.answers,
-            ),
+            ) + if (command.onsite) mapOf("admissionRoute" to "ONSITE") else emptyMap(),
         )
 
     fun confirmedPreregister(command: ApplyProgramSessionCommand): Boolean =
@@ -321,9 +329,43 @@ class ProgramSessionApplicationRepository(
                 admissionConfirmedCount(definition, "PRE_REGISTRATION") - admissionConfirmedCount(definition, "ONSITE")
         ).coerceAtLeast(0)
 
-    fun preRegistrationRemaining(definition: ProgramSessionDefinition): Long {
+    // Waiting rows are always PRE_REGISTRATION, so seats held by active offers (#144) come out of the pre seats only.
+    fun preRegistrationRemaining(
+        definition: ProgramSessionDefinition,
+        excludingOffer: UUID? = null,
+    ): Long {
         val capacity = requireNotNull(requireNotNull(definition.policy).preRegistrationCapacity)
-        return (capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition)).coerceAtLeast(0)
+        return (
+            capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition) -
+                offeredSeats(definition, excludingOffer)
+        ).coerceAtLeast(0)
+    }
+
+    fun offeredSeats(
+        definition: ProgramSessionDefinition,
+        excludingOffer: UUID? = null,
+    ): Long =
+        requireNotNull(
+            jdbc.queryForObject(
+                PromotionOfferRepository.PROGRAM_HELD,
+                Long::class.java,
+                UUID.fromString(definition.expoId),
+                definition.programType.name,
+                definition.id,
+                null,
+                null,
+                excludingOffer,
+                excludingOffer,
+            ),
+        )
+
+    // Physical seats taken by confirmed rows plus offer holds; every capacity check and reconfiguration uses this.
+    fun occupiedCount(definition: ProgramSessionDefinition): Long =
+        confirmedCount(definition.programType, definition.id) + offeredSeats(definition)
+
+    fun onsiteRemaining(definition: ProgramSessionDefinition): Long {
+        val capacity = requireNotNull(requireNotNull(definition.policy).onsiteCapacity)
+        return (capacity - admissionConfirmedCount(definition, "ONSITE") - unknownAdmissionCount(definition)).coerceAtLeast(0)
     }
 
     fun admissionSeats(definition: ProgramSessionDefinition): ProgramAdmissionSeats? {
@@ -332,11 +374,12 @@ class ProgramSessionApplicationRepository(
         val pre = admissionConfirmedCount(definition, "PRE_REGISTRATION")
         val onsite = admissionConfirmedCount(definition, "ONSITE")
         val unknown = unknownAdmissionCount(definition)
+        val offered = offeredSeats(definition)
         return ProgramAdmissionSeats(
             ProgramAdmissionCapacity(
                 requireNotNull(policy.preRegistrationCapacity),
                 pre,
-                (policy.preRegistrationCapacity - pre - unknown).coerceAtLeast(0),
+                (policy.preRegistrationCapacity - pre - unknown - offered).coerceAtLeast(0),
             ),
             ProgramAdmissionCapacity(
                 requireNotNull(policy.onsiteCapacity),
@@ -344,6 +387,9 @@ class ProgramSessionApplicationRepository(
                 (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
             ),
             unknown,
+            offeredSeats = offered,
+            waitingEnabled = policy.waitingCapacity > 0,
+            onsiteAdmissionEnabled = policy.onsiteCapacity > 0 && policy.admissionWindow(onsite = true) != null,
         )
     }
 
@@ -352,14 +398,34 @@ class ProgramSessionApplicationRepository(
         type: ProgramSessionType,
         personId: Long,
     ): Map<Long, UUID> {
-        val column = if (type == ProgramSessionType.STANDARD) "participant_id" else "trainee_id"
+        if (type == ProgramSessionType.STANDARD) {
+            return jdbc
+                .query(
+                    "SELECT program_id, group_id FROM tb_program_session_application " +
+                        "WHERE expo_id = ? AND program_type = ? AND participant_id = ? AND status IN ('CONFIRMED', 'WAITING')",
+                    { rs, _ -> rs.getLong(1) to rs.getObject(2, UUID::class.java) },
+                    UUID.fromString(expoId),
+                    type.name,
+                    personId,
+                ).toMap()
+        }
+        // 연수 대기 행은 trainee_id가 없으므로 로컬에 기록된 연수자-참가자 연결로 대기 행도 찾는다(#146).
+        // ponytail: 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
+        val expo = UUID.fromString(expoId)
         return jdbc
             .query(
                 "SELECT program_id, group_id FROM tb_program_session_application " +
-                    "WHERE expo_id = ? AND program_type = ? AND $column = ? AND status IN ('CONFIRMED', 'WAITING')",
+                    "WHERE expo_id = ? AND program_type = 'TRAINING' AND (" +
+                    "(trainee_id = ? AND status IN ('CONFIRMED', 'WAITING')) OR (status = 'WAITING' AND participant_id IN (" +
+                    "SELECT participant_id FROM tb_program_session_application " +
+                    "WHERE expo_id = ? AND program_type = 'TRAINING' AND trainee_id = ? " +
+                    "UNION SELECT participant_id FROM tb_legacy_trainee_attribution WHERE expo_id = ? AND trainee_id = ?)))",
                 { rs, _ -> rs.getLong(1) to rs.getObject(2, UUID::class.java) },
-                UUID.fromString(expoId),
-                type.name,
+                expo,
+                personId,
+                expo,
+                personId,
+                expo,
                 personId,
             ).toMap()
     }
@@ -410,7 +476,11 @@ class ProgramSessionApplicationRepository(
             mapper.writeValueAsString(form.questions),
             mapper.writeValueAsString(command.answers),
             channel,
-            if (definition.policy?.hasAdmissionCapacities() == true) "PRE_REGISTRATION" else null,
+            when {
+                definition.policy?.hasAdmissionCapacities() != true -> null
+                command.onsite -> "ONSITE"
+                else -> "PRE_REGISTRATION"
+            },
         )
         jdbc.update(
             "INSERT INTO tb_program_session_history (application_id, status, actor_type, previous_status_recorded) VALUES (?, ?, 'USER', TRUE)",

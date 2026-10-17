@@ -69,6 +69,10 @@ class ProgramWaitlistRepository(
                 "AND (CAST(? AS text) IS NULL OR channel = ?) " +
                 "AND EXISTS (SELECT 1 FROM tb_preregister_application p WHERE p.expo_id = tb_program_session_application.expo_id " +
                 "AND p.participant_id = tb_program_session_application.participant_id AND p.status = 'CONFIRMED') " +
+                // A row (or guardian batch) already holding seats for an offer is no longer waiting for one (#144).
+                "AND NOT EXISTS (SELECT 1 FROM tb_promotion_offer o WHERE o.state IN ${PromotionOfferRepository.ACTIVE} " +
+                "AND (o.application_id = tb_program_session_application.id OR o.batch_id = (SELECT m.batch_id " +
+                "FROM tb_program_guardian_member m WHERE m.application_id = tb_program_session_application.id))) " +
                 "ORDER BY created_at, id LIMIT ?",
             entryMapper,
             UUID.fromString(definition.expoId),
@@ -78,6 +82,17 @@ class ProgramWaitlistRepository(
             channel,
             limit,
         )
+
+    fun confirmedPreregister(entry: Entry): Boolean =
+        jdbc
+            .queryForList(
+                "SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CONFIRMED' FOR SHARE",
+                entry.key.expoId,
+                entry.participantId,
+            ).isNotEmpty()
+
+    fun channel(id: UUID): String? =
+        jdbc.query("SELECT channel FROM tb_program_session_application WHERE id = ?", { rs, _ -> rs.getString(1) }, id).singleOrNull()
 
     fun waitingCount(
         definition: ProgramSessionDefinition,
@@ -98,7 +113,10 @@ class ProgramWaitlistRepository(
             jdbc.queryForObject(
                 "SELECT count(*) FROM tb_program_session_application " +
                     "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status = ? " +
-                    "AND (CAST(? AS text) IS NULL OR channel = ?)",
+                    "AND (CAST(? AS text) IS NULL OR channel = ?) " +
+                    "AND (status <> 'WAITING' OR EXISTS (" +
+                    "SELECT 1 FROM tb_preregister_application p WHERE p.expo_id = tb_program_session_application.expo_id " +
+                    "AND p.participant_id = tb_program_session_application.participant_id AND p.status = 'CONFIRMED'))",
                 Int::class.java,
                 UUID.fromString(definition.expoId),
                 definition.programType.name,
@@ -244,14 +262,16 @@ class ProgramWaitlistRepository(
         actorType: ApplicationActorType,
         traineeId: Long? = null,
         actorId: Long? = null,
+        actorParticipantId: Long? = null,
     ) {
         jdbc.update(
             "INSERT INTO tb_program_session_history " +
-                "(application_id, status, actor_type, actor_id, previous_status, previous_status_recorded) " +
-                "SELECT id, ?, ?, ?, status, TRUE FROM tb_program_session_application WHERE id = ?",
+                "(application_id, status, actor_type, actor_id, actor_participant_id, previous_status, previous_status_recorded) " +
+                "SELECT id, ?, ?, ?, ?, status, TRUE FROM tb_program_session_application WHERE id = ?",
             status,
             actorType.name,
             actorId,
+            actorParticipantId,
             id,
         )
         jdbc.update(

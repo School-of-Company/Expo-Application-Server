@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSessionSummary
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSummary
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
@@ -53,14 +54,18 @@ class PreregisterSessionRepository(
                     "(st.definition::jsonb ->> 'capacity')::bigint AS capacity, " +
                     "(st.definition::jsonb ->> 'waitingCapacity')::int AS waiting_capacity, " +
                     "(st.definition::jsonb ->> 'closed')::boolean AS closed, " +
-                    "(st.definition::jsonb ->> 'startedAt')::timestamptz <= CURRENT_TIMESTAMP AS started " +
+                    "(st.definition::jsonb ->> 'startedAt')::timestamptz <= CURRENT_TIMESTAMP AS started, " +
+                    "(SELECT coalesce(sum(o.seats), 0) FROM tb_promotion_offer o JOIN tb_preregister_reservation h " +
+                    " ON h.expo_id = o.expo_id AND h.request_id = o.request_id AND h.state = 'WAITING' " +
+                    " WHERE o.expo_id = ? AND o.session_id = s.session_id AND o.state IN ${PromotionOfferRepository.ACTIVE}) AS offered " +
                     "FROM sessions s LEFT JOIN tb_preregister_session_state st ON st.expo_id = ? AND st.session_id = s.session_id " +
                     "CROSS JOIN LATERAL (SELECT coalesce(sum(applicants), 0) AS waiting, count(*) AS parties, " +
                     " (array_agg(applicants ORDER BY queue_seq))[1] AS head FROM tb_preregister_reservation r " +
                     " WHERE r.expo_id = ? AND r.session_id = s.session_id AND r.state = 'WAITING') w " +
                     "ORDER BY s.session_id",
                 { rs, _ ->
-                    val occupied = rs.getLong(2) + rs.getLong(5)
+                    // Seats held by participation offers (#144) are not free for the queue either.
+                    val occupied = rs.getLong(2) + rs.getLong(5) + rs.getLong(13)
                     val head = rs.getObject(8, Int::class.javaObjectType)
                     val free = rs.getObject(9, Long::class.javaObjectType)?.let { it - occupied }
                     val blocked =
@@ -85,6 +90,7 @@ class PreregisterSessionRepository(
                         blocked,
                     )
                 },
+                expoId,
                 expoId,
                 expoId,
                 expoId,
@@ -324,8 +330,10 @@ class PreregisterSessionRepository(
                 "SELECT (SELECT count(*) FROM tb_preregister_application " +
                     "WHERE expo_id = ? AND session_id = ? AND status = 'CONFIRMED') + " +
                     "(SELECT coalesce(sum(applicants), 0) FROM tb_preregister_reservation " +
-                    "WHERE expo_id = ? AND session_id = ? AND state = 'RESERVED')",
+                    "WHERE expo_id = ? AND session_id = ? AND state = 'RESERVED') + (${PromotionOfferRepository.SESSION_HELD})",
                 Long::class.java,
+                expoId,
+                sessionId,
                 expoId,
                 sessionId,
                 expoId,
@@ -336,15 +344,25 @@ class PreregisterSessionRepository(
     fun status(
         id: Long,
         status: String,
+        actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
+        actorParticipantId: Long? = null,
     ) {
         jdbc.update("UPDATE tb_preregister_application SET status = ? WHERE id = ?", status, id)
-        transition(id)
+        transition(id, actorType, actorParticipantId)
     }
 
-    private fun transition(id: Long) {
+    // Registration confirmations keep the column default UNKNOWN; only cancellations carry their executing actor.
+    private fun transition(
+        id: Long,
+        actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
+        actorParticipantId: Long? = null,
+    ) {
         jdbc.update(
-            "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status) " +
-                "SELECT id, expo_id, session_id, participant_id, status FROM tb_preregister_application WHERE id = ?",
+            "INSERT INTO tb_preregister_transition " +
+                "(application_id, expo_id, session_id, participant_id, status, actor_type, actor_participant_id) " +
+                "SELECT id, expo_id, session_id, participant_id, status, ?, ? FROM tb_preregister_application WHERE id = ?",
+            actorType.name,
+            actorParticipantId,
             id,
         )
     }

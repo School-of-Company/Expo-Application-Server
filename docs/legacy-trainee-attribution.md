@@ -23,13 +23,19 @@ PENDING은 같은 요청·작업 ID로 재전송해 복구한다.
 
 V24는 귀속·프로그램 정의 projection과 영속 작업 원장을 추가한다.
 원래 trainee·신청 ID와 좌석을 보존하고 신규 신청·접수번호·폼 답변·출석·승급 이벤트를 만들지 않는다.
-채택한 프로그램 정의는 시간 검사 원천이며 제출 당시 폼 스냅샷으로 사용하지 않는다.
+채택한 프로그램 정의는 제출 당시 폼 스냅샷으로 사용하지 않는다.
+시간 검사마다 귀속된 실제 연수 신청의 Expo 현재 정의를 batch 조회한다(추가 원격 호출 비용이 있다).
+Application에서 준비 중인 일정 변경 정의가 있으면 그것을 우선한다.
+정의 누락·조회 실패·잘못된 시간은 신청 시 오류로 반환하고 승급은 보류한다. 기존 신청 취소는 계속 처리한다.
 
 User 호출 전 PENDING을 커밋하고 HTTP 호출 동안 DB 트랜잭션·참가자/trainee/일정 잠금을 유지하지 않는다.
 별도 세션 잠금은 같은 trainee의 동시 원격 작업만 직렬화한다.
 User 성공 후 projection과 APPLIED를 같은 로컬 트랜잭션으로 커밋한다.
 응답 유실·로컬 실패는 PENDING을 유지하고, 재시도에서 User changed=false여도 로컬 반영을 마친다.
 최초 시도의 확정 4xx는 REJECTED다. 불확실한 이전 시도가 있으면 뒤의 오류로 gate를 풀지 않는다.
+User 호출 전 검증 실패는 원격 시도 이력이 없을 때만 FAILED로 종료한다.
+FAILED는 같은 작업 ID로 원래 오류를 반환하며, 원인 해결 후 새 작업 ID로 요청한다.
+이전 User 호출 이력이 있으면 사전 검증 실패도 PENDING을 유지한다.
 
 PENDING 참가자의 신규 신청·승급과 행사 일정 변경을 보류한다.
 승급 보류 때문에 기존 신청 취소가 실패하지 않는다.
@@ -37,7 +43,30 @@ PENDING 참가자의 신규 신청·승급과 행사 일정 변경을 보류한�
 레거시 추가·replace도 같은 귀속 검사를 사용한다.
 원래 신청의 취소·삭제는 실제 신청 행과의 join에서 즉시 제외된다.
 해제는 귀속 projection만 지우며 연수 신청·좌석·출석·일반 신청 이력을 삭제하지 않는다.
+단, 해당 행사·참가자·연수자의 CONFIRMED 또는 WAITING 원장 신청이 있으면 User 호출 전에 409로 거절한다.
+소유자·관리자·학생/보호자 취소가 현재 User 연결을 필요로 하므로 먼저 신청을 취소한 뒤 해제한다.
 이미 존재한 시간 충돌을 자동 취소하거나 일정을 옮기지 않는다.
+
+### 기존 사전 검증 실패 PENDING의 운영 정리
+
+V25 배포 후에도 기존 PENDING을 자동 종료하지 않는다. 운영자는 Application 인스턴스와 작업 진입을
+중지하고 진행 중인 요청이 없음을 확인한 뒤 다음 절차를 수행한다. attempts가 0일 때만 User 호출 전임이
+확실하다. attempts가 1 이상이면 응답 유실 가능성이 있으므로 이 절차를 사용하지 않고 같은 작업 ID로 복구한다.
+psql에서 대상 UUID를 `\set operation_id '확인한-작업-UUID'`로 지정한 뒤 실행한다.
+
+```sql
+BEGIN;
+SELECT id, state, attempts, error_status
+FROM tb_legacy_trainee_attribution_operation
+WHERE id = :'operation_id'::uuid FOR UPDATE;
+UPDATE tb_legacy_trainee_attribution_operation
+SET state = 'FAILED', error_status = COALESCE(error_status, 503), completed_at = clock_timestamp()
+WHERE id = :'operation_id'::uuid AND state = 'PENDING' AND attempts = 0;
+COMMIT;
+```
+
+UPDATE가 정확히 1행인지 확인하고 작업 ID·근거를 운영 기록에 남긴다. 재시작 후 원인을 해결하고 새 작업 ID로
+요청한다. User 호출 여부를 증명할 수 없는 작업을 강제로 포기하거나 연결·좌석을 직접 지우지 않는다.
 
 ## User 계약과 통합
 
@@ -56,6 +85,8 @@ User 계약에는 요청 ID/세대 fencing이 없으므로 타임아웃 뒤 지�
 미해결 PENDING 상태에서 다른 연결·해제를 시작하지 않으며 자동 반대 작업·ID 보정은 하지 않는다.
 
 #125의 PR #138 V23 → #136 V24 순서로 병합·배포한다. 귀속 채택을 새 PRE/FIELD 좌석으로 분류하지 않는다.
+그 뒤 #147 V25를 배포한다. FAILED 작업이 있으면 이를 종료로 취급하지 못하는 구버전 코드로 롤백하지 않는다.
+#145 시각 파싱 수정은 별도 브랜치에서 관리하며, 실제 Expo 시각 형식 연동 확인 전 귀속 기능을 활성화하지 않는다.
 #138 원장 변경과 #128의 PR #139 PrepareProgramChange 검사·테스트 stub 변경은 통합 시 양쪽을 보존한다.
 귀속 union/검사와 legacy apply·replace 호출 외 공급자 어댑터·좌석 로직은 덮어쓰지 않는다.
 

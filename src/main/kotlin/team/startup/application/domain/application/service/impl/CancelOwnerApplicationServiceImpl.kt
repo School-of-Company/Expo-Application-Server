@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
@@ -72,9 +73,16 @@ class CancelOwnerApplicationServiceImpl(
                         current.participantId,
                         party.representativeId,
                         permit,
+                        requireNotNull(party.representativeId),
                     )
                 } else {
-                    cancelProgram.execute(CancelProgramSessionCommand(UUID.fromString(current.applicationId)))
+                    cancelProgram.execute(
+                        CancelProgramSessionCommand(
+                            UUID.fromString(current.applicationId),
+                            ApplicationActorType.USER,
+                            actorParticipantId = requireNotNull(party.representativeId),
+                        ),
+                    )
                     permit.committed()
                 }
             }

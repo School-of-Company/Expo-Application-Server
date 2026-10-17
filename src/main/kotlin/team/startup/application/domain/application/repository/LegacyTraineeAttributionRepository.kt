@@ -166,16 +166,38 @@ class LegacyTraineeAttributionRepository(
         jdbc.update("UPDATE tb_legacy_trainee_attribution_operation SET attempts = attempts + 1 WHERE id = ? AND state = 'PENDING'", id)
     }
 
+    fun requireRevocable(operation: Operation) {
+        if (jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_program_session_application WHERE expo_id = ? " +
+                    "AND participant_id = ? AND trainee_id = ? AND status IN ('CONFIRMED', 'WAITING'))",
+                Boolean::class.java,
+                operation.expoId,
+                operation.participantId,
+                operation.traineeId,
+            ) == true
+        ) {
+            throw ProgramApplicationConflictException("연결된 연수 신청을 먼저 취소한 뒤 연결을 해제해 주세요.")
+        }
+    }
+
     fun fail(
         operation: Operation,
         status: Int,
+        beforeUser: Boolean = false,
     ) {
+        val state =
+            when {
+                operation.attempts > 0 -> "PENDING"
+                beforeUser -> "FAILED"
+                status in setOf(400, 403, 404, 409) -> "REJECTED"
+                else -> "PENDING"
+            }
         jdbc.update(
             "UPDATE tb_legacy_trainee_attribution_operation SET error_status = ?, state = ?, " +
                 "completed_at = CASE WHEN ? THEN clock_timestamp() ELSE NULL END WHERE id = ? AND state = 'PENDING'",
             status,
-            if (operation.attempts == 0 && status in setOf(400, 403, 404, 409)) "REJECTED" else "PENDING",
-            operation.attempts == 0 && status in setOf(400, 403, 404, 409),
+            state,
+            state != "PENDING",
             operation.id,
         )
     }

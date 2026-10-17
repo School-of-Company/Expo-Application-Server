@@ -7,6 +7,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
+import team.startup.application.domain.application.repository.PromotionOfferRepository
 import java.time.Clock
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -25,6 +26,8 @@ class PreregisterWaitlist(
     private val ledger: PreregisterSessionLedger,
     private val gateway: RegistrationGateway,
     private val clock: Clock,
+    private val offers: PromotionOfferRepository,
+    private val offerPolicy: PromotionOfferPolicy,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -77,21 +80,32 @@ class PreregisterWaitlist(
             ledger.lock(expoId)
             if (repository.deleted(expoId, sessionId) || repository.pending(expoId, sessionId) != null) return@executeWithoutResult
             val definition = ledger.current(expoId, sessionId, observation)
+            offers.capSession(expoId, sessionId, minOf(applicationEndedAt, definition.startedAt))
             val now = clock.instant()
             if (definition.closed || !now.isBefore(applicationEndedAt) || !now.isBefore(definition.startedAt)) {
                 return@executeWithoutResult
             }
             var free = definition.capacity - repository.occupied(expoId, sessionId)
+            // From the day before the session (#144) the head party only gets a seat-holding offer; acceptance confirms.
+            val offerMode = offerPolicy.offerMode(definition.startedAt, now)
+            val hardDeadline = minOf(applicationEndedAt, definition.startedAt)
+            val sendAfter = offerPolicy.sendAfter(now)
+            if (offerMode && !sendAfter.isBefore(hardDeadline)) return@executeWithoutResult
             while (true) {
                 // ponytail: strict FIFO, a large head party holds back smaller parties behind it by design (#99 P5).
                 val head = reservations.waitingHead(expoId, sessionId) ?: break
-                if (head.applicants > free || !reservations.promote(head)) break
+                if (head.applicants > free) break
+                if (offerMode) {
+                    offers.createPreregister(head, sendAfter, hardDeadline)
+                } else if (!reservations.promote(head)) {
+                    break
+                }
                 free -= head.applicants
             }
         }
     }
 
-    private fun applicationEndedAt(expoId: UUID): Instant {
+    fun applicationEndedAt(expoId: UUID): Instant {
         val form =
             gateway.form(expoId.toString(), "STANDARD", "PRE", true)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "사전 등록 폼을 조회할 수 없습니다.")

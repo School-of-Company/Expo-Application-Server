@@ -31,6 +31,7 @@ data class ApplyStudentGuardianBatchCommand(
     val sessionId: String,
     val idempotencyKey: String,
     val request: StudentGuardianBatchRequest,
+    val onsite: Boolean = false,
 ) {
     override fun toString() = "ApplyStudentGuardianBatchCommand(key=$key)"
 }

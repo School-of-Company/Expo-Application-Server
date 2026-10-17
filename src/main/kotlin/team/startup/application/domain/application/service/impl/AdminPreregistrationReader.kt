@@ -51,6 +51,15 @@ class AdminPreregistrationReader(
             throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 5000행입니다. 검색 범위를 좁혀 주세요.")
         }
         val details = participants.details(expoId, rows.mapNotNull { it.participantId }.distinct())
-        return rows.map { it.copy(participant = details[it.participantId]) } to total
+        val names = participants.names(expoId, rows.mapNotNull { it.cancellationActorUser?.participantId })
+        return rows.map { row ->
+            row.copy(
+                participant = details[row.participantId],
+                cancellationActorUser =
+                    row.cancellationActorUser?.let { actor ->
+                        actor.participantId?.let { actor.copy(name = names?.get(it)) } ?: actor
+                    },
+            )
+        } to total
     }
 }
