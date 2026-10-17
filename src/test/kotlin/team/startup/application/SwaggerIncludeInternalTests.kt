@@ -93,6 +93,13 @@ class SwaggerIncludeInternalTests {
                 .path("responses")
                 .has("410"),
         )
+        // #156: 실행 주체와 출석 보호가 없는 내부 프로그램 취소 경로는 제거되었고, 같은 컨트롤러의 다른 내부 경로는 유지된다.
+        assertEquals(false, document.path("paths").has("/internal/program-session-applications/{applicationId}/cancellation"))
+        assertEquals(true, document.path("paths").path("/internal/expos/{expoId}/program-changes/{changeId}").has("put"))
+        assertEquals(
+            true,
+            document.path("paths").path("/internal/expos/{expoId}/program-sessions/{programType}/{programId}/reconciliation").has("post"),
+        )
         mockMvc.perform(get("/internal/standard-program-applications")).andExpect(status().isUnauthorized)
     }
 
