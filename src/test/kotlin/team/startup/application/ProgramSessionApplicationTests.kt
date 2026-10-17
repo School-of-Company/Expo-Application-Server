@@ -220,6 +220,21 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `sessions observed before the Expo V37 split keep accepting applications and reading participants`() {
+        // #163: Expo V37은 기존 정책을 승인 요청 없이 사전 정원 = 전체 정원, 현장 0으로 바꿨다.
+        capacity = 2
+        assertEquals("CONFIRMED", service.execute(command()).status)
+        val stored = "SELECT definition->'policy'->>'preRegistrationCapacity' FROM tb_program_session_state"
+        assertEquals(null, jdbc.queryForObject(stored, String::class.java))
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":0"
+        assertEquals("CONFIRMED", service.execute(command(participant = 2)).status)
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1"
+        assertThrows(
+            ProgramApplicationConflictException::class.java,
+        ) { service.execute(command(program = 1, participant = 2, key = "split")) }
+    }
+
+    @Test
     fun `standard and training venues survive snapshots and approved revision changes without rewriting history`() {
         for (type in ProgramSessionType.entries) {
             reset()

@@ -24,7 +24,14 @@ Application 초기 기준은 `origin/develop` `9b25487dda55cd143ee78a757dac68c0b
 
 ### 조회와 정원 변경
 
-참가자 후보 GET의 `admissionSeats`와 관리자/내부 `program-session-applications/current-sessions` 각 item의 `admissionSeats`는 동일 원장 계산을 사용한다. 관리자 접수 목록·상세에는 `admissionRoute`를 추가한다. 기존 목록 순서·식별자·상태·인증과 `Cache-Control: no-store`를 유지한다.
+참가자 후보 GET의 `admissionSeats`와 관리자/내부 `program-session-applications/current-sessions` 각 item의 `admissionSeats`는 동일 원장 계산을 사용한다.
+
+두 조회는 Expo 현재 정의가 로컬 승인 정의(`tb_program_session_state`의 current/pending)와 같을 때만 좌석을 계산한다(#163). 다만 다음 두 경우는 같은 정의로 본다.
+
+- 정책 없는 회차: Expo가 승인 요청 없이 반영한 제목·시간·장소 변경. 신청 경로와 같은 기준이며 revision이 저장값보다 작으면 불일치다.
+- Expo V37 전환: 정원 분리·직업 채널이 없던 예전 정책을 `preRegistrationCapacity = capacity`, `onsiteCapacity = 0`으로 바꾼 정의. 신청 경로에도 같은 기준을 적용한다. 다른 분할이나 직업 채널이 있던 정의는 자동 전환하지 않고 운영 전환 계획을 따른다.
+
+그 밖의 불일치는 목록 전체를 409로 거절한다(fail-closed). 관리자 current-sessions 409 본문은 원인 코드를 준다. 로컬 정의 불일치는 `{"status":409,"code":"PROGRAM_DEFINITION_MISMATCH","programType":"STANDARD","programId":99}`이고, Expo 페이지 넘김 중 정의 버전 변경은 `{"status":409,"code":"DEFINITION_VERSION_CHANGED"}`이며 첫 페이지부터 다시 읽는다. 참가자 후보 GET은 기존처럼 `APPLICATION_CONFLICT`다. 관리자 접수 목록·상세에는 `admissionRoute`를 추가한다. 기존 목록 순서·식별자·상태·인증과 `Cache-Control: no-store`를 유지한다.
 
 ```json
 {
