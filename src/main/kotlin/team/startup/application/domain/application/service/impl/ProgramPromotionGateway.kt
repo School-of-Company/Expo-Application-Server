@@ -30,43 +30,11 @@ class ProgramPromotionGateway(
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     fun details(event: ProgramPromotionEvent): ProgramPromotionCheck {
-        val participant = participant(event, event.participantId)
-        val representativeId = participant.get("representativeId") ?: invalid()
-        val representative =
-            if (representativeId.isNull) {
-                participant
-            } else {
-                if (!representativeId.isIntegralNumber || !representativeId.canConvertToLong() || representativeId.asLong() <= 0) invalid()
-                participant(event, representativeId.asLong()).also {
-                    if (it.get("representativeId")?.isNull != true) invalid()
-                }
-            }
-        val phoneNode = representative.get("phoneNumber") ?: invalid()
-        val phone = if (phoneNode.isNull) null else phoneNode.takeIf { it.isString }?.stringValue()?.filter { it in '0'..'9' } ?: invalid()
-        if (phone != null && !phone.matches(Regex("0[0-9]{8,10}"))) invalid()
-        val program =
-            if (event.programType == ProgramSessionType.STANDARD) {
-                call(expoUrl, expoToken, "/internal/expo/${event.expoId}/standard-programs/${event.programId}")
-            } else {
-                val array =
-                    call(
-                        expoUrl,
-                        expoToken,
-                        "/internal/expo/${event.expoId}/training-programs/batch",
-                        mapOf("programIds" to listOf(event.programId)),
-                    )
-                if (!array.isArray || array.size() != 1) invalid()
-                array.get(0)
-            }
-        if (!program.isObject || !program.path("id").isIntegralNumber || !program.path("id").canConvertToLong() ||
-            program.path("id").asLong() != event.programId ||
-            expoId(program) != event.expoId || program.path("programType").asString() != event.programType.name
-        ) {
-            invalid()
-        }
+        val participant = participant(event.expoId, event.participantId)
+        val phone = phone(representative(event.expoId, participant))
+        val program = program(event.expoId, event.programType, event.programId)
         val start = time(program, "startedAt")
         val end = time(program, "endedAt")
-        if (!end.toInstant().isAfter(start.toInstant())) invalid()
         return ProgramPromotionCheck(
             eligible = true,
             eventId = event.eventId,
@@ -97,8 +65,88 @@ class ProgramPromotionGateway(
         )
     }
 
+    data class ProgramNotice(
+        val title: String,
+        val startedAt: String,
+        val endedAt: String,
+        val location: String?,
+    )
+
+    // Current Expo title, KST times and place for a #144 offer message, validated like the promotion notice.
+    fun programNotice(
+        expoId: UUID,
+        type: ProgramSessionType,
+        programId: Long,
+    ): ProgramNotice {
+        val program = program(expoId, type, programId)
+        val start = time(program, "startedAt")
+        val end = time(program, "endedAt")
+        return ProgramNotice(
+            label(program, "title"),
+            start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
+        )
+    }
+
+    private fun program(
+        expoId: UUID,
+        type: ProgramSessionType,
+        programId: Long,
+    ): JsonNode {
+        val program =
+            if (type == ProgramSessionType.STANDARD) {
+                call(expoUrl, expoToken, "/internal/expo/$expoId/standard-programs/$programId")
+            } else {
+                val array =
+                    call(
+                        expoUrl,
+                        expoToken,
+                        "/internal/expo/$expoId/training-programs/batch",
+                        mapOf("programIds" to listOf(programId)),
+                    )
+                if (!array.isArray || array.size() != 1) invalid()
+                array.get(0)
+            }
+        if (!program.isObject || !program.path("id").isIntegralNumber || !program.path("id").canConvertToLong() ||
+            program.path("id").asLong() != programId ||
+            expoId(program) != expoId || program.path("programType").asString() != type.name
+        ) {
+            invalid()
+        }
+        val start = time(program, "startedAt")
+        val end = time(program, "endedAt")
+        if (!end.toInstant().isAfter(start.toInstant())) invalid()
+        return program
+    }
+
+    // The participant's own representative (or the participant itself) receives program notices; #144 offers reuse it.
+    fun representativeContact(
+        expoId: UUID,
+        participantId: Long,
+    ): Pair<String?, String> = representative(expoId, participant(expoId, participantId)).let { phone(it) to label(it, "name") }
+
+    private fun representative(
+        expoId: UUID,
+        participant: JsonNode,
+    ): JsonNode {
+        val representativeId = participant.get("representativeId") ?: invalid()
+        if (representativeId.isNull) return participant
+        if (!representativeId.isIntegralNumber || !representativeId.canConvertToLong() || representativeId.asLong() <= 0) invalid()
+        return participant(expoId, representativeId.asLong()).also {
+            if (it.get("representativeId")?.isNull != true) invalid()
+        }
+    }
+
+    private fun phone(representative: JsonNode): String? {
+        val phoneNode = representative.get("phoneNumber") ?: invalid()
+        val phone = if (phoneNode.isNull) null else phoneNode.takeIf { it.isString }?.stringValue()?.filter { it in '0'..'9' } ?: invalid()
+        if (phone != null && !phone.matches(Regex("0[0-9]{8,10}"))) invalid()
+        return phone
+    }
+
     private fun participant(
-        event: ProgramPromotionEvent,
+        expoId: UUID,
         id: Long,
     ): JsonNode {
         val array =
@@ -107,7 +155,7 @@ class ProgramPromotionGateway(
                 userToken,
                 "/internal/standard-participants/details",
                 mapOf(
-                    "expoId" to event.expoId,
+                    "expoId" to expoId,
                     "participantIds" to listOf(id),
                 ),
             )

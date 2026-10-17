@@ -112,7 +112,7 @@ class ProgramSessionAdmission(
         // Split sessions wait on pre-registration seats only; onsite seats are never borrowed.
         // Onsite admission confirms within onsite seats or is rejected; it never waits behind the pre-registration queue.
         if (command.onsite &&
-            (ledger.confirmedCount(command.programType, command.programId) >= policy.capacity || ledger.onsiteRemaining(definition) < 1)
+            (ledger.occupiedCount(definition) >= policy.capacity || ledger.onsiteRemaining(definition) < 1)
         ) {
             conflict("현장 접수 좌석이 없습니다.")
         }
@@ -120,7 +120,7 @@ class ProgramSessionAdmission(
         val waiting =
             !command.onsite &&
                 (
-                    ledger.confirmedCount(command.programType, command.programId) >= policy.capacity ||
+                    ledger.occupiedCount(definition) >= policy.capacity ||
                         (policy.hasAdmissionCapacities() && ledger.preRegistrationRemaining(definition) < 1) ||
                         (channel != null && repository.confirmedCount(definition, channel.name) >= channel.capacity) ||
                         waitingCount > 0

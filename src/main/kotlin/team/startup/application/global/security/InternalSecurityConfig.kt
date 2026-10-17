@@ -66,6 +66,13 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-waitlist/cancellation")
                     .permitAll()
+                    // #144 offers: the participant session cookie authenticates, and the POSTs stay CSRF protected.
+                    .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications/promotion-offers")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/promotion-offers/{offerId}/acceptance")
+                    .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/promotion-offers/{offerId}/decline")
+                    .permitAll()
                     .requestMatchers(adminGroupMessages)
                     .permitAll()
                     .requestMatchers(pageViews)
