@@ -38,7 +38,7 @@ class OwnerApplicationController(
     @GetMapping
     @Operation(
         summary = "내 일행 신청 조회",
-        description = "참가자 세션 쿠키로 일행을 확인합니다. 응답 X-CSRF-TOKEN과 JSESSIONID를 취소 요청에 사용합니다.",
+        description = "참가자 세션 쿠키로 일행을 확인합니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 취소 요청에 사용합니다.",
         responses = [
             ApiResponse(responseCode = "200", description = "일행 신청 목록"),
             ApiResponse(responseCode = "400", description = "잘못된 박람회 ID"),
@@ -86,7 +86,7 @@ class OwnerApplicationController(
     @GetMapping("/preregister-waitlist")
     @Operation(
         summary = "내 사전등록 대기 조회",
-        description = "참가자 세션의 검증 번호로 대기 일행을 찾습니다. 대기 일행은 User 저장 전이라 QR이 없습니다. 응답 X-CSRF-TOKEN을 대기 취소에 사용합니다.",
+        description = "참가자 세션의 검증 번호로 대기 일행을 찾습니다. 대기 일행은 User 저장 전이라 QR이 없습니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
         responses = [
             ApiResponse(responseCode = "200", description = "대기 또는 승급 처리 중인 일행"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),

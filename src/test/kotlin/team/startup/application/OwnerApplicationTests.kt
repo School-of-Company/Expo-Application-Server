@@ -603,24 +603,26 @@ class OwnerApplicationTests {
         assertEquals("no-store", result.response.getHeader("Cache-Control"))
         val token = requireNotNull(result.response.getHeader("X-CSRF-TOKEN"))
         val webSession = requireNotNull(result.request.session)
+        // The shared context may hold the session-backed repository installed by csrf() elsewhere.
+        val csrfCookies = listOfNotNull(Cookie("PARTICIPANT_SESSION", "session"), result.response.getCookie("XSRF-TOKEN"))
         assertFalse(result.response.contentAsString.contains("phoneNumber"))
         mvc
             .perform(post("$path/PREREGISTER/2/cancellation").cookie(Cookie("PARTICIPANT_SESSION", "session")))
             .andExpect(status().isForbidden)
+        mvc
+            .perform(
+                post("$path/PREREGISTER/2/cancellation")
+                    .session(webSession as org.springframework.mock.web.MockHttpSession)
+                    .header("X-CSRF-TOKEN", token)
+                    .cookie(*csrfCookies.toTypedArray()),
+            ).andExpect(status().isNoContent)
+        assertEquals("CANCELLED", state(2))
         mvc
             .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()))
             .andExpect(status().isUnauthorized)
         mvc
             .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "other")))
             .andExpect(status().isNotFound)
-        mvc
-            .perform(
-                post("$path/PREREGISTER/2/cancellation")
-                    .session(webSession as org.springframework.mock.web.MockHttpSession)
-                    .header("X-CSRF-TOKEN", token)
-                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
-            ).andExpect(status().isNoContent)
-        assertEquals("CANCELLED", state(2))
         mvc
             .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(Cookie("PARTICIPANT_SESSION", "session")))
             .andExpect(status().isNoContent)
