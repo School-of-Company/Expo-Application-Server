@@ -404,6 +404,21 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `training admission accepts Expo space separated session times`() {
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/program-sessions/TRAINING/1/applications")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":1,"formVersion":1,"answers":{"101":"a"}}""")
+                    .header("Idempotency-Key", "training-space-time")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isCreated)
+            .andExpect(jsonPath("$.status").value("CONFIRMED"))
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
     fun `training creates links only after acceptance and preserves QR and version compatibility`() {
         val receipt = service.execute(command(type = ProgramSessionType.TRAINING))
         assertEquals(501L, receipt.traineeId)
@@ -1384,6 +1399,31 @@ class ProgramSessionApplicationTests {
                 waiting.applicationId,
             ),
         )
+    }
+
+    @ParameterizedTest
+    @CsvSource("STANDARD,false", "TRAINING,false", "STANDARD,true", "TRAINING,true")
+    fun `stale waiting from cancelled preregistration does not block new confirmation`(
+        type: ProgramSessionType,
+        channelSeats: Boolean,
+    ) {
+        if (channelSeats) useChannels() else waitingCapacity = 1
+        val confirmed = service.execute(command(type = type))
+        val stale = service.execute(command(participant = 2, type = type))
+        assertEquals("WAITING", stale.status)
+        jdbc.update(
+            "UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE expo_id = ? AND participant_id = 2",
+            UUID.fromString(EXPO),
+        )
+        cancel(confirmed.applicationId)
+        addParticipant(3)
+        val current = mapper.readValue(definition("1", type.name), ProgramSessionDefinition::class.java)
+        val repository = context.getBean(ProgramWaitlistRepository::class.java)
+        assertTrue(repository.waiting(current, 10).isEmpty())
+        assertEquals("CONFIRMED", service.execute(command(participant = 3, type = type)).status)
+        assertEquals(0, repository.waitingCount(current))
+        if (channelSeats) assertEquals(0, repository.waitingCount(current, "교원"))
+        assertEquals("WAITING", column("status", stale.applicationId))
     }
 
     @Test
@@ -3904,7 +3944,17 @@ class ProgramSessionApplicationTests {
                 ObjectMapper().readTree("{$fields}").properties().forEach { (name, value) -> policy.set(name, value) }
             }
             val start = Instant.parse("2030-01-01T00:00:00Z").plusSeconds(id.toLong() * 7200 + if (type == "TRAINING") 86400 else 0)
-            val window = windows[type to id.toLong()] ?: (start.toString() to start.plusSeconds(3600).toString())
+            val formatter =
+                if (type ==
+                    "TRAINING"
+                ) {
+                    java.time.format.DateTimeFormatter
+                        .ofPattern("yyyy-MM-dd HH:mm")
+                } else {
+                    java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME
+                }
+            val localStart = start.atZone(java.time.ZoneId.of("Asia/Seoul"))
+            val window = windows[type to id.toLong()] ?: (localStart.format(formatter) to localStart.plusHours(1).format(formatter))
             json.put("startedAt", window.first)
             json.put("endedAt", window.second)
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
