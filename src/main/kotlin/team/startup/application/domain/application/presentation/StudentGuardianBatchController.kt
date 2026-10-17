@@ -20,6 +20,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchReceipt
 import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchRequest
+import team.startup.application.domain.application.service.ApplyOnsiteStudentGuardianBatchService
 import team.startup.application.domain.application.service.ApplyStudentGuardianBatchService
 import java.util.UUID
 
@@ -27,6 +28,7 @@ import java.util.UUID
 @ConditionalOnProperty(name = ["application.program-sessions.enabled"], havingValue = "true")
 class StudentGuardianBatchController(
     private val service: ApplyStudentGuardianBatchService,
+    private val onsiteService: ApplyOnsiteStudentGuardianBatchService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val cookieName: String,
 ) {
     @Operation(
@@ -49,6 +51,38 @@ class StudentGuardianBatchController(
         @RequestHeader("Idempotency-Key", required = false) key: String?,
         @Valid @RequestBody body: StudentGuardianBatchRequest,
         request: HttpServletRequest,
+    ): ResponseEntity<StudentGuardianBatchReceipt> = submit(expoId, programType, programId, key, body, request, service::execute)
+
+    @Operation(
+        summary = "학생·보호자 묶음 현장 신청",
+        description = "신규 인원 전체가 현장 좌석에 들어갈 때만 원자적으로 확정하고 아니면 409입니다. 현장 대기는 없습니다.",
+        responses = [
+            ApiResponse(responseCode = "201", description = "원자적 확정 또는 동일 멱등 요청의 원본 결과"),
+            ApiResponse(responseCode = "400", description = "잘못된 연결·답변"),
+            ApiResponse(responseCode = "401", description = "세션 인증 필요"),
+            ApiResponse(responseCode = "403", description = "CSRF·관리 일행·학년·역할·현장 신청 자격 불충족"),
+            ApiResponse(responseCode = "409", description = "중복·시간 충돌·현장 정원·폼 기간·정의 변경"),
+            ApiResponse(responseCode = "503", description = "학년· 동반 정책·시간 충돌 계약 공급자 미설정"),
+        ],
+    )
+    @PostMapping("/application/expos/{expoId}/program-sessions/{programType}/{programId}/onsite-application-batches")
+    fun applyOnsite(
+        @PathVariable expoId: UUID,
+        @PathVariable programType: ProgramSessionType,
+        @PathVariable programId: Long,
+        @RequestHeader("Idempotency-Key", required = false) key: String?,
+        @Valid @RequestBody body: StudentGuardianBatchRequest,
+        request: HttpServletRequest,
+    ): ResponseEntity<StudentGuardianBatchReceipt> = submit(expoId, programType, programId, key, body, request, onsiteService::execute)
+
+    private fun submit(
+        expoId: UUID,
+        programType: ProgramSessionType,
+        programId: Long,
+        key: String?,
+        body: StudentGuardianBatchRequest,
+        request: HttpServletRequest,
+        execute: (ApplyStudentGuardianBatchCommand) -> StudentGuardianBatchReceipt,
     ): ResponseEntity<StudentGuardianBatchReceipt> {
         val session =
             request.cookies
@@ -60,7 +94,7 @@ class StudentGuardianBatchController(
                 ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "SESSION_REQUIRED")
         if (programId <= 0 || key.isNullOrBlank() || key.length > 200) throw ResponseStatusException(HttpStatus.BAD_REQUEST)
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(
-            service.execute(ApplyStudentGuardianBatchCommand(ProgramSessionKey(expoId, programType, programId), session, key, body)),
+            execute(ApplyStudentGuardianBatchCommand(ProgramSessionKey(expoId, programType, programId), session, key, body)),
         )
     }
 }

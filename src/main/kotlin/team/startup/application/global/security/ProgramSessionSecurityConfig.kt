@@ -37,6 +37,14 @@ class ProgramSessionSecurityConfig {
                         HttpMethod.POST,
                         "/application/expos/{expoId}/program-sessions/{programType}/{programId}/application-batches",
                     ),
+                    PathPatternRequestMatcher.withDefaults().matcher(
+                        HttpMethod.POST,
+                        "/application/expos/{expoId}/program-sessions/{programType}/{programId}/onsite-applications",
+                    ),
+                    PathPatternRequestMatcher.withDefaults().matcher(
+                        HttpMethod.POST,
+                        "/application/expos/{expoId}/program-sessions/{programType}/{programId}/onsite-application-batches",
+                    ),
                 ),
             ).csrf { it.csrfTokenRepository(CookieCsrfTokenRepository()) }
             .authorizeHttpRequests { it.anyRequest().permitAll() }

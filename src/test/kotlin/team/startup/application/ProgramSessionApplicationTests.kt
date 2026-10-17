@@ -61,6 +61,8 @@ import team.startup.application.domain.application.repository.ProgramWaitlistRep
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
+import team.startup.application.domain.application.service.ApplyOnsiteProgramSessionService
+import team.startup.application.domain.application.service.ApplyOnsiteStudentGuardianBatchService
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.domain.application.service.ApplyStudentGuardianBatchService
 import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
@@ -69,8 +71,8 @@ import team.startup.application.domain.application.service.OwnerCancellationGuar
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 import team.startup.application.domain.application.service.StudentGuardianEligibilityProvider
-import team.startup.application.domain.application.service.impl.ApplyProgramSessionServiceImpl
 import team.startup.application.domain.application.service.impl.ProgramFormAdapter
+import team.startup.application.domain.application.service.impl.ProgramSessionAdmission
 import team.startup.application.domain.application.service.impl.ProgramWaitlist
 import team.startup.application.domain.application.service.impl.ProgramWaitlistScheduler
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -96,6 +98,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class ProgramSessionApplicationTests {
     @Autowired private lateinit var service: ApplyProgramSessionService
 
+    @Autowired private lateinit var onsiteService: ApplyOnsiteProgramSessionService
+
     @Autowired private lateinit var jdbc: JdbcTemplate
 
     @Autowired private lateinit var mapper: ObjectMapper
@@ -107,6 +111,8 @@ class ProgramSessionApplicationTests {
     @Autowired private lateinit var transactions: TransactionTemplate
 
     @Autowired private lateinit var batchService: ApplyStudentGuardianBatchService
+
+    @Autowired private lateinit var onsiteBatchService: ApplyOnsiteStudentGuardianBatchService
 
     @Autowired private lateinit var batchCancellation: CancelStudentGuardianApplicationService
 
@@ -133,6 +139,7 @@ class ProgramSessionApplicationTests {
         occupation = "TEACHER"
         occupations = emptyMap()
         managedIds = listOf(1, 2)
+        fieldIds = emptySet()
         guardianPolicy = false
         protectedParticipants = emptySet()
         allowed = "[\"TEACHER\"]"
@@ -624,7 +631,7 @@ class ProgramSessionApplicationTests {
     @Test
     fun `missing production Form adapter fails closed without local or remote creation`() {
         val unavailable =
-            ApplyProgramSessionServiceImpl(
+            ProgramSessionAdmission(
                 context.getBean(ProgramSessionApplicationRepository::class.java),
                 context.getBean(StandardProgramApplicationRepository::class.java),
                 context.getBean(TrainingProgramApplicationRepository::class.java),
@@ -637,7 +644,7 @@ class ProgramSessionApplicationTests {
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
-                transactions.execute { unavailable.execute(command(type = ProgramSessionType.TRAINING)) }
+                transactions.execute { unavailable.admit(command(type = ProgramSessionType.TRAINING), onsite = false) }
             }
         assertEquals(503, error.statusCode.value())
         assertEquals(0L, count("tb_program_session_application"))
@@ -3277,21 +3284,190 @@ class ProgramSessionApplicationTests {
     @CsvSource("STANDARD", "TRAINING")
     fun `split seats enforce pre registration quota with replay cancellation and immutable route`(type: ProgramSessionType) {
         capacity = 3
-        waitingCapacity = 5
+        waitingCapacity = 1
         admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
         val first = service.execute(command(type = type))
         assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
         assertEquals(first, service.execute(command(type = type).copy(sessionId = "renewed-session")))
-        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 2, type = type)) }
-        assertEquals(1L, count("tb_program_session_application"))
+        val waiting = service.execute(command(participant = 2, type = type))
+        assertEquals("WAITING", waiting.status)
+        assertEquals(null, waiting.traineeId)
+        assertEquals("PRE_REGISTRATION", column("admission_route", waiting.applicationId))
+        assertEquals(waiting, service.execute(command(participant = 2, type = type)))
+        managedIds = listOf(1, 2, 3)
+        addParticipant(3)
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 3, type = type)) }
+        assertEquals(2L, count("tb_program_session_application"))
         assertThrows(DataIntegrityViolationException::class.java) {
             jdbc.update("UPDATE tb_program_session_application SET admission_route = 'ONSITE' WHERE id = ?", first.applicationId)
         }
         cancel(first.applicationId)
         cancel(first.applicationId)
-        val replacement = service.execute(command(participant = 2, type = type))
-        assertEquals("PRE_REGISTRATION", column("admission_route", replacement.applicationId))
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+        assertEquals("PRE_REGISTRATION", column("admission_route", waiting.applicationId))
         assertEquals("PRE_REGISTRATION", column("admission_route", first.applicationId))
+        val table = if (type == ProgramSessionType.STANDARD) "tb_standard_program_application" else "tb_training_program_application"
+        assertEquals(1L, count(table))
+    }
+
+    @Test
+    fun `split seats queue pre registration waiters in FIFO order and never promote into onsite seats`() {
+        capacity = 3
+        waitingCapacity = 2
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        managedIds = listOf(1, 2, 3)
+        addParticipant(3)
+        val first = service.execute(command())
+        val second = service.execute(command(participant = 2))
+        val third = service.execute(command(participant = 3))
+        assertEquals(listOf("CONFIRMED", "WAITING", "WAITING"), listOf(first, second, third).map { it.status })
+        reconcile()
+        assertEquals("WAITING", column("status", second.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+        mvc
+            .perform(
+                get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants")
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+            ).andExpect(status().isOk)
+            .andExpect(jsonPath("$.capacity.remaining").value(2))
+            .andExpect(jsonPath("$.capacity.waitingCount").value(2))
+            .andExpect(jsonPath("$.admissionSeats.preRegistration.remaining").value(0))
+            .andExpect(jsonPath("$.admissionSeats.onsite.remaining").value(2))
+            .andExpect(jsonPath("$.admissionSeats.waitingEnabled").value(true))
+            .andExpect(jsonPath("$.admissionSeats.onsiteAdmissionEnabled").value(false))
+        cancel(first.applicationId)
+        assertEquals("CONFIRMED", column("status", second.applicationId))
+        assertEquals("WAITING", column("status", third.applicationId))
+        assertEquals("PRE_REGISTRATION", column("admission_route", second.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `onsite admission confirms within onsite seats, rejects overflow without waiting, and ignores the pre queue`() {
+        capacity = 3
+        waitingCapacity = 2
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2$ONSITE_OPEN"
+        managedIds = listOf(1, 2, 3, 4, 5)
+        fieldIds = setOf(4, 5)
+        addParticipant(3)
+        service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        assertEquals("WAITING", waiting.status)
+        val preregistered = onsiteService.execute(command(participant = 3))
+        val field = onsiteService.execute(command(participant = 4))
+        listOf(preregistered, field).forEach {
+            assertEquals("CONFIRMED", it.status)
+            assertEquals("ONSITE", column("admission_route", it.applicationId))
+        }
+        assertEquals(field, onsiteService.execute(command(participant = 4)))
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command(participant = 4)) }
+        val rows = count("tb_program_session_application")
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command(participant = 5)) }
+        assertEquals(rows, count("tb_program_session_application"))
+        reconcile()
+        cancel(preregistered.applicationId)
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        assertEquals("ONSITE", column("admission_route", preregistered.applicationId))
+        val replacement = onsiteService.execute(command(participant = 5))
+        assertEquals("CONFIRMED", replacement.status)
+        assertEquals("ONSITE", column("admission_route", replacement.applicationId))
+        assertEquals(3L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `onsite admission follows its own window instead of the pre period and fails closed without one`() {
+        capacity = 3
+        val capacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2"
+        expired = true
+        admissionCapacities = capacities
+        assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command()) }
+        admissionCapacities = capacities + ",\"onsiteStartedAt\":\"2099-01-01T00:00:00Z\",\"onsiteEndedAt\":\"2100-01-01T00:00:00Z\""
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command()) }
+        admissionCapacities = capacities + ",\"onsiteStartedAt\":\"2020-01-01T00:00:00Z\",\"onsiteEndedAt\":\"2021-01-01T00:00:00Z\""
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command()) }
+        admissionCapacities = capacities + ",\"onsiteStartedAt\":\"2020-01-01T00:00:00Z\""
+        assertEquals(502, assertThrows(ResponseStatusException::class.java) { onsiteService.execute(command()) }.statusCode.value())
+        assertEquals(0L, count("tb_program_session_application"))
+        admissionCapacities = capacities + ONSITE_OPEN
+        assertEquals("ONSITE", column("admission_route", onsiteService.execute(command()).applicationId))
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 2")
+        val error = assertThrows(ResponseStatusException::class.java) { onsiteService.execute(command(participant = 2)) }
+        assertEquals(403, error.statusCode.value())
+        managedIds = listOf(1, 2, 3, 4)
+        fieldIds = setOf(3)
+        // User가 사전 등록(PRE)으로 저장했지만 확정된 사전등록 원장이 없는 참가자는 현장 등록자가 아니다
+        val notField = assertThrows(ResponseStatusException::class.java) { onsiteService.execute(command(participant = 4)) }
+        assertEquals(403, notField.statusCode.value())
+        formMode = "period"
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command(participant = 3)) }
+        reset()
+        capacity = 3
+        managedIds = listOf(1, 2, 3)
+        fieldIds = setOf(3)
+        admissionCapacities = null
+        assertThrows(ProgramApplicationConflictException::class.java) { onsiteService.execute(command(participant = 3)) }
+        assertEquals(0L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `onsite http entry point requires csrf and the participants view judges onsite eligibility`() {
+        capacity = 3
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2$ONSITE_OPEN"
+        managedIds = listOf(1, 2, 3)
+        fieldIds = setOf(3)
+        val path = "/application/expos/$EXPO/program-sessions/STANDARD/1/onsite-applications"
+        val body = """{"participantId":3,"formVersion":1,"answers":{"101":"a"}}"""
+        mvc
+            .perform(
+                post(path)
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                    .header("Idempotency-Key", "onsite")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andExpect(status().isForbidden)
+        for (onsite in listOf(false, true)) {
+            mvc
+                .perform(
+                    get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants?onsite=$onsite")
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                ).andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[2].participant.participantId").value(3))
+                .andExpect(jsonPath("$.participants[2].eligible").value(onsite))
+                .andExpect(jsonPath("$.admissionSeats.onsiteAdmissionEnabled").value(true))
+        }
+        val created =
+            mvc
+                .perform(
+                    post(path)
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                        .header("Idempotency-Key", "onsite")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body),
+                ).andExpect(status().isCreated)
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andReturn()
+        val id = UUID.fromString(mapper.readTree(created.response.contentAsString).path("applicationId").stringValue())
+        assertEquals("ONSITE", column("admission_route", id))
+    }
+
+    @Test
+    fun `onsite guardian batches confirm atomically within onsite seats and never wait`() {
+        enableGuardianPolicy(4, 5)
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2$ONSITE_OPEN"
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            onsiteBatchService.execute(guardianBatch(1, 2))
+        }
+        assertEquals(0L, count("tb_program_guardian_batch"))
+        assertEquals(0L, count("tb_program_session_application"))
+        val result = onsiteBatchService.execute(guardianBatch(1))
+        result.applications.forEach {
+            assertEquals("CONFIRMED", it.application.status)
+            assertEquals("ONSITE", column("admission_route", it.application.applicationId))
+        }
+        assertEquals(result, onsiteBatchService.execute(guardianBatch(1)))
+        assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1)) }
     }
 
     @Test
@@ -3354,8 +3530,8 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
-    fun `split seats reject atomic guardian batches that would borrow onsite capacity`() {
-        enableGuardianPolicy(4, 5)
+    fun `split seats queue atomic guardian batches instead of borrowing onsite capacity`() {
+        enableGuardianPolicy(4, 2)
         admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
         assertThrows(ProgramApplicationConflictException::class.java) { batchService.execute(guardianBatch(1, 2)) }
         assertEquals(0L, count("tb_program_guardian_batch"))
@@ -3364,6 +3540,32 @@ class ProgramSessionApplicationTests {
         assertTrue(result.applications.all { it.application.status == "CONFIRMED" })
         assertEquals(result, batchService.execute(guardianBatch(1)))
         result.applications.forEach { assertEquals("PRE_REGISTRATION", column("admission_route", it.application.applicationId)) }
+        reset()
+        enableGuardianPolicy(4, 5)
+        admissionCapacities = "\"preRegistrationCapacity\":2,\"onsiteCapacity\":2"
+        guardianPolicy = false
+        val single = service.execute(command(participant = 4, key = "single"))
+        guardianPolicy = true
+        val batch = batchService.execute(guardianBatch(1, 2))
+        batch.applications.forEach {
+            assertEquals("WAITING", it.application.status)
+            assertEquals("PRE_REGISTRATION", column("admission_route", it.application.applicationId))
+        }
+        cancel(single.applicationId)
+        reconcile()
+        batch.applications.forEach { assertEquals("WAITING", column("status", it.application.applicationId)) }
+        assertEquals(0L, count("tb_standard_program_application"))
+        change {
+            it.put("preRegistrationCapacity", 3)
+            it.put("onsiteCapacity", 1)
+        }
+        admissionCapacities = "\"preRegistrationCapacity\":3,\"onsiteCapacity\":1"
+        reconcile()
+        batch.applications.forEach {
+            assertEquals("CONFIRMED", column("status", it.application.applicationId))
+            assertEquals("PRE_REGISTRATION", column("admission_route", it.application.applicationId))
+        }
+        assertEquals(3L, count("tb_standard_program_application"))
     }
 
     @Test
@@ -3489,7 +3691,7 @@ class ProgramSessionApplicationTests {
         val guardian = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
         admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":2,\"guardianPolicy\":${mapper.writeValueAsString(guardian)}"
         val withoutGuardian =
-            ApplyProgramSessionServiceImpl(
+            ProgramSessionAdmission(
                 context.getBean(ProgramSessionApplicationRepository::class.java),
                 context.getBean(StandardProgramApplicationRepository::class.java),
                 context.getBean(TrainingProgramApplicationRepository::class.java),
@@ -3502,7 +3704,7 @@ class ProgramSessionApplicationTests {
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
-                transactions.execute { withoutGuardian.execute(command()) }
+                transactions.execute { withoutGuardian.admit(command(), onsite = false) }
             }
         assertEquals(503, error.statusCode.value())
         assertEquals(0L, count("tb_program_session_application"))
@@ -3822,6 +4024,8 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var managedIds = listOf<Long>(1, 2)
 
+        @Volatile private var fieldIds = setOf<Long>()
+
         @Volatile private var guardianPolicy = false
 
         @Volatile private var protectedParticipants = emptySet<Long>()
@@ -3916,7 +4120,7 @@ class ProgramSessionApplicationTests {
                             path.endsWith("standard-participants/managed") -> {
                                 val people =
                                     managedIds.joinToString(",") { id ->
-                                        """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L}}"""
+                                        """{"participantId":$id,"name":"Person$id","occupation":"${occupations[id] ?: occupation}","representative":${id == 1L},"applicationType":"${if (id in fieldIds) "FIELD" else "PRE"}"}"""
                                     }
                                 """{"registered":true,"participants":[$people]}"""
                             }
@@ -3932,7 +4136,7 @@ class ProgramSessionApplicationTests {
                                             .path("participantIds")
                                             .get(0)
                                             .asLong()
-                                    """[{"participantId":$id,"name":"Person","occupation":${occupationResponse ?: "\"${occupations[id] ?: occupation}\""},"representative":true}]"""
+                                    """[{"participantId":$id,"name":"Person","occupation":${occupationResponse ?: "\"${occupations[id] ?: occupation}\""},"representative":true,"applicationType":"${if (id in fieldIds) "FIELD" else "PRE"}"}]"""
                                 }
                             }
 
@@ -4080,3 +4284,5 @@ class ProgramSessionApplicationTests {
         }
     }
 }
+
+private const val ONSITE_OPEN = ",\"onsiteStartedAt\":\"2020-01-01T00:00:00Z\",\"onsiteEndedAt\":\"2100-01-01T00:00:00Z\""

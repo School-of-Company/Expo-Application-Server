@@ -21,6 +21,7 @@ import team.startup.application.domain.application.presentation.ProgramSessionAp
 import team.startup.application.domain.application.presentation.ProgramSessionApplicationExceptionHandler
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
+import team.startup.application.domain.application.service.ApplyOnsiteProgramSessionService
 import team.startup.application.domain.application.service.ApplyProgramSessionService
 import team.startup.application.global.security.ProgramSessionSecurityConfig
 import tools.jackson.databind.ObjectMapper
@@ -42,6 +43,8 @@ class ProgramSessionPublicHttpTests {
 
     @Autowired private lateinit var service: RecordingService
 
+    @Autowired private lateinit var onsiteService: RecordingOnsiteService
+
     private lateinit var csrfCookie: Cookie
     private lateinit var header: String
     private lateinit var token: String
@@ -51,6 +54,7 @@ class ProgramSessionPublicHttpTests {
     @BeforeEach
     fun setup() {
         service.commands.clear()
+        onsiteService.commands.clear()
         val result = mvc.perform(get("/application/program-session-csrf")).andExpect(status().isOk).andReturn()
         val json = mapper.readTree(result.response.contentAsString)
         header = json.path("headerName").stringValue()
@@ -69,6 +73,27 @@ class ProgramSessionPublicHttpTests {
         assertEquals("verified", command.sessionId)
         assertEquals("key", command.idempotencyKey)
         assertEquals(mapper.readTree("""{"101":"a"}"""), command.answers)
+        assertEquals(0, onsiteService.commands.size)
+    }
+
+    @Test
+    fun `onsite entry point keeps the same session and csrf guards and uses only the onsite operation`() {
+        fun onsite() =
+            post("/application/expos/$expo/program-sessions/STANDARD/1/onsite-applications")
+                .header("Idempotency-Key", "key")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body.dropLast(1) + ",\"onsite\":false}")
+        mvc
+            .perform(onsite().cookie(Cookie("CUSTOM_PARTICIPANT_SESSION", "verified")))
+            .andExpect(status().isForbidden)
+            .andExpect(jsonPath("$.code").value("CSRF_REQUIRED"))
+        assertEquals(0, onsiteService.commands.size)
+        mvc
+            .perform(onsite().header(header, token).cookie(csrfCookie, Cookie("CUSTOM_PARTICIPANT_SESSION", "verified")))
+            .andExpect(status().isCreated)
+        assertEquals("verified", onsiteService.commands.single().sessionId)
+        assertEquals(false, onsiteService.commands.single().onsite)
+        assertEquals(0, service.commands.size)
     }
 
     @Test
@@ -131,6 +156,8 @@ class ProgramSessionPublicHttpTests {
     @TestConfiguration
     class Services {
         @Bean fun applicationService() = RecordingService()
+
+        @Bean fun onsiteApplicationService() = RecordingOnsiteService()
     }
 
     class RecordingService : ApplyProgramSessionService {
@@ -141,6 +168,15 @@ class ProgramSessionPublicHttpTests {
                 "expired" -> throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "SESSION_EXPIRED")
                 "unavailable" -> throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "private supplier detail")
             }
+            commands.add(request)
+            return ProgramSessionReceipt(UUID.randomUUID(), request.programId, request.participantId, null)
+        }
+    }
+
+    class RecordingOnsiteService : ApplyOnsiteProgramSessionService {
+        val commands = mutableListOf<ApplyProgramSessionCommand>()
+
+        override fun execute(request: ApplyProgramSessionCommand): ProgramSessionReceipt {
             commands.add(request)
             return ProgramSessionReceipt(UUID.randomUUID(), request.programId, request.participantId, null)
         }

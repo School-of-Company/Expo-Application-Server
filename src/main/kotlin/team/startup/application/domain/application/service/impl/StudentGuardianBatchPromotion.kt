@@ -48,10 +48,10 @@ class StudentGuardianBatchPromotion(
         if (!ids.sorted().all(ledger::tryLockParticipant)) return 0
         val provider = eligibility.ifAvailable ?: return 0
         val policy = requireNotNull(definition.policy)
-        if (policy.hasAdmissionCapacities()) return 0
         val channel = batches.channel(head.id)
         if (members.any { batches.channel(it.id) != channel } ||
             ledger.confirmedCount(definition.programType, definition.id) + members.size > policy.capacity ||
+            (policy.hasAdmissionCapacities() && ledger.preRegistrationRemaining(definition) < members.size) ||
             (
                 channel != null &&
                     applications.confirmedCount(definition, channel) + members.size >

@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation.dto
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import io.swagger.v3.oas.annotations.media.Schema
 import tools.jackson.databind.JsonNode
 import java.util.UUID
@@ -28,6 +29,8 @@ data class ManagedOwnerParticipant(
     @field:Schema(description = "참가자 이름", example = "홍길동") val name: String,
     @field:Schema(description = "직업", example = "TEACHER") val occupation: String?,
     @field:Schema(description = "대표자 여부", example = "true") val representative: Boolean,
+    // User가 저장한 박람회 현장 등록(FIELD) 여부. 현장 접수 자격 판정에만 쓰고 응답에는 싣지 않는다
+    @get:JsonIgnore val fieldRegistered: Boolean = false,
 )
 
 data class OwnerApplicationParty(

@@ -74,6 +74,11 @@ data class ParticipantRegistration(
     val region: String? = null,
 )
 
+data class ManagedParticipantSelection(
+    val occupation: String?,
+    val fieldRegistered: Boolean,
+)
+
 data class ParticipantRegistrationResult(
     val participantId: Long,
     val phoneNumber: String,
@@ -245,11 +250,11 @@ class RegistrationGateway(
             }.toMap()
     }
 
-    fun managedOccupation(
+    fun managedParticipant(
         expoId: String,
         sessionId: String,
         participantId: Long,
-    ): String? {
+    ): ManagedParticipantSelection {
         val phoneNumber = participantSessionPhone(expoId, sessionId)
         val participants =
             decode(
@@ -274,7 +279,17 @@ class RegistrationGateway(
         if (occupation == null || (!occupation.isNull && !occupation.isString)) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 역할 응답이 올바르지 않습니다.")
         }
-        return if (occupation.isNull) null else occupation.stringValue()
+        return ManagedParticipantSelection(
+            if (occupation.isNull) null else occupation.stringValue(),
+            fieldRegistered(participants.get(0)),
+        )
+    }
+
+    // 옛 User 응답에는 applicationType이 없다. 없으면 현장 등록으로 보지 않아 현장 자격이 닫힌 채로 남는다.
+    private fun fieldRegistered(node: JsonNode): Boolean {
+        val type = node.get("applicationType") ?: return false
+        if (!type.isString || type.stringValue() !in setOf("PRE", "FIELD")) invalidManagedResponse()
+        return type.stringValue() == "FIELD"
     }
 
     fun managedParty(
@@ -318,6 +333,7 @@ class RegistrationGateway(
                         name.stringValue(),
                         if (occupation.isNull) null else occupation.stringValue(),
                         representative.asBoolean(),
+                        fieldRegistered(node),
                     )
                 },
             )
