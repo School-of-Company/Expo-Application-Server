@@ -163,6 +163,11 @@ class StudentGuardianBatchRepository(
             }
         }
 
+    fun representative(batchId: UUID): Long? =
+        jdbc
+            .query("SELECT representative_id FROM tb_program_guardian_batch WHERE id = ?", { rs, _ -> rs.getLong(1) }, batchId)
+            .singleOrNull()
+
     fun channel(id: UUID): String? =
         jdbc.queryForObject("SELECT channel FROM tb_program_session_application WHERE id = ?", String::class.java, id)
 

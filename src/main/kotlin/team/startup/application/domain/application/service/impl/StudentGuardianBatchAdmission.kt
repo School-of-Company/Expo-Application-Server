@@ -176,7 +176,7 @@ class StudentGuardianBatchAdmission(
         // 현장 묶음은 신규 인원 전체가 현장 좌석에 들어갈 때만 확정하고, 사전 대기열 뒤에 서거나 대기하지 않는다.
         if (command.onsite &&
             (
-                ledger.confirmedCount(definition.programType, definition.id) + needed > policy.capacity ||
+                ledger.occupiedCount(definition) + needed > policy.capacity ||
                     ledger.onsiteRemaining(definition) < needed
             )
         ) {
@@ -186,7 +186,7 @@ class StudentGuardianBatchAdmission(
             !command.onsite &&
                 (
                     repository.waitingCount(definition, channel?.name) > 0 ||
-                        ledger.confirmedCount(definition.programType, definition.id) + needed > policy.capacity ||
+                        ledger.occupiedCount(definition) + needed > policy.capacity ||
                         (policy.hasAdmissionCapacities() && ledger.preRegistrationRemaining(definition) < needed) ||
                         (channel != null && repository.confirmedCount(definition, channel.name) + needed > channel.capacity)
                 )

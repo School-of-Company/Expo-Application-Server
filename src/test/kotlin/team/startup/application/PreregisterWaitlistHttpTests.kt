@@ -65,6 +65,8 @@ class PreregisterWaitlistHttpTests {
 
     @Autowired private lateinit var waitlist: PreregisterWaitlist
 
+    @Autowired private lateinit var context: org.springframework.context.ApplicationContext
+
     @MockitoBean private lateinit var clock: Clock
 
     private val now = AtomicReference<Instant>()
@@ -72,7 +74,7 @@ class PreregisterWaitlistHttpTests {
     @BeforeEach
     fun reset() {
         jdbc.execute(
-            "TRUNCATE tb_preregister_reservation, tb_preregister_count_outbox, tb_session_attendance_outbox, " +
+            "TRUNCATE tb_promotion_offer, tb_preregister_reservation, tb_preregister_count_outbox, tb_session_attendance_outbox, " +
                 "tb_preregister_transition, tb_preregister_request, tb_preregister_application, tb_preregister_session_change, " +
                 "tb_preregister_session_state, tb_preregister_deleted_expo RESTART IDENTITY CASCADE",
         )
@@ -191,6 +193,124 @@ class PreregisterWaitlistHttpTests {
         waitlist.flush()
     }
 
+    // #144: a party waiting for a session that starts tomorrow (KST) gets an offer instead of an automatic promotion.
+    private fun offerDay() {
+        val kst = java.time.ZoneId.of("Asia/Seoul")
+        now.set(
+            LocalDate
+                .now(kst)
+                .atTime(10, 0)
+                .atZone(kst)
+                .toInstant(),
+        )
+        startedAt.set(now.get().plus(20, ChronoUnit.HOURS))
+        capacity.set(2)
+    }
+
+    private fun offer(key: String): Map<String, Any?> =
+        jdbc.queryForMap("SELECT * FROM tb_promotion_offer WHERE request_id = ? ORDER BY created_at DESC LIMIT 1", key)
+
+    private fun freeSession() {
+        assertEquals(
+            200,
+            internal(delete("/internal/expos/$EXPO/preregister-sessions/1/applications").content("""{"applicationIds":[1,2]}""")),
+        )
+        waitlist.flush()
+    }
+
+    private fun accepted(offer: Map<String, Any?>) =
+        assertEquals(
+            200,
+            internal(
+                post("/internal/promotion-offers/${offer["id"]}/deliveries").content(
+                    """{"eventId":"${offer["event_id"]}","status":"ACCEPTED","attemptId":"${UUID(1, 1)}",""" +
+                        """"attemptedAt":"${now.get().minusSeconds(1)}","providerAcceptedAt":"${now.get()}"}""",
+                ),
+            ),
+        )
+
+    private fun respond(
+        offer: Map<String, Any?>,
+        action: String,
+    ): MockHttpServletResponse =
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/my-applications/promotion-offers/${offer["id"]}/$action")
+                    .with(
+                        org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                            .csrf(),
+                    ).cookie(Cookie("PARTICIPANT_SESSION", "owner")),
+            ).andReturn()
+            .response
+
+    @Test
+    fun `day before the session a freed seat only holds an offer that the verified owner must accept before User delivery`() {
+        offerDay()
+        assertEquals(201, submit("a", 2, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        freeSession()
+        assertEquals("WAITING", state("b"))
+        val offer = offer("b")
+        assertEquals("SCHEDULED", offer["state"])
+        assertEquals(2, offer["seats"])
+        assertEquals(0, capacity().get("remaining").intValue())
+        assertEquals(2L, repository.occupied(EXPO, 1))
+        recovery.recover()
+        assertEquals(1, userRequests.size)
+        val listed =
+            mvc
+                .perform(get("/application/expos/$EXPO/my-applications/promotion-offers").cookie(Cookie("PARTICIPANT_SESSION", "owner")))
+                .andReturn()
+                .response
+        assertEquals(
+            "PENDING",
+            mapper
+                .readTree(listed.contentAsString)
+                .get(0)
+                .get("status")
+                .stringValue(),
+        )
+        assertEquals(409, respond(offer, "acceptance").status)
+        accepted(offer)
+        verifiedSessionPhone = "01000000009"
+        assertEquals(404, respond(offer, "acceptance").status)
+        verifiedSessionPhone = "01000000002"
+        assertEquals(200, respond(offer, "acceptance").status)
+        assertEquals("ACCEPTED", mapper.readTree(respond(offer, "acceptance").contentAsString).get("status").stringValue())
+        assertEquals("RESERVED", state("b"))
+        recovery.recover()
+        assertEquals(2, userRequests.size)
+        assertEquals("COMPLETED", state("b"))
+    }
+
+    @Test
+    fun `decline and no response withdraw the waiting party with their actor and offer the next party`() {
+        offerDay()
+        assertEquals(201, submit("a", 2, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        waiting(submit("c", 2, "01000000003"), 2)
+        freeSession()
+        accepted(offer("b"))
+        assertEquals(200, respond(offer("b"), "decline").status)
+        assertEquals(200, respond(offer("b"), "decline").status)
+        waitlist.flush()
+        assertEquals("REJECTED", state("b"))
+        assertEquals("USER", withdrawnActor("b"))
+        assertEquals("SCHEDULED", offer("c")["state"])
+        accepted(offer("c"))
+        val scheduler = context.getBean(team.startup.application.domain.application.service.impl.PromotionOfferScheduler::class.java)
+        now.set(now.get().plus(6, ChronoUnit.HOURS).minusNanos(1000))
+        scheduler.sweep()
+        assertEquals("WAITING", state("c"))
+        now.set(now.get().plusNanos(1000))
+        scheduler.sweep()
+        waitlist.flush()
+        assertEquals("REJECTED", state("c"))
+        assertEquals("SYSTEM", withdrawnActor("c"))
+        assertEquals("EXPIRED", offer("c")["state"])
+        assertEquals(1, userRequests.size)
+    }
+
     @Test
     fun `short confirmed seats queue the whole party without User delivery and same key retries do not requeue`() {
         capacity.set(2)
@@ -282,15 +402,20 @@ class PreregisterWaitlistHttpTests {
 
     @Test
     fun `promotion stops exactly at session start`() {
+        // An hour before the start is inside the #144 offer window, so the last possible step is a seat-holding offer.
+        offerDay()
+        capacity.set(1)
         startedAt.set(now.get().plus(1, ChronoUnit.HOURS))
         assertEquals(201, submit("a", 1, "01000000001").status)
         waiting(submit("b", 1, "01000000002"), 1)
         now.set(startedAt.get())
         cancel(1)
         assertEquals("WAITING", state("b"))
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM tb_promotion_offer", Long::class.java))
         now.set(startedAt.get().minusSeconds(1))
         sweep()
-        assertEquals("RESERVED", state("b"))
+        assertEquals("WAITING", state("b"))
+        assertEquals("SCHEDULED", offer("b")["state"])
     }
 
     @Test
@@ -417,6 +542,11 @@ class PreregisterWaitlistHttpTests {
                                 200 to """{"expoId":"$EXPO","phoneNumber":"$verifiedSessionPhone","expiresAt":"2100-01-01T00:00:00"}"""
                             }
 
+                            // A waiting party's representative is not a User participant yet.
+                            path == "/internal/standard-participants/managed" -> {
+                                200 to """{"registered":false,"participants":[]}"""
+                            }
+
                             path == "/internal/standard-participants/admin-cancellation-status" -> {
                                 val id = json.readTree(exchange.requestBody.bufferedReader().readText()).path("participantId").asLong()
                                 200 to """{"participantId":$id,"entered":false,"traineeLinked":false,"linkedTraineeId":null}"""
@@ -474,6 +604,10 @@ class PreregisterWaitlistHttpTests {
             }
             registry.add("application.attendance.url") { "http://127.0.0.1:${server.address.port}" }
             registry.add("application.attendance.internal-token") { "supplier-token" }
+            registry.add("application.promotion-offers.enabled") { true }
+            registry.add("application.promotion-offers.bootstrap-servers") { "127.0.0.1:9" }
+            registry.add("application.promotion-offers.response-url") { "https://client.example/application/forms/{expoId}" }
+            registry.add("application.promotion-offers.delay-ms") { 3600000 }
         }
     }
 }

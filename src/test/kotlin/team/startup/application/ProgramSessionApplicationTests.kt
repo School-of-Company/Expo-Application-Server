@@ -119,7 +119,7 @@ class ProgramSessionApplicationTests {
     @BeforeEach
     fun reset() {
         jdbc.execute(
-            "TRUNCATE tb_program_guardian_link, tb_program_guardian_member, tb_program_guardian_batch, " +
+            "TRUNCATE tb_promotion_offer, tb_program_guardian_link, tb_program_guardian_member, tb_program_guardian_batch, " +
                 "tb_legacy_trainee_program, tb_legacy_trainee_attribution, tb_legacy_trainee_attribution_operation, " +
                 "tb_program_session_event, tb_program_session_state, tb_program_change_receipt, " +
                 "tb_program_session_history, tb_program_session_receipt, tb_program_session_application, " +
@@ -3768,6 +3768,301 @@ class ProgramSessionApplicationTests {
         assertEquals(409, error.statusCode.value())
     }
 
+    // #144 participation offers. Program 1 starts 2030-01-01 11:00 KST, so offers start 2029-12-31 00:00 KST.
+    private val offerSwitch = Instant.parse("2029-12-30T15:00:00Z")
+    private val nineKst = Instant.parse("2029-12-31T00:00:00Z")
+
+    private fun offerRows(): List<Map<String, Any?>> = jdbc.queryForList("SELECT * FROM tb_promotion_offer ORDER BY created_at, id")
+
+    private fun activeOffer(): Map<String, Any?> =
+        jdbc.queryForMap("SELECT * FROM tb_promotion_offer WHERE state IN ('SCHEDULED', 'PUBLISHED', 'SENT', 'UNKNOWN', 'DELIVERY_FAILED')")
+
+    private fun status(id: UUID) =
+        jdbc.queryForObject("SELECT status FROM tb_program_session_application WHERE id = ?", String::class.java, id)
+
+    private fun deliver(
+        offer: Map<String, Any?>,
+        status: String,
+        acceptedAt: Instant? = null,
+        attemptedAt: Instant? = acceptedAt?.minusSeconds(1),
+        reason: String? = null,
+        expected: Int = 200,
+    ) = mvc
+        .perform(
+            post("/internal/promotion-offers/${offer["id"]}/deliveries")
+                .header("X-Internal-Token", "test-token")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    mapper.writeValueAsString(
+                        mapOf(
+                            "eventId" to offer["event_id"].toString(),
+                            "status" to status,
+                            "attemptId" to UUID(1, 1).toString(),
+                            "attemptedAt" to attemptedAt?.toString(),
+                            "providerAcceptedAt" to acceptedAt?.toString(),
+                            "reason" to reason,
+                        ),
+                    ),
+                ),
+        ).andExpect(status().`is`(expected))
+
+    private fun respond(
+        offerId: Any?,
+        action: String,
+        expected: Int,
+        withCsrf: Boolean = true,
+    ) = mvc
+        .perform(
+            post("/application/expos/$EXPO/my-applications/promotion-offers/$offerId/$action")
+                .let { if (withCsrf) it.with(csrf()) else it }
+                .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+        ).andExpect(status().`is`(expected))
+
+    private fun check(offer: Map<String, Any?>) =
+        mvc
+            .perform(
+                post("/internal/promotion-offers/check")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"version":1,"eventId":"${offer["event_id"]}","offerId":"${offer["id"]}","expoId":"$EXPO"}"""),
+            ).andExpect(status().isOk)
+
+    @Test
+    fun `offer switch at 00 KST the day before keeps earlier automatic promotion and then only holds seats`() {
+        waitingCapacity = 2
+        addParticipant(3)
+        addParticipant(4)
+        val confirmed = service.execute(command())
+        val first = service.execute(command(participant = 2))
+        testClock.current = offerSwitch.minusNanos(1000)
+        cancel(confirmed.applicationId)
+        applied(2, true)
+        assertEquals(0L, count("tb_promotion_offer"))
+        val second = service.execute(command(participant = 3))
+        testClock.current = offerSwitch
+        cancel(first.applicationId)
+        // Sending an offer never confirms: the waiting row stays WAITING without a legacy confirmed row.
+        applied(3, false)
+        assertEquals("WAITING", status(second.applicationId))
+        val offer = activeOffer()
+        assertEquals("SCHEDULED", offer["state"])
+        assertEquals(1, offer["seats"])
+        assertEquals(second.applicationId, offer["application_id"])
+        assertEquals(nineKst, (offer["send_after"] as java.sql.Timestamp).toInstant())
+        // The held seat is counted: a new applicant waits instead of taking it, and reconciling twice holds once.
+        assertEquals("WAITING", service.execute(command(participant = 4)).status)
+        reconcile()
+        assertEquals(1L, count("tb_promotion_offer"))
+        assertEquals(2L, jdbc.queryForObject("SELECT count(*) FROM tb_program_session_event WHERE status = 'CONFIRMED'", Long::class.java))
+    }
+
+    @Test
+    fun `a night vacancy is offered only when the next 09 KST is still before the existing cutoff`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        change { it.put("promotionEndedAt", nineKst.toString()) }
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        assertEquals(0L, count("tb_promotion_offer"))
+        applied(2, false)
+        change { it.put("promotionEndedAt", nineKst.plusNanos(1000).toString()) }
+        reconcile()
+        assertEquals(nineKst.plusNanos(1000), (activeOffer()["hard_deadline"] as java.sql.Timestamp).toInstant())
+        applied(2, false)
+    }
+
+    @Test
+    fun `only the authenticated owner accepts after real provider acceptance and repeated acceptance confirms once`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        val offer = activeOffer()
+        testClock.current = nineKst.plusSeconds(1800)
+        check(offer)
+            .andExpect(jsonPath("$.eligible").value(true))
+            .andExpect(jsonPath("$.representativePhoneNumber").value("01012345678"))
+            .andExpect(jsonPath("$.recipientName").value("Person1"))
+            .andExpect(jsonPath("$.title").value("Session"))
+            .andExpect(jsonPath("$.responseUrl").value("https://client.example/application/forms/$EXPO"))
+            .andExpect(jsonPath("$.responseHours").value(6))
+            .andExpect(jsonPath("$.sendWindowEndsAt").value("2029-12-31T09:00:00Z"))
+        // Before a provider acceptance there is no deadline, so nothing can be accepted yet.
+        respond(offer["id"], "acceptance", 409).andExpect(jsonPath("$.code").value("OFFER_NOT_RESPONDABLE"))
+        val acceptedAt = nineKst.plusSeconds(1805)
+        deliver(offer, "ACCEPTED", acceptedAt).andExpect(jsonPath("$.state").value("SENT"))
+        assertEquals(acceptedAt.plusSeconds(6 * 3600), (activeOffer()["expires_at"] as java.sql.Timestamp).toInstant())
+        deliver(offer, "ACCEPTED", acceptedAt)
+        deliver(offer, "ACCEPTED", acceptedAt.plusSeconds(1), expected = 409)
+        respond(offer["id"], "acceptance", 403, withCsrf = false)
+        managedIds = listOf(1, 3)
+        respond(offer["id"], "acceptance", 404)
+        applied(2, false)
+        managedIds = listOf(1, 2)
+        respond(offer["id"], "acceptance", 200).andExpect(jsonPath("$.status").value("ACCEPTED"))
+        respond(offer["id"], "acceptance", 200).andExpect(jsonPath("$.status").value("ACCEPTED"))
+        applied(2, true)
+        assertEquals("CONFIRMED", status(waiting.applicationId))
+        assertEquals(1L, count("tb_standard_program_application"))
+        assertEquals(
+            listOf("USER:1"),
+            jdbc.query(
+                "SELECT actor_type, actor_participant_id FROM tb_program_session_history WHERE application_id = ? AND status = 'CONFIRMED'",
+                { rs, _ -> "${rs.getString(1)}:${rs.getLong(2)}" },
+                waiting.applicationId,
+            ),
+        )
+        respond(offer["id"], "decline", 409).andExpect(jsonPath("$.code").value("OFFER_ACCEPTED"))
+        mvc
+            .perform(get("/application/expos/$EXPO/my-applications/promotion-offers").cookie(Cookie("PARTICIPANT_SESSION", "session")))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$[0].status").value("ACCEPTED"))
+            .andExpect(jsonPath("$[0].respondable").value(false))
+    }
+
+    @Test
+    fun `decline and expiry end the wait for the next FIFO party while delivery failure keeps seats until the cutoff`() {
+        waitingCapacity = 3
+        listOf(3L, 4L).forEach(::addParticipant)
+        managedIds = listOf(1, 2, 3, 4)
+        val cutoff = Instant.parse("2030-01-01T00:00:00Z")
+        promotionEnd = cutoff
+        val confirmed = service.execute(command())
+        val waiting = (2L..4L).map { service.execute(command(participant = it)) }
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        testClock.current = nineKst.plusSeconds(1800)
+        deliver(activeOffer(), "ACCEPTED", testClock.current)
+        respond(activeOffer()["id"], "decline", 200).andExpect(jsonPath("$.status").value("DECLINED"))
+        respond(offerRows().first()["id"], "decline", 200).andExpect(jsonPath("$.status").value("DECLINED"))
+        assertEquals("CANCELLED", status(waiting[0].applicationId))
+        assertEquals(waiting[1].applicationId, activeOffer()["application_id"])
+        val acceptedAt = testClock.current.plusSeconds(60)
+        deliver(activeOffer(), "ACCEPTED", acceptedAt)
+        val scheduler = context.getBean(team.startup.application.domain.application.service.impl.PromotionOfferScheduler::class.java)
+        testClock.current = acceptedAt.plusSeconds(6 * 3600).minusNanos(1000)
+        scheduler.sweep()
+        assertEquals("WAITING", status(waiting[1].applicationId))
+        testClock.current = acceptedAt.plusSeconds(6 * 3600)
+        scheduler.sweep()
+        assertEquals("CANCELLED", status(waiting[1].applicationId))
+        assertEquals(
+            listOf("DECLINED:USER", "EXPIRED:SYSTEM", "SCHEDULED:null"),
+            offerRows().map { "${it["state"]}:${it["responder_type"]}" },
+        )
+        assertEquals(
+            listOf("USER:1", "SYSTEM:0"),
+            listOf(waiting[0], waiting[1]).map { entry ->
+                jdbc.queryForObject(
+                    "SELECT actor_type || ':' || coalesce(actor_participant_id, 0) FROM tb_program_session_history " +
+                        "WHERE application_id = ? AND status = 'CANCELLED'",
+                    String::class.java,
+                    entry.applicationId,
+                )
+            },
+        )
+        // Definitive failure and unknown delivery never become a decline or a no-response expiry.
+        deliver(activeOffer(), "FAILED", reason = "PROVIDER_CONFIRMED_FAILURE")
+        testClock.current = cutoff.minusNanos(1000)
+        scheduler.sweep()
+        assertEquals("DELIVERY_FAILED", activeOffer()["state"])
+        assertEquals("WAITING", status(waiting[2].applicationId))
+        respond(activeOffer()["id"], "acceptance", 409)
+        testClock.current = cutoff
+        scheduler.sweep()
+        assertEquals("VOIDED:HARD_DEADLINE", offerRows().last().let { "${it["state"]}:${it["void_reason"]}" })
+        assertEquals("WAITING", status(waiting[2].applicationId))
+        applied(4, false)
+    }
+
+    @Test
+    fun `check and delivery reports respect the send window stale events and the hard cutoff`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        val night = activeOffer()
+        check(night).andExpect(jsonPath("$.eligible").value(false)).andExpect(jsonPath("$.reason").value("OUTSIDE_SEND_WINDOW"))
+        deliver(night, "SKIPPED", reason = "OUTSIDE_SEND_WINDOW").andExpect(jsonPath("$.state").value("SCHEDULED"))
+        val next = activeOffer()
+        assertTrue(next["event_id"] != night["event_id"])
+        check(night).andExpect(jsonPath("$.reason").value("NOT_CURRENT_OFFER"))
+        deliver(night, "UNKNOWN", expected = 409)
+        testClock.current = nineKst
+        check(next).andExpect(jsonPath("$.eligible").value(true))
+        testClock.current = Instant.parse("2029-12-31T09:00:00Z")
+        check(next).andExpect(jsonPath("$.reason").value("OUTSIDE_SEND_WINDOW"))
+        testClock.current = nineKst.plusSeconds(60)
+        deliver(next, "ACCEPTED", testClock.current, attemptedAt = testClock.current.plusSeconds(1), expected = 400)
+        deliver(next, "UNKNOWN").andExpect(jsonPath("$.state").value("UNKNOWN"))
+        respond(next["id"], "acceptance", 409)
+        val scheduler = context.getBean(team.startup.application.domain.application.service.impl.PromotionOfferScheduler::class.java)
+        testClock.current = nineKst.plusSeconds(8 * 3600)
+        scheduler.sweep()
+        assertEquals("UNKNOWN", activeOffer()["state"])
+        applied(2, false)
+    }
+
+    @Test
+    fun `provider acceptance at the cutoff leaves no response interval and reconfiguration keeps held seats`() {
+        capacity = 2
+        waitingCapacity = 1
+        addParticipant(3)
+        managedIds = listOf(1, 2, 3)
+        val confirmed = service.execute(command())
+        service.execute(command(participant = 2))
+        service.execute(command(participant = 3))
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", revision + 1)
+        next.path("policy").asObject().put("capacity", 1)
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isConflict)
+        // A later, earlier cutoff from Expo caps the existing offer too; it is never extended.
+        change { it.put("promotionEndedAt", nineKst.plusSeconds(3600).toString()) }
+        reconcile()
+        assertEquals(nineKst.plusSeconds(3600), (activeOffer()["hard_deadline"] as java.sql.Timestamp).toInstant())
+        testClock.current = nineKst.plusSeconds(3600)
+        deliver(activeOffer(), "ACCEPTED", testClock.current).andExpect(jsonPath("$.state").value("VOIDED"))
+        applied(3, false)
+    }
+
+    @Test
+    fun `a guardian batch offer holds every new member and acceptance confirms the whole batch for the representative`() {
+        enableGuardianPolicy(2, 4)
+        val receipt = batchService.execute(guardianBatch(1, 2))
+        assertTrue(receipt.applications.all { it.application.status == "WAITING" })
+        testClock.current = offerSwitch
+        change { it.put("capacity", 3) }
+        reconcile()
+        val offer = activeOffer()
+        assertEquals(3, offer["seats"])
+        assertTrue(offer["batch_id"] != null)
+        assertEquals(0L, count("tb_standard_program_application"))
+        testClock.current = nineKst.plusSeconds(60)
+        deliver(offer, "ACCEPTED", testClock.current)
+        respond(offer["id"], "acceptance", 200).andExpect(jsonPath("$.status").value("ACCEPTED"))
+        receipt.applications.forEach { applied(it.application.participantId, true) }
+        assertEquals(3L, count("tb_standard_program_application"))
+        assertEquals(
+            3L,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_history WHERE status = 'CONFIRMED' AND actor_type = 'USER' AND actor_participant_id = 1",
+                Long::class.java,
+            ),
+        )
+    }
+
     private fun applied(
         participant: Long,
         value: Boolean,
@@ -4125,6 +4420,18 @@ class ProgramSessionApplicationTests {
                                 """{"registered":true,"participants":[$people]}"""
                             }
 
+                            path.endsWith("standard-participants/details") -> {
+                                val id =
+                                    ObjectMapper()
+                                        .readTree(body)
+                                        .path("participantIds")
+                                        .get(0)
+                                        .asLong()
+                                val representative = if (id == 1L) "null" else "1"
+                                val phone = if (id == 1L) "\"010-1234-5678\"" else "null"
+                                """[{"participantId":$id,"name":"Person$id","representativeId":$representative,"phoneNumber":$phone}]"""
+                            }
+
                             path.endsWith("managed/select") -> {
                                 if (body.contains("[99]")) {
                                     status = 404
@@ -4275,6 +4582,10 @@ class ProgramSessionApplicationTests {
             registry.add("application.legacy-trainee-attribution.enabled") { true }
             registry.add("application.program-sessions.enabled") { true }
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
+            registry.add("application.promotion-offers.enabled") { true }
+            registry.add("application.promotion-offers.bootstrap-servers") { "127.0.0.1:9" }
+            registry.add("application.promotion-offers.response-url") { "https://client.example/application/forms/{expoId}" }
+            registry.add("application.promotion-offers.delay-ms") { 3600000 }
             registry.add("application.registration.expo-internal-token") { "test-token" }
             registry.add("application.registration.user-internal-token") { "test-token" }
             registry.add("application.registration.form-internal-token") { "test-token" }

@@ -329,10 +329,39 @@ class ProgramSessionApplicationRepository(
                 admissionConfirmedCount(definition, "PRE_REGISTRATION") - admissionConfirmedCount(definition, "ONSITE")
         ).coerceAtLeast(0)
 
-    fun preRegistrationRemaining(definition: ProgramSessionDefinition): Long {
+    // Waiting rows are always PRE_REGISTRATION, so seats held by active offers (#144) come out of the pre seats only.
+    fun preRegistrationRemaining(
+        definition: ProgramSessionDefinition,
+        excludingOffer: UUID? = null,
+    ): Long {
         val capacity = requireNotNull(requireNotNull(definition.policy).preRegistrationCapacity)
-        return (capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition)).coerceAtLeast(0)
+        return (
+            capacity - admissionConfirmedCount(definition, "PRE_REGISTRATION") - unknownAdmissionCount(definition) -
+                offeredSeats(definition, excludingOffer)
+        ).coerceAtLeast(0)
     }
+
+    fun offeredSeats(
+        definition: ProgramSessionDefinition,
+        excludingOffer: UUID? = null,
+    ): Long =
+        requireNotNull(
+            jdbc.queryForObject(
+                PromotionOfferRepository.PROGRAM_HELD,
+                Long::class.java,
+                UUID.fromString(definition.expoId),
+                definition.programType.name,
+                definition.id,
+                null,
+                null,
+                excludingOffer,
+                excludingOffer,
+            ),
+        )
+
+    // Physical seats taken by confirmed rows plus offer holds; every capacity check and reconfiguration uses this.
+    fun occupiedCount(definition: ProgramSessionDefinition): Long =
+        confirmedCount(definition.programType, definition.id) + offeredSeats(definition)
 
     fun onsiteRemaining(definition: ProgramSessionDefinition): Long {
         val capacity = requireNotNull(requireNotNull(definition.policy).onsiteCapacity)
@@ -345,11 +374,12 @@ class ProgramSessionApplicationRepository(
         val pre = admissionConfirmedCount(definition, "PRE_REGISTRATION")
         val onsite = admissionConfirmedCount(definition, "ONSITE")
         val unknown = unknownAdmissionCount(definition)
+        val offered = offeredSeats(definition)
         return ProgramAdmissionSeats(
             ProgramAdmissionCapacity(
                 requireNotNull(policy.preRegistrationCapacity),
                 pre,
-                (policy.preRegistrationCapacity - pre - unknown).coerceAtLeast(0),
+                (policy.preRegistrationCapacity - pre - unknown - offered).coerceAtLeast(0),
             ),
             ProgramAdmissionCapacity(
                 requireNotNull(policy.onsiteCapacity),
@@ -357,6 +387,7 @@ class ProgramSessionApplicationRepository(
                 (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
             ),
             unknown,
+            offeredSeats = offered,
             waitingEnabled = policy.waitingCapacity > 0,
             onsiteAdmissionEnabled = policy.onsiteCapacity > 0 && policy.admissionWindow(onsite = true) != null,
         )

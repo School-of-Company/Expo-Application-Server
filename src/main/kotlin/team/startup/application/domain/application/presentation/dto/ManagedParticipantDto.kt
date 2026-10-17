@@ -41,6 +41,8 @@ data class ProgramAdmissionSeats(
     val waitingEnabled: Boolean = false,
     @field:Schema(description = "현장 정원이 있어 현장 신청 진입점을 쓸 수 있는 회차인지. 개방 여부는 신청 시 프로그램 폼 기간으로 판정한다")
     val onsiteAdmissionEnabled: Boolean = false,
+    @field:Schema(description = "참여 제안(#144)으로 임시 확보된 사전 좌석 수. 사전 잔여석에서 이미 뺐다")
+    val offeredSeats: Long = 0,
 )
 
 data class ProgramAdmissionCapacity(

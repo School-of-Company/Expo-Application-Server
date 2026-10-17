@@ -9,6 +9,7 @@ import team.startup.application.domain.application.presentation.dto.PrepareProgr
 import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
+import team.startup.application.domain.application.repository.PromotionOfferRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.PrepareProgramChangeService
@@ -22,6 +23,7 @@ class PrepareProgramChangeServiceImpl(
     private val standards: StandardProgramApplicationRepository,
     private val trainings: TrainingProgramApplicationRepository,
     private val mapper: ObjectMapper,
+    private val offers: PromotionOfferRepository,
 ) : PrepareProgramChangeService {
     @Transactional
     override fun execute(command: PrepareProgramChangeCommand) {
@@ -77,11 +79,13 @@ class PrepareProgramChangeServiceImpl(
             val next = mutation.definition
             val active = repository.activeCount(old)
             val confirmed = ledger.confirmedCount(old.programType, old.id)
+            // Seats held by active participation offers (#144) cannot be removed by reconfiguration either.
+            val offered = ledger.offeredSeats(old)
             val waiting = repository.waitingCount(old)
             if ((active > 0 || confirmed > 0) && next != null && next.policy?.guardianPolicy != old.policy?.guardianPolicy) conflict()
             if ((next == null && (active > 0 || confirmed > 0)) ||
                 (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
-                (next?.policy != null && (next.policy.capacity < confirmed || next.policy.waitingCapacity < waiting))
+                (next?.policy != null && (next.policy.capacity < confirmed + offered || next.policy.waitingCapacity < waiting))
             ) {
                 conflict()
             }
@@ -93,7 +97,7 @@ class PrepareProgramChangeServiceImpl(
                     val unknown = ledger.unknownAdmissionCount(old)
                     if (requireNotNull(
                             policy.preRegistrationCapacity,
-                        ) < ledger.admissionConfirmedCount(old, "PRE_REGISTRATION") + unknown ||
+                        ) < ledger.admissionConfirmedCount(old, "PRE_REGISTRATION") + unknown + offered ||
                         requireNotNull(policy.onsiteCapacity) < ledger.admissionConfirmedCount(old, "ONSITE") + unknown ||
                         (old.policy?.hasAdmissionCapacities() != true && waiting > 0)
                     ) {
@@ -102,7 +106,8 @@ class PrepareProgramChangeServiceImpl(
                 }
                 if ((active > 0 || confirmed > 0) && policy.channelLayout() != old.policy?.channelLayout()) conflict()
                 if (policy.channels.orEmpty().any {
-                        it.capacity < repository.confirmedCount(old, it.name) || it.waitingCapacity < repository.waitingCount(old, it.name)
+                        it.capacity < repository.confirmedCount(old, it.name) + offers.programHeld(old, it.name) ||
+                            it.waitingCapacity < repository.waitingCount(old, it.name)
                     }
                 ) {
                     conflict()

@@ -12,11 +12,13 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
+import team.startup.application.domain.application.repository.PromotionOfferRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import java.time.Clock
 import java.time.Instant
+import java.util.UUID
 
 @Component
 class ProgramWaitlist(
@@ -28,6 +30,8 @@ class ProgramWaitlist(
     private val gateway: RegistrationGateway,
     private val clock: Clock,
     private val guardianBatches: ObjectProvider<StudentGuardianBatchPromotion>,
+    private val offers: PromotionOfferRepository,
+    private val offerPolicy: PromotionOfferPolicy,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -59,24 +63,19 @@ class ProgramWaitlist(
         now: Instant = now(),
     ) {
         val policy = definition.policy ?: return
+        offers.capProgram(definition, minOf(policy.applicationEndedAt, policy.promotionEndedAt))
         if (policy.closed || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
             !now.isBefore(policy.promotionEndedAt)
         ) {
             return
         }
         if (isDeleted(definition)) return
+        if (offerPolicy.offerMode(offerPolicy.programStart(definition.startedAt), now)) return offer(definition, now)
         // shortcut: 승급당 최대 10명으로 원격 호출 잠금을 제한한다. 일괄 연결 API가 제공되면 교체한다.
         var budget = 10
         // 채널마다 따로 FIFO로 승급한다. 다른 채널의 빈자리는 쓰지 않고, 회차 합계 정원도 함께 지킨다.
         channels@ for (channel in policy.channels ?: listOf(null)) {
-            val remaining =
-                minOf(
-                    policy.capacity - ledger.confirmedCount(definition.programType, definition.id),
-                    channel?.let { (it.capacity - repository.confirmedCount(definition, it.name)).toLong() } ?: Long.MAX_VALUE,
-                    // 분리 회차의 대기는 사전 좌석으로만 승급한다. 현장 좌석은 쓰지 않는다.
-                    if (policy.hasAdmissionCapacities()) ledger.preRegistrationRemaining(definition) else Long.MAX_VALUE,
-                    budget.toLong(),
-                )
+            val remaining = minOf(free(definition, channel?.name), budget.toLong())
             if (remaining <= 0) continue
             for (entry in repository.waiting(definition, remaining.toInt(), channel?.name)) {
                 val promoted = guardianBatches.ifAvailable?.promote(definition, entry)
@@ -117,6 +116,104 @@ class ProgramWaitlist(
                 budget--
             }
         }
+    }
+
+    // Seats still free for the queue after confirmed rows and seats held by active offers (#144).
+    fun free(
+        definition: ProgramSessionDefinition,
+        channel: String?,
+        excludingOffer: UUID? = null,
+    ): Long {
+        val policy = requireNotNull(definition.policy)
+        return minOf(
+            policy.capacity - ledger.confirmedCount(definition.programType, definition.id) -
+                offers.programHeld(definition, excluding = excludingOffer),
+            channel?.let { name ->
+                val capacity =
+                    policy.channels
+                        .orEmpty()
+                        .single { it.name == name }
+                        .capacity
+                capacity - repository.confirmedCount(definition, name) - offers.programHeld(definition, name, excludingOffer)
+            } ?: Long.MAX_VALUE,
+            // 분리 회차의 대기는 사전 좌석으로만 승급한다. 현장 좌석은 쓰지 않는다.
+            if (policy.hasAdmissionCapacities()) ledger.preRegistrationRemaining(definition, excludingOffer) else Long.MAX_VALUE,
+        )
+    }
+
+    // From the day before the session, a vacancy only holds seats for the queue head and schedules an offer; the
+    // representative's acceptance confirms. Strict FIFO per channel, whole guardian batches, no remote calls.
+    private fun offer(
+        definition: ProgramSessionDefinition,
+        now: Instant,
+    ) {
+        val policy = requireNotNull(definition.policy)
+        val hardDeadline = minOf(policy.applicationEndedAt, policy.promotionEndedAt)
+        val sendAfter = offerPolicy.sendAfter(now)
+        // No usable send interval before the existing cutoffs means no offer and no confirmation.
+        if (!sendAfter.isBefore(hardDeadline)) return
+        channels@ for (channel in policy.channels ?: listOf(null)) {
+            var free = free(definition, channel?.name)
+            if (free <= 0) continue
+            val offered = mutableSetOf<UUID>()
+            for (entry in repository.waiting(definition, free.toInt(), channel?.name)) {
+                val batch = guardianBatches.ifAvailable?.offerMembers(entry)
+                if (batch != null && !offered.add(batch.first)) continue
+                val seats = batch?.second ?: 1
+                if (seats <= 0) continue
+                if (seats > free) continue@channels
+                offers.createProgram(definition, entry.id, batch?.first, channel?.name, seats, sendAfter, hardDeadline)
+                free -= seats
+            }
+        }
+    }
+
+    // Acceptance runs the promotion checks again under the same locks. A failed check never cancels the waiting row;
+    // the offer stays respondable until it expires. Returns null on confirmation, otherwise the rejection reason.
+    fun acceptSingle(
+        definition: ProgramSessionDefinition,
+        entry: ProgramWaitlistRepository.Entry,
+        offerId: UUID,
+        actorParticipantId: Long,
+    ): String? {
+        val policy = requireNotNull(definition.policy)
+        val now = now()
+        if (policy.closed || !now.isBefore(policy.applicationEndedAt) || !now.isBefore(policy.promotionEndedAt)) return "PROMOTION_ENDED"
+        if (isDeleted(definition)) return "PROGRAM_DELETED"
+        if (!repository.confirmedPreregister(entry)) return "PREREGISTRATION_NOT_CONFIRMED"
+        if (free(definition, repository.channel(entry.id), offerId) < 1) return "CAPACITY_CHANGED"
+        if (ledger.hasTimeConflict(definition, entry.participantId)) return "TIME_CONFLICT"
+        val traineeId =
+            if (definition.programType == ProgramSessionType.TRAINING) {
+                val traineeId =
+                    try {
+                        gateway.resolveTrainee(definition.expoId, entry.participantId, programTrainingId(entry.questions, entry.answers))
+                    } catch (ex: ResponseStatusException) {
+                        if (ex.statusCode == HttpStatus.NOT_FOUND || ex.statusCode == HttpStatus.CONFLICT) return "TRAINEE_UNAVAILABLE"
+                        throw ex
+                    }
+                if (!trainings.tryLockTrainee(traineeId)) return "BUSY"
+                val existing = trainings.findAllByTraineeId(traineeId).map { it.trainingProgramId }
+                if (existing.isNotEmpty() &&
+                    gateway.programDefinitions(definition.expoId, definition.programType, existing, existing = true).any {
+                        it.groupId == definition.groupId
+                    }
+                ) {
+                    return "GROUP_ALREADY_APPLIED"
+                }
+                traineeId
+            } else {
+                null
+            }
+        if (traineeId != null) {
+            operations.lockVersion(traineeId)
+            trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
+            operations.incrementVersion(traineeId)
+        } else {
+            standards.saveAndFlush(StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id))
+        }
+        repository.transition(entry.id, "CONFIRMED", ApplicationActorType.USER, traineeId, actorParticipantId = actorParticipantId)
+        return null
     }
 
     private fun promotionTrainee(

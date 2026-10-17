@@ -28,6 +28,12 @@ application:
     enabled: ${APPLICATION_PROMOTIONS_ENABLED:false}
     bootstrap-servers: ${APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS:}
     publish-from: ${APPLICATION_PROMOTIONS_PUBLISH_FROM:}
+  # #144 participation offers. Off keeps the pre-#144 automatic promotion; turn on only after Notification's offer
+  # consumer and the Client offer page are deployed (docs/promotion-offer.md).
+  promotion-offers:
+    enabled: ${APPLICATION_PROMOTION_OFFERS_ENABLED:false}
+    bootstrap-servers: ${APPLICATION_PROMOTION_OFFERS_BOOTSTRAP_SERVERS:}
+    response-url: ${APPLICATION_PROMOTION_OFFERS_RESPONSE_URL:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
   admin-group-messaging:
     expo-url: ${APPLICATION_ADMIN_GROUP_MESSAGE_EXPO_URL:}
