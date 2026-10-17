@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.exception.ProgramDefinitionVersionChangedException
 import team.startup.application.domain.application.presentation.dto.AdminCurrentSessionPage
 import team.startup.application.domain.application.presentation.dto.AdminCurrentSessionQuery
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
@@ -32,7 +33,14 @@ class GetAdminCurrentSessionsServiceImpl(
         expoId: UUID,
         query: AdminCurrentSessionQuery,
     ): AdminCurrentSessionPage {
-        val page = expo.sessions(expoId, query)
+        val page =
+            try {
+                expo.sessions(expoId, query)
+            } catch (ex: ResponseStatusException) {
+                // Expo 409는 페이지 넘김 중 정의 버전 변경이다. 로컬 정의 불일치와 구분해 첫 페이지 재조회를 알린다.
+                if (ex.statusCode.value() == HttpStatus.CONFLICT.value()) throw ProgramDefinitionVersionChangedException()
+                throw ex
+            }
         return requireNotNull(
             reads.execute {
                 val definitions =

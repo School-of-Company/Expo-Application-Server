@@ -114,6 +114,27 @@ class AdminApplicationHttpTests {
             ) { rs, _ -> rs.getLong(1) }
     }
 
+    private fun storeDefinition(
+        programId: Long,
+        definition: String,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_program_session_state (expo_id, program_type, program_id, definition) VALUES (?, 'STANDARD', ?, CAST(? AS jsonb))",
+            expoId,
+            programId,
+            definition.replace("EXPO_ID", expoId.toString()),
+        )
+    }
+
+    private fun expoPage() =
+        mapper
+            .readTree(
+                """{"expoId":"$expoId","items":[${SESSION_99.replace(
+                    "EXPO_ID",
+                    expoId.toString(),
+                )}],"page":0,"size":20,"totalElements":1,"definitionVersion":"version-one"}""",
+            ).asObject()
+
     private fun read(query: String = "") = mvc.perform(get("$base$query").header("X-Internal-Token", "test-token")).andReturn().response
 
     @Test
@@ -1057,6 +1078,86 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `policyless session edited in Expo after a stored observation keeps current sessions readable`() {
+        // #163: Expo는 정책 없는 회차의 제목·시간·장소 변경을 승인 요청 없이 반영하므로 저장 정의가 예전 값으로 남는다.
+        storeDefinition(99, SESSION_99)
+        assertEquals(200, read("/current-sessions").status)
+        val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
+        page["items"][0]
+            .asObject()
+            .put("title", "Renamed session")
+            .put("startedAt", "2026-10-12T13:00")
+            .put("endedAt", "2026-10-12T14:00")
+            .put("place", "Hall B")
+            .put("revision", 2)
+        expoBody = page.toString()
+        val response = read("/current-sessions")
+        assertEquals(200, response.status, response.contentAsString)
+        assertEquals("Renamed session", mapper.readTree(response.contentAsString)["items"][0]["title"].asString())
+    }
+
+    @Test
+    fun `legacy stored policy matches the Expo V37 split into pre registration seats only`() {
+        // #163: Expo V37은 기존 정책을 승인 요청 없이 preRegistrationCapacity = capacity, onsiteCapacity = 0으로 바꿨다.
+        storeDefinition(99, SESSION_99.replace("\"policy\":null", "\"policy\":$LEGACY_POLICY"))
+        val page = expoPage()
+        page["items"][0].asObject().set(
+            "policy",
+            mapper.readTree(LEGACY_POLICY.replace("\"capacity\":5", "\"capacity\":5,\"preRegistrationCapacity\":5,\"onsiteCapacity\":0")),
+        )
+        expoBody = page.toString()
+        val response = read("/current-sessions")
+        assertEquals(200, response.status, response.contentAsString)
+        assertEquals(5, mapper.readTree(response.contentAsString)["items"][0]["admissionSeats"]["preRegistration"]["remaining"].asInt())
+
+        // 다른 분할(현장 정원 배정)이나 직업 채널이 있던 정의는 자동으로 같은 정의로 보지 않는다.
+        page["items"][0].asObject().set(
+            "policy",
+            mapper.readTree(LEGACY_POLICY.replace("\"capacity\":5", "\"capacity\":5,\"preRegistrationCapacity\":3,\"onsiteCapacity\":2")),
+        )
+        expoBody = page.toString()
+        assertEquals("PROGRAM_DEFINITION_MISMATCH", mapper.readTree(read("/current-sessions").contentAsString)["code"].asString())
+        jdbc.execute("TRUNCATE tb_program_session_state CASCADE")
+        storeDefinition(
+            99,
+            SESSION_99.replace(
+                "\"policy\":null",
+                "\"policy\":${LEGACY_POLICY.removeSuffix(
+                    "}",
+                )},\"channels\":[{\"name\":\"교사\",\"allowedOccupations\":[\"TEACHER\"],\"capacity\":5,\"waitingCapacity\":0}]}",
+            ),
+        )
+        page["items"][0].asObject().set(
+            "policy",
+            mapper.readTree(LEGACY_POLICY.replace("\"capacity\":5", "\"capacity\":5,\"preRegistrationCapacity\":5,\"onsiteCapacity\":0")),
+        )
+        expoBody = page.toString()
+        val channel = read("/current-sessions")
+        assertEquals(409, channel.status)
+        assertEquals("PROGRAM_DEFINITION_MISMATCH", mapper.readTree(channel.contentAsString)["code"].asString())
+    }
+
+    @Test
+    fun `unapproved policy definition and Expo version change return distinct current session conflict codes`() {
+        val policy = LEGACY_POLICY
+        storeDefinition(99, SESSION_99.replace("\"policy\":null", "\"policy\":$policy"))
+        val page = expoPage()
+        page["items"][0].asObject().set("policy", mapper.readTree(policy.replace("\"capacity\":5", "\"capacity\":6")))
+        expoBody = page.toString()
+        val mismatch = read("/current-sessions")
+        assertEquals(409, mismatch.status)
+        val body = mapper.readTree(mismatch.contentAsString)
+        assertEquals("PROGRAM_DEFINITION_MISMATCH", body["code"].asString())
+        assertEquals("STANDARD", body["programType"].asString())
+        assertEquals(99, body["programId"].asInt())
+        expoBody = null
+        expoStatus = 409
+        val version = read("/current-sessions")
+        assertEquals(409, version.status)
+        assertEquals("DEFINITION_VERSION_CHANGED", mapper.readTree(version.contentAsString)["code"].asString())
+    }
+
+    @Test
     fun `current session malformed admission capacities fail closed`() {
         val page = mapper.readTree(read("/current-sessions").contentAsString).asObject()
         page["items"][0].asObject().set(
@@ -1526,6 +1627,10 @@ class AdminApplicationHttpTests {
         private var expoStatus = 200
         private var expoBody: String? = null
         private val expoRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private const val LEGACY_POLICY =
+            """{"formId":"00000000-0000-0000-0000-0000000000f1","allowedOccupations":["TEACHER"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}"""
+        private const val SESSION_99 =
+            """{"expoId":"EXPO_ID","programType":"STANDARD","id":99,"title":"Empty session","startedAt":"2026-10-12T09:00","endedAt":"2026-10-12T10:00","groupId":"00000000-0000-0000-0000-000000000099","revision":1,"policy":null}"""
         private val sources =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/internal/expos/") { exchange ->
