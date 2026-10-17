@@ -15,9 +15,11 @@ import team.startup.application.domain.application.presentation.dto.AdminGroupMe
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTemplate
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTemplateVariables
 import team.startup.application.domain.application.repository.AdminApplicationQueryRepository
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.format.DateTimeParseException
 import java.util.HexFormat
 import java.util.UUID
 
@@ -35,6 +37,7 @@ class AdminGroupMessageTargetResolver(
         val representativeIds = participants.values.map { it.representativeId ?: it.participantId }.distinct()
         val representatives = gateway.participants(expoId, representativeIds)
         val kakaoTemplate = source.templateId?.let(::approvedKakaoTemplate)
+        val expoName = kakaoTemplate?.variableMapping?.expoName?.let { gateway.expoName(expoId) }
         val personalized =
             when (source.channel) {
                 AdminGroupMessageChannel.SMS -> {
@@ -43,7 +46,7 @@ class AdminGroupMessageTargetResolver(
 
                 AdminGroupMessageChannel.KAKAO -> {
                     requireNotNull(kakaoTemplate).variableMapping.run {
-                        listOf(name, programName, sessionName, location).any { it != null }
+                        listOf(name, programName, sessionName, location, status).any { it != null }
                     }
                 }
             }
@@ -53,7 +56,7 @@ class AdminGroupMessageTargetResolver(
                 val participant = participants.getValue(row.participantId)
                 val representative = representatives.getValue(participant.representativeId ?: participant.participantId)
                 val phone = normalizePhone(representative.phoneNumber)
-                val variables = variables(row, participant.name)
+                val variables = variables(row, participant.name, expoName)
                 val missing =
                     when {
                         phone == null -> {
@@ -130,6 +133,7 @@ class AdminGroupMessageTargetResolver(
     private fun variables(
         row: AdminApplicationRow,
         name: String,
+        expoName: String?,
     ): AdminGroupMessageTemplateVariables {
         fun text(name: String): String? =
             row.definition
@@ -140,12 +144,25 @@ class AdminGroupMessageTargetResolver(
         val startedAt = text("startedAt")
         val endedAt = text("endedAt")
         return AdminGroupMessageTemplateVariables(
+            expoName = expoName,
             name = name,
             programName = text("title"),
-            sessionName = listOfNotNull(startedAt, endedAt).joinToString(" ~ ").takeIf { it.isNotBlank() },
+            sessionName = startedAt?.let { sessionTime(it, endedAt) },
             location = text("place"),
+            status = statusLabel(row.status),
         )
     }
+
+    // 읽을 수 없는 일시는 원본 문자열을 보내지 않고 없는 값으로 보아 `TEMPLATE_DATA_MISSING`으로 남긴다.
+    private fun sessionTime(
+        startedAt: String,
+        endedAt: String?,
+    ): String? =
+        try {
+            ExpoProgramTime.display(startedAt, endedAt)
+        } catch (_: DateTimeParseException) {
+            null
+        }
 
     private fun approvedKakaoTemplate(templateId: String): AdminGroupMessageTemplate {
         val config = gateway.config()
@@ -172,10 +189,12 @@ class AdminGroupMessageTargetResolver(
         template: AdminGroupMessageTemplate,
         variables: AdminGroupMessageTemplateVariables,
     ): Boolean =
-        (template.variableMapping.name != null && variables.name == null) ||
+        (template.variableMapping.expoName != null && variables.expoName == null) ||
+            (template.variableMapping.name != null && variables.name == null) ||
             (template.variableMapping.programName != null && variables.programName == null) ||
             (template.variableMapping.sessionName != null && variables.sessionName == null) ||
-            (template.variableMapping.location != null && variables.location == null)
+            (template.variableMapping.location != null && variables.location == null) ||
+            (template.variableMapping.status != null && variables.status == null)
 
     private fun render(
         source: AdminGroupMessageSource,
@@ -196,10 +215,12 @@ class AdminGroupMessageTargetResolver(
             AdminGroupMessageChannel.KAKAO -> {
                 val template = requireNotNull(kakaoTemplate)
                 listOf(
+                    template.variableMapping.expoName to variables.expoName,
                     template.variableMapping.name to variables.name,
                     template.variableMapping.programName to variables.programName,
                     template.variableMapping.sessionName to variables.sessionName,
                     template.variableMapping.location to variables.location,
+                    template.variableMapping.status to variables.status,
                 ).fold(template.content) { content, (placeholder, value) ->
                     if (placeholder == null) content else content.replace(placeholder, requireNotNull(value))
                 }
@@ -257,10 +278,12 @@ class AdminGroupMessageTargetResolver(
             add(target.programType)
             add(target.recipientPhone)
             add(target.content)
+            add(target.templateVariables?.expoName)
             add(target.templateVariables?.name)
             add(target.templateVariables?.programName)
             add(target.templateVariables?.sessionName)
             add(target.templateVariables?.location)
+            add(target.templateVariables?.status)
             add(target.missingReason)
         }
         return HexFormat.of().formatHex(digest.digest())

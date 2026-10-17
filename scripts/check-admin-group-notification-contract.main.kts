@@ -77,4 +77,16 @@ val retryBody =
     """{"requesterUserId":7,"expoId":"$expoId","targetFingerprint":"$fingerprint","idempotencyKey":"${UUID.randomUUID()}"}"""
 expect(request("POST", "/internal/admin-group-messages/jobs/$jobId/retries", retryBody), 202, "\"jobId\":\"$jobId\"", "\"delivered\":1")
 
-println("PASS config preview execute duplicate status retry jobId=$jobId previewId=$previewId")
+// 문자 대체는 KAKAO에서만 받는다. 카카오 템플릿이 없는 환경에서도 스키마 통과 여부는 400과 422로 구분된다.
+fun fallbackPreview(channel: String): HttpResponse<String> {
+    val template = if (channel == "KAKAO") ""","templateId":"contract-unconfigured"""" else ""
+    return request(
+        "POST",
+        "/internal/admin-group-messages/previews",
+        """{"requesterUserId":7,"expoId":"$expoId","requestId":"${UUID.randomUUID()}","targetFingerprint":"$fingerprint","applicationCount":1,"channel":"$channel"$template,"fallbackToSms":true,"targets":[{"targetId":"$applicationId","applicationId":"$applicationId","participantId":1,"programType":"STANDARD","recipientPhone":"01012345678","content":"계약 검증","templateVariables":{"expoName":"계약 박람회","status":"확정"}}]}""",
+    )
+}
+expect(fallbackPreview("SMS"), 400, "fallbackToSms")
+expect(fallbackPreview("KAKAO"), 422, "Kakao template is not configured")
+
+println("PASS config preview execute duplicate status retry kakao-fallback jobId=$jobId previewId=$previewId")
