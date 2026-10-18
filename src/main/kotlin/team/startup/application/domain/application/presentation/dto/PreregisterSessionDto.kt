@@ -24,7 +24,16 @@ data class PreregisterSessionDefinition(
     @field:Schema(description = "회차별 대기 정원. 0이면 대기 미사용, null이면 Application에 적용되지 않음")
     @field:jakarta.validation.constraints.PositiveOrZero
     val waitingCapacity: Int? = null,
+    @field:Schema(description = "교사·예비교사 정원(Expo #144). nonTeacherCapacity와 함께 null이면 구분 없는 기존 회차")
+    @field:jakarta.validation.constraints.PositiveOrZero
+    val teacherCapacity: Int? = null,
+    @field:Schema(description = "교사·예비교사 외 대상 정원. teacherCapacity와 함께 있으며 합은 capacity")
+    @field:jakarta.validation.constraints.PositiveOrZero
+    val nonTeacherCapacity: Int? = null,
 )
+
+// #173: sessions with target capacities limit teacher and non-teacher seats separately.
+internal val PreregisterSessionDefinition.targeted: Boolean get() = teacherCapacity != null
 
 // Definitions stored before #99 have no waitingCapacity. Null means not adopted, so compare without it.
 internal fun PreregisterSessionDefinition.sameAs(other: PreregisterSessionDefinition?): Boolean =
@@ -115,4 +124,12 @@ internal fun PreregisterSessionDefinition.isValidDefinition(): Boolean =
     id > 0 && revision > 0 && capacity > 0 &&
         title.isNotBlank() && title.codePointCount(0, title.length) <= 50 && place.isNotBlank() &&
         startedAt.isBefore(endedAt) && startedAt.nano % 1000 == 0 && endedAt.nano % 1000 == 0 &&
-        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0) && (waitingCapacity == null || waitingCapacity >= 0)
+        (cancelEndedAt == null || cancelEndedAt.nano % 1000 == 0) && (waitingCapacity == null || waitingCapacity >= 0) &&
+        targetCapacitiesValid()
+
+// Expo #144: both target capacities are null, or both are non-negative and add up to capacity.
+private fun PreregisterSessionDefinition.targetCapacitiesValid(): Boolean {
+    val teacher = teacherCapacity ?: return nonTeacherCapacity == null
+    val nonTeacher = nonTeacherCapacity ?: return false
+    return teacher >= 0 && nonTeacher >= 0 && teacher.toLong() + nonTeacher == capacity.toLong()
+}

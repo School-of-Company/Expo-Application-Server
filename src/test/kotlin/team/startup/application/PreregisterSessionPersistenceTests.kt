@@ -235,7 +235,7 @@ class PreregisterSessionPersistenceTests {
     fun `cancelled history forbids definition change and deletion`() {
         val receipt = apply.execute(command(1))
         cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, receipt.map { it.id }))
-        assertConflict { prepare.execute(change(definition.copy(capacity = 3, revision = 2))) }
+        assertConflict { prepare.execute(change(definition.copy(title = "Other", revision = 2))) }
         assertConflict {
             prepare.execute(
                 PreparePreregisterSessionChangeCommand(
@@ -316,6 +316,78 @@ class PreregisterSessionPersistenceTests {
         publish(opened)
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
         assertEquals("CONFIRMED", apply.execute(command(4)).single().status)
+    }
+
+    @Test
+    fun `capacity only changes after history keep every used seat`() {
+        definition = definition.copy(capacity = 4)
+        publish(definition)
+        apply.execute(command(1))
+        apply.execute(command(2))
+        assertConflict { prepare.execute(change(definition.copy(capacity = 1, revision = 2))) }
+        val grown = definition.copy(capacity = 6, revision = 2)
+        prepare.execute(change(grown))
+        publish(grown)
+        assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        assertEquals(grown, repository.definition(expoId, 1))
+        // Other definition changes stay blocked, even together with a capacity change.
+        assertConflict { prepare.execute(change(grown.copy(capacity = 7, title = "Other", revision = 3))) }
+    }
+
+    @Test
+    fun `adding target capacities counts unknown seats against both categories`() {
+        definition = definition.copy(capacity = 10)
+        publish(definition)
+        // Applications stored without a seat category (before V31 or internal apply) are unknown.
+        apply.execute(command(1))
+        apply.execute(command(2))
+        assertConflict { prepare.execute(change(definition.copy(teacherCapacity = 1, nonTeacherCapacity = 9, revision = 2))) }
+        val target = definition.copy(teacherCapacity = 2, nonTeacherCapacity = 8, revision = 2)
+        prepare.execute(change(target))
+        publish(target)
+        assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        assertEquals(target, repository.definition(expoId, 1))
+        assertConflict { apply.execute(command(3)) }
+        assertConflict { prepare.execute(change(target.copy(teacherCapacity = 1, nonTeacherCapacity = 9, revision = 3))) }
+        val reverted = target.copy(teacherCapacity = null, nonTeacherCapacity = null, revision = 3)
+        prepare.execute(change(reverted))
+    }
+
+    @Test
+    fun `target capacities are refused while a waiting party remains`() {
+        apply.execute(command(1))
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'queued', 1, 'queued', '{}', 1, 'WAITING', 1)",
+            expoId,
+        )
+        try {
+            assertConflict {
+                prepare.execute(
+                    change(definition.copy(capacity = 4, teacherCapacity = 2, nonTeacherCapacity = 2, revision = 2)),
+                )
+            }
+            prepare.execute(change(definition.copy(capacity = 4, revision = 2)))
+        } finally {
+            jdbc.update("DELETE FROM tb_preregister_reservation WHERE request_id = 'queued'")
+        }
+    }
+
+    @Test
+    fun `target capacities must match the total capacity`() {
+        assertEquals(
+            400,
+            assertThrows(ResponseStatusException::class.java) {
+                prepare.execute(change(definition.copy(teacherCapacity = 1, nonTeacherCapacity = 2, revision = 2)))
+            }.statusCode.value(),
+        )
+        assertEquals(
+            400,
+            assertThrows(ResponseStatusException::class.java) {
+                prepare.execute(change(definition.copy(teacherCapacity = 2, revision = 2)))
+            }.statusCode.value(),
+        )
     }
 
     @Test
@@ -483,7 +555,7 @@ class PreregisterSessionPersistenceTests {
                 pool.submit<Boolean> {
                     assertTrue(start.await(10, TimeUnit.SECONDS))
                     try {
-                        prepare.execute(change(definition.copy(capacity = 3, revision = 2)))
+                        prepare.execute(change(definition.copy(title = "Other", revision = 2)))
                         true
                     } catch (
                         exception: ResponseStatusException,

@@ -95,6 +95,112 @@ class PreregisterRegistrationHttpTests {
         sessionStatus.set(200)
         sessionRequests.clear()
         verifiedSessionPhone = "01012345678"
+        userOccupations.clear()
+        detailsStatus.set(200)
+        targetCapacities.set(null)
+        managedParticipants.clear()
+    }
+
+    private fun target(
+        teacher: Int,
+        nonTeacher: Int,
+    ) {
+        capacity.set(teacher + nonTeacher)
+        targetCapacities.set(teacher to nonTeacher)
+    }
+
+    private fun capacity(cookie: String?): JsonNode {
+        val request = get("/application/expos/$EXPO/preregister-sessions/1/capacity")
+        if (cookie != null) request.cookie(Cookie("PARTICIPANT_SESSION", cookie))
+        return mapper.readTree(
+            mvc
+                .perform(request)
+                .andReturn()
+                .response.contentAsString,
+        )
+    }
+
+    @Test
+    fun `target sessions reserve each category separately and hide teacher numbers before applying`() {
+        target(teacher = 1, nonTeacher = 2)
+        val before = capacity(null)
+        assertTrue(before.path("remaining").isNull && before.path("maxApplicants").isNull && before.path("confirmed").isNull)
+        val seats = before.path("targetSeats")
+        assertEquals(
+            listOf(true, 2, 2),
+            listOf(
+                seats.path("teacherAvailable").asBoolean(),
+                seats.path("nonTeacherRemaining").asInt(),
+                seats.path("nonTeacherMaxApplicants").asInt(),
+            ),
+        )
+        assertTrue(seats.path("ownTeacherRemaining").isNull && !seats.has("teacherRemaining"))
+        // Free non-teacher seats never take a teacher, so a two-teacher party is rejected although three seats are free.
+        assertEquals(409, submit(key = "teachers", people = 2, occupations = listOf("TEACHER"), representative = "TEACHER"))
+        assertEquals(0, count("tb_preregister_reservation"))
+        assertEquals(201, submit(key = "mixed", people = 2, occupations = listOf("GENERAL"), representative = "PRE_SERVICE_TEACHER"))
+        assertEquals(mapOf(42L to "TEACHER", 43L to "OTHER"), seatCategories())
+        val after = capacity(null).path("targetSeats")
+        assertEquals(listOf(false, 1), listOf(after.path("teacherAvailable").asBoolean(), after.path("nonTeacherRemaining").asInt()))
+        assertEquals(409, submit(key = "teacher", phone = "01011111111", representative = "TEACHER"))
+        responseBody.set("""{"participantId":50,"phoneNumber":"01022222222","participantIds":[50],"groupParticipantIds":[50]}""")
+        assertEquals(201, submit(key = "general", phone = "01022222222", representative = "PARENT"))
+        assertEquals(409, submit(key = "full", phone = "01033333333", representative = "GENERAL"))
+
+        // Individual cancellation returns the seat to its original category only.
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 42")
+        val cancelled = capacity(null).path("targetSeats")
+        assertEquals(listOf(true, 0), listOf(cancelled.path("teacherAvailable").asBoolean(), cancelled.path("nonTeacherRemaining").asInt()))
+        assertEquals(409, submit(key = "full", phone = "01033333333", representative = "GENERAL"))
+    }
+
+    @Test
+    fun `target sessions require a representative occupation and take no waiting party`() {
+        target(teacher = 2, nonTeacher = 3)
+        assertEquals(400, submit())
+        assertEquals(0, count("tb_preregister_reservation"))
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'queued', 1, 'queued', '{}', 1, 'WAITING', 1)",
+            EXPO,
+        )
+        assertEquals(409, submit(representative = "GENERAL"))
+    }
+
+    @Test
+    fun `concurrent applications never take more teacher seats than configured`() {
+        target(teacher = 1, nonTeacher = 9)
+        val pool = Executors.newFixedThreadPool(4)
+        val statuses =
+            (1..4)
+                .map { pool.submit<Int> { submit(key = "k$it", phone = "0101000000$it", representative = "TEACHER") } }
+                .map { it.get(30, TimeUnit.SECONDS) }
+        pool.shutdown()
+        assertEquals(listOf(201, 409, 409, 409), statuses.sorted())
+        assertEquals(
+            1L,
+            repository
+                .adminSummary(EXPO)
+                .sessions
+                .single()
+                .seatUsage.teacher,
+        )
+    }
+
+    @Test
+    fun `only a verified owner with a confirmed teacher seat sees the teacher remaining seats`() {
+        target(teacher = 3, nonTeacher = 3)
+        assertEquals(201, submit(people = 2, occupations = listOf("GENERAL"), representative = "TEACHER"))
+        managedParticipants.addAll(listOf(42L, 43L))
+        assertEquals(2, capacity("owner").path("targetSeats").path("ownTeacherRemaining").asInt())
+        sessionStatus.set(401)
+        assertTrue(capacity("expired").path("targetSeats").path("ownTeacherRemaining").isNull)
+        sessionStatus.set(200)
+        managedParticipants.clear()
+        managedParticipants.add(99L)
+        assertTrue(capacity("stranger").path("targetSeats").path("ownTeacherRemaining").isNull)
+        assertTrue(capacity(null).path("targetSeats").path("ownTeacherRemaining").isNull)
     }
 
     private fun submit(
@@ -103,15 +209,25 @@ class PreregisterRegistrationHttpTests {
         phone: String = "01012345678",
         session: Long = 1,
         cookie: String? = null,
+        occupations: List<String> = List(people - 1) { "GENERAL" },
+        representative: String? = null,
     ): Int {
-        val companions = (2..people).map { mapOf("name" to "person$it", "occupation" to "GENERAL", "region" to "OTHER") }
+        val companions =
+            occupations.mapIndexed { index, occupation ->
+                mapOf("name" to "person${index + 2}", "occupation" to occupation, "region" to "OTHER") +
+                    if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER")) mapOf("school" to "school") else emptyMap()
+            }
         val body =
             mapper.writeValueAsString(
                 mapOf(
                     "name" to "person",
                     "phoneNumber" to phone,
                     "personalInformationStatus" to true,
-                    "informationJson" to mapper.writeValueAsString(mapOf("companions" to companions)),
+                    "informationJson" to
+                        mapper.writeValueAsString(
+                            mapOf("companions" to companions) +
+                                (representative?.let { mapOf("occupation" to it, "school" to "school") } ?: emptyMap()),
+                        ),
                     "sessionId" to session,
                 ),
             )
@@ -164,6 +280,96 @@ class PreregisterRegistrationHttpTests {
     }
 
     private fun count(table: String): Int = jdbc.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
+
+    private fun seatCategories(): Map<Long, String?> =
+        jdbc
+            .query("SELECT participant_id, seat_category FROM tb_preregister_application", { rs, _ -> rs.getLong(1) to rs.getString(2) })
+            .toMap()
+
+    @Test
+    fun `single category companions keep their reserved seat category without a User lookup`() {
+        assertEquals(201, submit(people = 3, occupations = listOf("TEACHER", "PRE_SERVICE_TEACHER")))
+        // The form has no occupation question, so the representative stays unknown instead of being guessed.
+        assertEquals(mapOf(42L to null, 43L to "TEACHER", 44L to "TEACHER"), seatCategories())
+        assertEquals(
+            listOf(2, 0),
+            jdbc
+                .queryForList("SELECT teacher_applicants, other_applicants FROM tb_preregister_reservation")
+                .single()
+                .values
+                .toList(),
+        )
+        val usage =
+            repository
+                .adminSummary(EXPO)
+                .sessions
+                .single()
+                .seatUsage
+        assertEquals(listOf(2L, 0L, 1L), listOf(usage.teacher, usage.other, usage.unknown))
+    }
+
+    @Test
+    fun `mixed companions are confirmed by the User occupation of each returned ID`() {
+        userOccupations.putAll(mapOf(43L to "GENERAL", 44L to "TEACHER", 45L to "PARENT"))
+        assertEquals(201, submit(people = 4, occupations = listOf("TEACHER", "GENERAL", "PARENT")))
+        assertEquals(mapOf(42L to null, 43L to "OTHER", 44L to "TEACHER", 45L to "OTHER"), seatCategories())
+        // Individual cancellation keeps the stored category, so only that category's usage drops.
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 44")
+        val usage =
+            repository
+                .adminSummary(EXPO)
+                .sessions
+                .single()
+                .seatUsage
+        assertEquals(listOf(0L, 2L, 1L), listOf(usage.teacher, usage.other, usage.unknown))
+        assertThrows(Exception::class.java) {
+            jdbc.update("UPDATE tb_preregister_application SET seat_category = 'OTHER' WHERE participant_id = 44")
+        }
+    }
+
+    @Test
+    fun `reservations stored before V31 stay unknown instead of being classified on recovery`() {
+        userStatus.set(503)
+        assertEquals(503, submit(people = 3, occupations = listOf("TEACHER", "GENERAL")))
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET teacher_applicants = NULL, other_applicants = NULL, next_attempt_at = CURRENT_TIMESTAMP",
+        )
+        userStatus.set(201)
+        recovery.recover()
+        assertEquals(mapOf(42L to null, 43L to null, 44L to null), seatCategories())
+    }
+
+    @Test
+    fun `mismatched or unavailable User occupations keep the reserved seats`() {
+        capacity.set(3)
+        detailsStatus.set(503)
+        assertEquals(503, submit(people = 3, occupations = listOf("TEACHER", "GENERAL")))
+        assertEquals(0, count("tb_preregister_application"))
+        assertEquals(409, submit(key = "other", phone = "01099999999"))
+        val retained = reservations.find(EXPO, "request", "")!!
+        assertEquals("RESERVED", retained.state)
+        assertTrue(retained.result != null)
+        val usage =
+            repository
+                .adminSummary(EXPO)
+                .sessions
+                .single()
+                .seatUsage
+        assertEquals(listOf(1L, 1L, 1L), listOf(usage.teacher, usage.other, usage.unknown))
+
+        detailsStatus.set(200)
+        userOccupations.putAll(mapOf(43L to "GENERAL", 44L to "GENERAL"))
+        jdbc.update("UPDATE tb_preregister_reservation SET next_attempt_at = CURRENT_TIMESTAMP")
+        recovery.recover()
+        assertEquals(0, count("tb_preregister_application"))
+        assertEquals(502, reservations.find(EXPO, "request", "")!!.errorStatus)
+        assertEquals(409, submit(key = "other", phone = "01099999999"))
+
+        userOccupations[44L] = "TEACHER"
+        reservations.retryReviewed(reservations.find(EXPO, "request", "")!!)
+        recovery.recover()
+        assertEquals(mapOf(42L to null, 43L to "OTHER", 44L to "TEACHER"), seatCategories())
+    }
 
     @Test
     fun `added companion SMS IDs do not replace the full party ledger and recovery snapshot`() {
@@ -820,6 +1026,12 @@ class PreregisterRegistrationHttpTests {
             java.util.concurrent.atomic
                 .AtomicReference<String?>()
         private val countStatus = AtomicInteger(204)
+        private val detailsStatus = AtomicInteger(200)
+        private val userOccupations = java.util.concurrent.ConcurrentHashMap<Long, String>()
+        private val targetCapacities =
+            java.util.concurrent.atomic
+                .AtomicReference<Pair<Int, Int>?>()
+        private val managedParticipants = CopyOnWriteArrayList<Long>()
         private val expoDayOffset = AtomicInteger(0)
         private val formDayOffset = AtomicInteger(0)
 
@@ -887,6 +1099,34 @@ class PreregisterRegistrationHttpTests {
                                 countStatus.get() to ""
                             }
 
+                            path == "/internal/standard-participants/managed" -> {
+                                val participants =
+                                    managedParticipants.mapIndexed { index, id ->
+                                        mapOf(
+                                            "participantId" to id,
+                                            "name" to "person",
+                                            "occupation" to null,
+                                            "representative" to (index == 0),
+                                        )
+                                    }
+                                200 to
+                                    json.writeValueAsString(
+                                        mapOf("registered" to participants.isNotEmpty(), "participants" to participants),
+                                    )
+                            }
+
+                            path == "/internal/standard-participants/details" -> {
+                                val ids =
+                                    json
+                                        .readTree(
+                                            exchange.requestBody.bufferedReader().readText(),
+                                        ).path("participantIds")
+                                        .toList()
+                                        .map { it.asLong() }
+                                detailsStatus.get() to
+                                    json.writeValueAsString(ids.map { mapOf("participantId" to it, "occupation" to userOccupations[it]) })
+                            }
+
                             path == "/internal/standard-participants" -> {
                                 val request = json.readTree(exchange.requestBody.bufferedReader().readText())
                                 userRequests.add(request)
@@ -920,16 +1160,30 @@ class PreregisterRegistrationHttpTests {
                                 val id = path.substringAfterLast('/').toLong()
                                 200 to
                                     """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"2030-01-01T00:00:00Z","endedAt":"2030-01-01T01:00:00Z","place":"Place","capacity":${capacity.get()},"waitingCapacity":99,"closed":false,"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
+                                        .let { text ->
+                                            targetCapacities.get()?.let { (t, n) ->
+                                                text.dropLast(1) + ""","teacherCapacity":$t,"nonTeacherCapacity":$n}"""
+                                            } ?: text
+                                        }
                             }
 
                             path.startsWith("/internal/forms/") -> {
                                 val now = OffsetDateTime.now().plusDays(formDayOffset.get().toLong())
+                                // Target sessions (#173) need the representative occupation question.
+                                val occupation =
+                                    if (targetCapacities.get() == null) {
+                                        ""
+                                    } else {
+                                        """,{"id":2,"title":"occupation","formType":"SELECT","jsonData":{},"otherJson":null,""" +
+                                            """"dynamicFormType":"OCCUPATION"},{"id":3,"title":"school","formType":"TEXT",""" +
+                                            """"jsonData":{},"otherJson":null,"dynamicFormType":"SCHOOL"}"""
+                                    }
                                 200 to
                                     """{"id":"$EXPO","startDate":"${now.minusDays(
                                         1,
                                     )}","endDate":"${now.plusDays(
                                         1,
-                                    )}","dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":4},"dynamicFormType":"DEFAULT"}]}"""
+                                    )}","dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":4},"dynamicFormType":"DEFAULT"}$occupation]}"""
                             }
 
                             else -> {
