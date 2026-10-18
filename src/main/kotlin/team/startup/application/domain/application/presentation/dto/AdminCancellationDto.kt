@@ -19,3 +19,14 @@ data class AdminCancellationParticipantStatus(
     val traineeLinked: Boolean,
     val linkedTraineeId: Long?,
 )
+
+data class PromoteAdminApplicationCommand(
+    val expoId: UUID,
+    val applicationId: UUID,
+    val authorization: String?,
+)
+
+data class AdminPromotionResult(
+    val applicationId: UUID,
+    val status: String = "CONFIRMED",
+)

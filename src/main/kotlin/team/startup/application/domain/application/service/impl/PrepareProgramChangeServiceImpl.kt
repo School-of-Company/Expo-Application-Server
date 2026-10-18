@@ -53,7 +53,8 @@ class PrepareProgramChangeServiceImpl(
                         !policy.applicationStartedAt.isBefore(policy.applicationEndedAt) ||
                         policy.cancelEndedAt.isBefore(policy.applicationStartedAt) ||
                         policy.promotionEndedAt.isBefore(policy.applicationStartedAt) ||
-                        !policy.channelsValid() || !policy.admissionCapacitiesValid() || policy.guardianPolicy?.valid() == false
+                        !policy.channelsValid() || !policy.admissionCapacitiesValid() || policy.guardianPolicy?.valid() == false ||
+                        !policy.promotionSettingsValid()
                     ) {
                         badRequest()
                     }

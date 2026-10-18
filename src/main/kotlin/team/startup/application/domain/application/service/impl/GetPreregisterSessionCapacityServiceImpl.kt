@@ -7,6 +7,8 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityQuery
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityResponse
+import team.startup.application.domain.application.presentation.dto.PreregisterTargetSeats
+import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.GetPreregisterSessionCapacityService
@@ -16,12 +18,22 @@ class GetPreregisterSessionCapacityServiceImpl(
     private val repository: PreregisterSessionRepository,
     private val ledger: PreregisterSessionLedger,
     private val reservations: PreregisterReservationRepository,
+    private val gateway: RegistrationGateway,
     @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
 ) : GetPreregisterSessionCapacityService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(query: PreregisterSessionCapacityQuery): PreregisterSessionCapacityResponse {
         if (query.sessionId <= 0) badSessionRequest("회차 ID가 올바르지 않습니다.")
         val observation = ledger.observe(query.expoId, query.sessionId)
+        // An expired or invalid session only loses the owner view; the public seats stay readable.
+        val party =
+            query.participantSession?.takeIf { observation?.targeted == true }?.let {
+                try {
+                    gateway.managedParty(query.expoId, it)
+                } catch (_: ParticipantSessionException) {
+                    null
+                }
+            }
         val reads = TransactionTemplate(requireNotNull(ledger.transactions.transactionManager)).apply { isReadOnly = true }
         return requireNotNull(
             reads.execute {
@@ -40,6 +52,35 @@ class GetPreregisterSessionCapacityServiceImpl(
                     }
                 val waitingRemaining = ((waitingCapacity ?: 0) - waiting).coerceAtLeast(0).toInt()
                 val maxWaiting = if (definition.closed || !waitlistIntake) 0 else minOf(waitingRemaining, 5)
+                if (definition.targeted) {
+                    // #173: totals would reveal teacher seats, so only the non-teacher count and teacher availability are public.
+                    val (teacher, other) =
+                        PreregisterSeatCategory.remaining(definition, repository.seatUsage(query.expoId, query.sessionId)).let { (t, o) ->
+                            if (remaining == 0) 0L to 0L else t.coerceIn(0, remaining.toLong()) to o.coerceIn(0, remaining.toLong())
+                        }
+                    val owner =
+                        party?.participants?.map { it.participantId }?.let {
+                            repository.confirmedSeatCategories(query.expoId, query.sessionId, it)
+                        }
+                    return@execute PreregisterSessionCapacityResponse(
+                        query.sessionId,
+                        null,
+                        null,
+                        null,
+                        waiting,
+                        waitingCapacity,
+                        0,
+                        0,
+                        if (waitingCapacity == null) "UNADOPTED" else "ADOPTED",
+                        observation?.waitingCapacity,
+                        PreregisterTargetSeats(
+                            teacher > 0,
+                            other.toInt(),
+                            minOf(other.toInt(), 5),
+                            teacher.toInt().takeIf { owner?.contains(PreregisterSeatCategory.TEACHER) == true },
+                        ),
+                    )
+                }
                 PreregisterSessionCapacityResponse(
                     query.sessionId,
                     remaining,

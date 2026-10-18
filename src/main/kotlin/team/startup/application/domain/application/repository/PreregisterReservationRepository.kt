@@ -24,6 +24,8 @@ data class PreregisterReservation(
     val withdrawn: Boolean = false,
     // #169: 확정된 대표자 일행에 새 동행자만 더하는 예약이면 그 대표자 참가자 ID.
     val companionOf: Long? = null,
+    // (teacher, other) seats reserved from the snapshot (#173); null for reservations stored before V31.
+    val categories: Pair<Int, Int>? = null,
 )
 
 @Repository
@@ -100,6 +102,7 @@ class PreregisterReservationRepository(
             rs.getObject("queue_seq", Long::class.javaObjectType),
             rs.getObject("withdrawn_at") != null,
             rs.getObject("companion_representative_id", Long::class.javaObjectType),
+            rs.getObject("teacher_applicants", Int::class.javaObjectType)?.let { it to rs.getInt("other_applicants") },
         )
 
     fun insertCompanions(
@@ -111,12 +114,15 @@ class PreregisterReservationRepository(
         applicants: Int,
         representativeId: Long,
         waiting: Boolean = false,
+        // (teacher, other) seats of the added companions (#173).
+        categories: Pair<Int, Int>? = null,
     ) {
         // 대기 추가는 일반 대기 일행과 같은 FIFO 순번을 받아 같은 승급·참여 제안 경로를 탄다.
         jdbc.update(
             "INSERT INTO tb_preregister_reservation " +
-                "(expo_id, request_id, session_id, command, user_request, applicants, companion_representative_id, state, queue_seq) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, " + (if (waiting) "nextval('seq_preregister_waitlist'))" else "NULL)"),
+                "(expo_id, request_id, session_id, command, user_request, applicants, companion_representative_id, " +
+                "teacher_applicants, other_applicants, state, queue_seq) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " + (if (waiting) "nextval('seq_preregister_waitlist'))" else "NULL)"),
             expoId,
             requestId,
             sessionId,
@@ -124,6 +130,8 @@ class PreregisterReservationRepository(
             mapper.writeValueAsString(request),
             applicants,
             representativeId,
+            categories?.first,
+            categories?.second,
             if (waiting) "WAITING" else "RESERVED",
         )
     }
@@ -163,17 +171,21 @@ class PreregisterReservationRepository(
         command: String,
         request: ParticipantRegistration,
         applicants: Int,
+        categories: Pair<Int, Int>? = null,
     ) {
         jdbc.update(
             "INSERT INTO tb_preregister_reservation " +
-                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
-                "VALUES (?, ?, ?, ?, ?, ?, 'WAITING', nextval('seq_preregister_waitlist'))",
+                "(expo_id, request_id, session_id, command, user_request, applicants, teacher_applicants, other_applicants, " +
+                "state, queue_seq) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'WAITING', nextval('seq_preregister_waitlist'))",
             expoId,
             requestId,
             sessionId,
             command,
             mapper.writeValueAsString(request),
             applicants,
+            categories?.first,
+            categories?.second,
         )
     }
 
@@ -296,15 +308,21 @@ class PreregisterReservationRepository(
         command: String,
         request: ParticipantRegistration,
         applicants: Int,
+        // (teacher, other) seats from the snapshot; the remainder and null are unknown (#173).
+        categories: Pair<Int, Int>? = null,
     ) {
         jdbc.update(
-            "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, teacher_applicants, other_applicants) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             expoId,
             requestId,
             sessionId,
             command,
             mapper.writeValueAsString(request),
             applicants,
+            categories?.first,
+            categories?.second,
         )
     }
 

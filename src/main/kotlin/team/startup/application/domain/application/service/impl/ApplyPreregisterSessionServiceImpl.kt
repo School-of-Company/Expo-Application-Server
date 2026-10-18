@@ -5,6 +5,7 @@ import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import team.startup.application.domain.application.presentation.dto.ApplyPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
+import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.ApplyPreregisterSessionService
 import tools.jackson.databind.ObjectMapper
@@ -47,6 +48,8 @@ class ApplyPreregisterSessionServiceImpl(
                     conflict("다른 회차 또는 대표자의 활성 신청이 있습니다.")
                 }
                 val newCount = existing.values.count { it == null }
+                // This trusted-ID path carries no occupations, so it cannot take seats from a target session (#173).
+                if (newCount > 0 && definition.targeted) conflict("대상별 정원 회차는 사전등록 신청으로만 좌석을 확보합니다.")
                 if (newCount.toLong() > definition.capacity.toLong() - repository.occupied(command.expoId, command.sessionId)) {
                     conflict("일행 전원을 수용할 수 없습니다.")
                 }

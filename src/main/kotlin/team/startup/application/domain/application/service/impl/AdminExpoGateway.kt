@@ -78,13 +78,26 @@ class AdminExpoGateway(
     fun requireCancelAccess(
         expoId: UUID,
         authorization: String?,
+    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "cancel", "APPLICATION_CANCEL")
+
+    // Expo #143: a separate per-expo grant; APPLICATION_READ or APPLICATION_CANCEL never implies it (#172).
+    fun requirePromoteAccess(
+        expoId: UUID,
+        authorization: String?,
+    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "promote", "APPLICATION_PROMOTE")
+
+    private fun requireExpoAdmin(
+        expoId: UUID,
+        authorization: String?,
+        action: String,
+        permission: String,
     ): AdminExpoAccess {
         if (authorization == null || !authorization.startsWith("Bearer ") || authorization.removePrefix("Bearer ").isBlank()) {
             throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.")
         }
         val tree =
             http.read(
-                "/internal/expo/$expoId/admin-application-cancel-access",
+                "/internal/expo/$expoId/admin-application-$action-access",
                 authorization = authorization,
                 propagatedStatuses = setOf(401, 403, 404),
             )
@@ -92,8 +105,8 @@ class AdminExpoGateway(
             require(tree["adminId"]?.isIntegralNumber == true && tree["adminId"].canConvertToLong())
             mapper.treeToValue(tree, AdminExpoAccess::class.java).also {
                 require(
-                    it.expoId == expoId && it.adminId > 0 && it.permission == "APPLICATION_CANCEL" &&
-                        it.policyVersion == "EXPO_ADMIN_APPLICATION_CANCEL_V1" && it.scope == "EXPO_ADMIN",
+                    it.expoId == expoId && it.adminId > 0 && it.permission == permission &&
+                        it.policyVersion == "EXPO_ADMIN_${permission}_V1" && it.scope == "EXPO_ADMIN",
                 )
             }
         }

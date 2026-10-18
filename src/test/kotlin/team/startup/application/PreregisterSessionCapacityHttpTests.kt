@@ -1,5 +1,6 @@
 package team.startup.application
 
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.verify
@@ -51,6 +52,19 @@ class PreregisterSessionCapacityHttpTests {
             .andExpect(content().json("""{"sessionId":7,"remaining":1,"maxApplicants":1}"""))
             .andExpect(header().string("Cache-Control", "no-store"))
         verify(service).execute(query)
+    }
+
+    @Test
+    fun `참가자 세션 쿠키가 있으면 소유자 판정용으로만 서비스에 전달한다`() {
+        val owned = PreregisterSessionCapacityQuery(expoId, 7, "owner-session")
+        `when`(service.execute(owned)).thenReturn(PreregisterSessionCapacityResponse(7, null, null, null))
+
+        mvc
+            .perform(get(path).cookie(jakarta.servlet.http.Cookie("PARTICIPANT_SESSION", "owner-session")))
+            .andExpect(status().isOk)
+            .andExpect(content().json("""{"sessionId":7,"remaining":null,"maxApplicants":null}"""))
+        verify(service).execute(owned)
+        assertFalse(owned.toString().contains("owner-session"))
     }
 
     @Test

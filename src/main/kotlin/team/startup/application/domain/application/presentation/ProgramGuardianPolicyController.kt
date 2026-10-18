@@ -39,5 +39,13 @@ class ProgramGuardianPolicyController(
         return supported()
     }
 
-    private fun supported(): ResponseEntity<Void> = ResponseEntity.noContent().header("X-Program-Guardian-Policy-Version", "1").build()
+    private fun supported(): ResponseEntity<Void> =
+        ResponseEntity
+            .noContent()
+            .header("X-Program-Guardian-Policy-Version", "1")
+            .header(PROMOTION_POLICY_HEADER, "1")
+            .build()
 }
+
+// Expo #143 saves auto-promotion off/end settings only after this signal; older Applications would ignore them (#172).
+internal const val PROMOTION_POLICY_HEADER = "X-Program-Promotion-Policy-Version"

@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import java.time.Clock
@@ -35,6 +36,8 @@ data class CompanionAvailability(
     val seats: Int = 0,
     /** 자리가 모자랄 때 대기로 받을 수 있는 인원(#144 승급 대상). 대기 접수가 꺼져 있거나 회차가 시작됐으면 0이다. */
     val waitRoom: Int = 0,
+    /** 판정에 쓴 회차 정의. 대상별 정원 회차(#173)는 추가할 동행자의 구분별로 다시 검사한다. */
+    val definition: PreregisterSessionDefinition? = null,
 ) {
     /** [count]명을 지금 확정할지(false) 대기로 받을지(true). 둘 다 안 되면 null이다. */
     fun waits(count: Int): Boolean? =
@@ -139,8 +142,9 @@ class PreregisterCompanionPolicy(
                         )
                 ).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
             }
+        // 대상별 정원 회차(#173)는 대기를 쓰지 않는다.
         val waitRoom =
-            if (waitlistIntake && waitlist.accepts(definition)) {
+            if (waitlistIntake && waitlist.accepts(definition) && !definition.targeted) {
                 ((definition.waitingCapacity ?: 0).toLong() - queued).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
             } else {
                 0
@@ -162,6 +166,7 @@ class PreregisterCompanionPolicy(
             companionTitle = title,
             seats = seats,
             waitRoom = waitRoom,
+            definition = definition,
         )
     }
 

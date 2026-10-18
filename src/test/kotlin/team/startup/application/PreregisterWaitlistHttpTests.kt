@@ -579,7 +579,7 @@ class PreregisterWaitlistHttpTests {
                             }
 
                             else -> {
-                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
+                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(1)
                                 200 to
                                     """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                             }

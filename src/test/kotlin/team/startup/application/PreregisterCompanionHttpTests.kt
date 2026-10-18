@@ -76,6 +76,26 @@ class PreregisterCompanionHttpTests {
         closed = false
         startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
         userReject.set(0)
+        target.set(null)
+    }
+
+    @Test
+    fun `target sessions add companions only into their own category seats and never wait`() {
+        target.set(1 to 2)
+        assertEquals(201, register(PHONE, "first").status)
+        val applicationId = representativeItem()["applicationId"].asString()
+        // The non-teacher seats are full; the free teacher seat is not lent and no waiting addition is made.
+        val rejected = add(applicationId, companion("second"))
+        assertEquals(409, rejected.status, rejected.contentAsString)
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE state = 'WAITING'", Int::class.java))
+        val response = add(applicationId, companion("teacher", "TEACHER"))
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(
+            listOf("42:OTHER", "43:OTHER", "44:TEACHER"),
+            jdbc.query("SELECT participant_id, seat_category FROM tb_preregister_application ORDER BY id") { rs, _ ->
+                "${rs.getLong(1)}:${rs.getString(2)}"
+            },
+        )
     }
 
     @Test
@@ -346,7 +366,11 @@ class PreregisterCompanionHttpTests {
                     "name" to "person",
                     "phoneNumber" to phone,
                     "personalInformationStatus" to true,
-                    "informationJson" to mapper.writeValueAsString(mapOf("companions" to companions)),
+                    "informationJson" to
+                        mapper.writeValueAsString(
+                            // Target sessions (#173) need the representative occupation.
+                            mapOf("companions" to companions, "occupation" to "GENERAL"),
+                        ),
                     "sessionId" to 1,
                 ),
             )
@@ -396,7 +420,11 @@ class PreregisterCompanionHttpTests {
         )
     }
 
-    private fun companion(name: String) = mapOf("name" to name, "occupation" to "GENERAL", "region" to "OTHER")
+    private fun companion(
+        name: String,
+        occupation: String = "GENERAL",
+    ) = mapOf("name" to name, "occupation" to occupation, "region" to "OTHER") +
+        if (occupation == "TEACHER") mapOf("school" to "school") else emptyMap()
 
     companion object {
         private val EXPO = UUID.fromString("00000000-0000-0000-0000-000000000168")
@@ -409,6 +437,9 @@ class PreregisterCompanionHttpTests {
         private val startedAt = AtomicReference(Instant.parse("2030-01-01T00:00:00Z"))
         private val userReject = AtomicInteger(0)
         private val nextId = AtomicLong(42)
+
+        // #173 (teacher, nonTeacher) capacities; the capacity field must hold their sum.
+        private val target = AtomicReference<Pair<Int, Int>?>()
 
         @Volatile private var closed = false
         private val sessions = ConcurrentHashMap<String, String>()
@@ -424,7 +455,8 @@ class PreregisterCompanionHttpTests {
         private fun definition(id: Long) =
             """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"${startedAt.get()}","endedAt":"2030-01-01T01:00:00Z",""" +
                 """"place":"Place","capacity":${capacity.get()},"waitingCapacity":${waitingCapacity.get()},"closed":$closed,""" +
-                """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
+                """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"""" +
+                (target.get()?.let { (t, n) -> ""","teacherCapacity":$t,"nonTeacherCapacity":$n""" } ?: "") + "}"
 
         // User의 재등록 규칙: 같은 번호면 새 동행자만 만들어 participantIds로, 일행 전체를 groupParticipantIds로 준다.
         @Synchronized
@@ -496,11 +528,20 @@ class PreregisterCompanionHttpTests {
                                 200 to
                                     """{"id":"$EXPO","startDate":"${today.minusDays(1)}","endDate":"${today.plusDays(1)}",""" +
                                     """"dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},""" +
-                                    """"otherJson":{"maxSelection":${maxSelection.get()}},"dynamicFormType":"DEFAULT"}]}"""
+                                    """"otherJson":{"maxSelection":${maxSelection.get()}},"dynamicFormType":"DEFAULT"}""" +
+                                    // Target sessions (#173) need the representative occupation question.
+                                    (
+                                        if (target.get() == null) {
+                                            ""
+                                        } else {
+                                            """,{"id":2,"title":"occupation","formType":"SELECT","jsonData":{},"otherJson":null,""" +
+                                                """"dynamicFormType":"OCCUPATION"}"""
+                                        }
+                                    ) + "]}"
                             }
 
                             else -> {
-                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
+                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(1)
                                 200 to
                                     """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                             }

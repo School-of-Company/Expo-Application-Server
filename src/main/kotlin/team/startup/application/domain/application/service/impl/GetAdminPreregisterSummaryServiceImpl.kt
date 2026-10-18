@@ -54,26 +54,6 @@ class GetAdminPreregisterSummaryServiceImpl(
         )
     }
 
-    // Mirrors RegistrationWorkflow: the representative plus distinct (name, occupation, school) companions form `applicants`.
-    private fun partyOccupations(registration: ParticipantRegistration): List<AdminOccupation?> {
-        val answers = mapper.readTree(registration.informationJson)
-        val companions =
-            registration.questions
-                .orEmpty()
-                .filter { it.formType == "COMPANION" }
-                .flatMap { answers.get(it.title)?.toList().orEmpty() }
-                .map {
-                    listOf(
-                        it.path("name").asString().trim(),
-                        it.path("occupation").asString(),
-                        it
-                            .path("school")
-                            .asString()
-                            .trim()
-                            .takeIf(String::isNotEmpty),
-                    )
-                }.toSet()
-        val occupations = listOf(registration.occupation) + companions.map { it[1] }
-        return occupations.map { value -> AdminOccupation.entries.find { it.name == value } }
-    }
+    private fun partyOccupations(registration: ParticipantRegistration): List<AdminOccupation?> =
+        PreregisterSeatCategory.partyOccupations(registration, mapper).map { value -> AdminOccupation.entries.find { it.name == value } }
 }
