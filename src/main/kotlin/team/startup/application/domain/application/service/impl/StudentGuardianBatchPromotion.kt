@@ -39,9 +39,12 @@ class StudentGuardianBatchPromotion(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
+    // offerId is null for an admin's manual confirmation (#172), which holds no offer seats.
     private class Acceptance(
-        val offerId: UUID,
-        val actorParticipantId: Long,
+        val offerId: UUID?,
+        val actorType: ApplicationActorType,
+        val actorId: Long?,
+        val actorParticipantId: Long?,
     ) {
         var reason: String? = null
     }
@@ -58,8 +61,20 @@ class StudentGuardianBatchPromotion(
         head: ProgramWaitlistRepository.Entry,
         offerId: UUID,
         actorParticipantId: Long,
+    ): String? = confirm(definition, head, Acceptance(offerId, ApplicationActorType.USER, null, actorParticipantId))
+
+    // #172: the whole batch is confirmed manually by an admin or stays waiting; never a partial batch.
+    fun confirmManually(
+        definition: ProgramSessionDefinition,
+        head: ProgramWaitlistRepository.Entry,
+        adminId: Long,
+    ): String? = confirm(definition, head, Acceptance(null, ApplicationActorType.ADMIN, adminId, null))
+
+    private fun confirm(
+        definition: ProgramSessionDefinition,
+        head: ProgramWaitlistRepository.Entry,
+        acceptance: Acceptance,
     ): String? {
-        val acceptance = Acceptance(offerId, actorParticipantId)
         val result = run(definition, head, acceptance) ?: return "NOT_A_BATCH"
         return if (result > 0) null else acceptance.reason ?: "NOT_PROMOTABLE"
     }
@@ -179,9 +194,15 @@ class StudentGuardianBatchPromotion(
         } catch (_: ProgramApplicationConflictException) {
             return blocked("CONFLICT")
         }
-        if (!clock.instant().isBefore(policy.applicationEndedAt) || !clock.instant().isBefore(policy.promotionEndedAt)) {
-            return blocked("PROMOTION_ENDED")
-        }
+        val now = clock.instant()
+        // Offer acceptance keeps its own hard cutoff; automatic and manual promotion follow the stored policy (#172).
+        val ended =
+            when {
+                acceptance == null -> "PROMOTION_ENDED".takeUnless { policy.autoPromotionOpen(now) }
+                acceptance.offerId == null -> policy.manualPromotionBlock(now)
+                else -> "PROMOTION_ENDED".takeUnless { now.isBefore(policy.applicationEndedAt) && now.isBefore(policy.promotionEndedAt) }
+            }
+        if (ended != null) return blocked(ended)
         members.forEach { entry ->
             val trainee = trainees[entry.participantId]
             if (trainee == null) {
@@ -197,9 +218,10 @@ class StudentGuardianBatchPromotion(
                 applications.transition(
                     entry.id,
                     "CONFIRMED",
-                    ApplicationActorType.USER,
+                    acceptance.actorType,
                     trainee,
-                    actorParticipantId = acceptance.actorParticipantId,
+                    acceptance.actorId,
+                    acceptance.actorParticipantId,
                 )
             }
         }

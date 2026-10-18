@@ -64,11 +64,7 @@ class ProgramWaitlist(
     ) {
         val policy = definition.policy ?: return
         offers.capProgram(definition, minOf(policy.applicationEndedAt, policy.promotionEndedAt))
-        if (policy.closed || now.isBefore(policy.applicationStartedAt) || !now.isBefore(policy.applicationEndedAt) ||
-            !now.isBefore(policy.promotionEndedAt)
-        ) {
-            return
-        }
+        if (!policy.autoPromotionOpen(now)) return
         if (isDeleted(definition)) return
         if (offerPolicy.offerMode(offerPolicy.programStart(definition.startedAt), now)) return offer(definition, now)
         // shortcut: 승급당 최대 10명으로 원격 호출 잠금을 제한한다. 일괄 연결 API가 제공되면 교체한다.
@@ -102,7 +98,7 @@ class ProgramWaitlist(
                         null
                     }
                 val promotionTime = now()
-                if (!promotionTime.isBefore(policy.applicationEndedAt) || !promotionTime.isBefore(policy.promotionEndedAt)) return
+                if (!policy.autoPromotionOpen(promotionTime)) return
                 if (traineeId != null) {
                     operations.lockVersion(traineeId)
                     trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
@@ -175,10 +171,31 @@ class ProgramWaitlist(
         entry: ProgramWaitlistRepository.Entry,
         offerId: UUID,
         actorParticipantId: Long,
+    ): String? = confirm(definition, entry, offerId, ApplicationActorType.USER, null, actorParticipantId)
+
+    // #172: an admin confirms an operator-selected waiting row after automatic promotion stopped, with the same checks.
+    // Seats held by other active offers stay held, and a failed check keeps the row waiting.
+    fun confirmManually(
+        definition: ProgramSessionDefinition,
+        entry: ProgramWaitlistRepository.Entry,
+        adminId: Long,
+    ): String? = confirm(definition, entry, null, ApplicationActorType.ADMIN, adminId, null)
+
+    private fun confirm(
+        definition: ProgramSessionDefinition,
+        entry: ProgramWaitlistRepository.Entry,
+        offerId: UUID?,
+        actorType: ApplicationActorType,
+        actorId: Long?,
+        actorParticipantId: Long?,
     ): String? {
         val policy = requireNotNull(definition.policy)
         val now = now()
-        if (policy.closed || !now.isBefore(policy.applicationEndedAt) || !now.isBefore(policy.promotionEndedAt)) return "PROMOTION_ENDED"
+        if (offerId == null) {
+            policy.manualPromotionBlock(now)?.let { return it }
+        } else if (policy.closed || !now.isBefore(policy.applicationEndedAt) || !now.isBefore(policy.promotionEndedAt)) {
+            return "PROMOTION_ENDED"
+        }
         if (isDeleted(definition)) return "PROGRAM_DELETED"
         if (!repository.confirmedPreregister(entry)) return "PREREGISTRATION_NOT_CONFIRMED"
         if (free(definition, repository.channel(entry.id), offerId) < 1) return "CAPACITY_CHANGED"
@@ -205,6 +222,8 @@ class ProgramWaitlist(
             } else {
                 null
             }
+        // User/Expo calls above can cross the final deadline; a manual confirmation never lands after it.
+        if (offerId == null) policy.manualPromotionBlock(now())?.let { return it }
         if (traineeId != null) {
             operations.lockVersion(traineeId)
             trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
@@ -212,7 +231,7 @@ class ProgramWaitlist(
         } else {
             standards.saveAndFlush(StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id))
         }
-        repository.transition(entry.id, "CONFIRMED", ApplicationActorType.USER, traineeId, actorParticipantId = actorParticipantId)
+        repository.transition(entry.id, "CONFIRMED", actorType, traineeId, actorId, actorParticipantId)
         return null
     }
 
