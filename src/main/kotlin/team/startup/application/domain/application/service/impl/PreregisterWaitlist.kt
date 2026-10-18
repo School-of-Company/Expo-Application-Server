@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.PromotionOfferRepository
@@ -80,6 +81,8 @@ class PreregisterWaitlist(
             ledger.lock(expoId)
             if (repository.deleted(expoId, sessionId) || repository.pending(expoId, sessionId) != null) return@executeWithoutResult
             val definition = ledger.current(expoId, sessionId, observation)
+            // ponytail: target sessions (#173) take no waiting party, so a single-capacity promotion can never apply to them.
+            if (definition.targeted) return@executeWithoutResult
             offers.capSession(expoId, sessionId, minOf(applicationEndedAt, definition.startedAt))
             val now = clock.instant()
             if (definition.closed || !now.isBefore(applicationEndedAt) || !now.isBefore(definition.startedAt)) {

@@ -3,6 +3,7 @@ package team.startup.application.domain.application.repository
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
+import team.startup.application.domain.application.presentation.dto.AdminPreregisterSeatUsage
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSessionSummary
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSummary
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
@@ -101,6 +102,7 @@ class PreregisterSessionRepository(
                 expoId,
                 expoId,
             )
+        val usage = seatUsages(expoId)
         return AdminPreregisterSummary(
             expoId,
             (totals["confirmed"] as Number).toLong(),
@@ -108,9 +110,56 @@ class PreregisterSessionRepository(
             (reservations["waiting"] as Number).toLong(),
             (reservations["requests"] as Number).toLong(),
             (reservations["applicants"] as Number).toLong(),
-            sessions,
+            sessions.map { it.copy(seatUsage = usage[it.sessionId] ?: AdminPreregisterSeatUsage(0, 0, 0)) },
         )
     }
+
+    fun confirmedSeatCategories(
+        expoId: UUID,
+        sessionId: Long,
+        participantIds: List<Long>,
+    ): Set<String> =
+        if (participantIds.isEmpty()) {
+            emptySet()
+        } else {
+            namedJdbc
+                .queryForList(
+                    "SELECT DISTINCT seat_category FROM tb_preregister_application WHERE expo_id = :expoId AND session_id = :sessionId " +
+                        "AND participant_id IN (:ids) AND status = 'CONFIRMED' AND seat_category IS NOT NULL",
+                    mapOf("expoId" to expoId, "sessionId" to sessionId, "ids" to participantIds),
+                    String::class.java,
+                ).filterNotNull()
+                .toSet()
+        }
+
+    fun seatUsage(
+        expoId: UUID,
+        sessionId: Long,
+    ): AdminPreregisterSeatUsage = seatUsages(expoId, sessionId)[sessionId] ?: AdminPreregisterSeatUsage(0, 0, 0)
+
+    // Same seats as occupied(): confirmed rows, RESERVED parties and offers held for WAITING parties (#173).
+    private fun seatUsages(
+        expoId: UUID,
+        sessionId: Long? = null,
+    ): Map<Long, AdminPreregisterSeatUsage> =
+        jdbc
+            .query(
+                "SELECT session_id, coalesce(sum(teacher), 0), coalesce(sum(other), 0), coalesce(sum(unknown), 0) FROM (" +
+                    "SELECT session_id, count(*) FILTER (WHERE seat_category = 'TEACHER') AS teacher, " +
+                    "count(*) FILTER (WHERE seat_category = 'OTHER') AS other, count(*) FILTER (WHERE seat_category IS NULL) AS unknown " +
+                    "FROM tb_preregister_application WHERE expo_id = ? AND status = 'CONFIRMED' GROUP BY session_id " +
+                    "UNION ALL SELECT r.session_id, coalesce(r.teacher_applicants, 0), coalesce(r.other_applicants, 0), " +
+                    "r.applicants - coalesce(r.teacher_applicants, 0) - coalesce(r.other_applicants, 0) " +
+                    "FROM tb_preregister_reservation r WHERE r.expo_id = ? AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND " +
+                    "EXISTS (SELECT 1 FROM tb_promotion_offer o WHERE o.expo_id = r.expo_id AND o.request_id = r.request_id " +
+                    "AND o.state IN ${PromotionOfferRepository.ACTIVE})))) u " +
+                    "WHERE CAST(? AS bigint) IS NULL OR session_id = ? GROUP BY session_id",
+                { rs, _ -> rs.getLong(1) to AdminPreregisterSeatUsage(rs.getLong(2), rs.getLong(3), rs.getLong(4)) },
+                expoId,
+                expoId,
+                sessionId,
+                sessionId,
+            ).toMap()
 
     fun confirmedParticipantIds(expoId: UUID): List<Long> =
         jdbc.query(
@@ -303,13 +352,14 @@ class PreregisterSessionRepository(
         reservationRequestId: String? = null,
         actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
         actorParticipantId: Long? = null,
+        seatCategory: String? = null,
     ): PreregisterApplicationReceipt {
         val id =
             requireNotNull(
                 jdbc.queryForObject(
                     "INSERT INTO tb_preregister_application " +
-                        "(expo_id, session_id, representative_id, participant_id, status, reservation_request_id) " +
-                        "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+                        "(expo_id, session_id, representative_id, participant_id, status, reservation_request_id, seat_category) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
                     Long::class.java,
                     expoId,
                     sessionId,
@@ -317,6 +367,7 @@ class PreregisterSessionRepository(
                     participantId,
                     status,
                     reservationRequestId,
+                    seatCategory,
                 ),
             )
         transition(id, actorType, actorParticipantId)

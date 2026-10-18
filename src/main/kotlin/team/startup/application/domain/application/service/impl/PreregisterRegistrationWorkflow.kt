@@ -9,6 +9,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
+import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterReservation
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
@@ -117,10 +118,23 @@ class PreregisterRegistrationWorkflow(
                     val snapshot = request.copy(requestId = UUID.randomUUID().toString())
                     val queued = reservations.waitingApplicants(expoId, sessionId)
                     // New parties never overtake a waiting party, even when confirmed seats are free (#99 P3).
-                    if (queued == 0L && definition.capacity.toLong() - repository.occupied(expoId, sessionId) >= applicants) {
-                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants)
+                    val categories = PreregisterSeatCategory.counts(snapshot, mapper)
+                    if (definition.targeted) {
+                        if (categories.first + categories.second != applicants) {
+                            badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.")
+                        }
+                        val (teacher, other) = PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, sessionId))
+                        // Target sessions take no waiting party; the whole party fits both categories or nothing is reserved (#173).
+                        if (queued > 0 || teacher < categories.first || other < categories.second ||
+                            definition.capacity.toLong() - repository.occupied(expoId, sessionId) < applicants
+                        ) {
+                            conflict("일행 전원을 수용할 수 없습니다.")
+                        }
+                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
+                    } else if (queued == 0L && definition.capacity.toLong() - repository.occupied(expoId, sessionId) >= applicants) {
+                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
                     } else if (waitlistIntake && waitlist.accepts(definition) && (definition.waitingCapacity ?: 0) - queued >= applicants) {
-                        reservations.insertWaiting(expoId, key, sessionId, fingerprint, snapshot, applicants)
+                        reservations.insertWaiting(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
                     } else {
                         conflict("일행 전원을 수용할 수 없습니다.")
                     }
@@ -159,6 +173,16 @@ class PreregisterRegistrationWorkflow(
                     val availability = companions.evaluate(expoId, party, applicationId, observation, persist = true).require()
                     if (added.size > availability.remaining) conflict(availability.message)
                     val waits = availability.waits(added.size) ?: conflict("일행 전원을 수용할 수 없습니다.")
+                    val categories =
+                        added.map { PreregisterSeatCategory.of(it.path("occupation").asString()) }.let { seats ->
+                            seats.count { it == PreregisterSeatCategory.TEACHER } to seats.count { it == PreregisterSeatCategory.OTHER }
+                        }
+                    // #173: target sessions take no waiting addition, and each added category must fit its own seats.
+                    availability.definition?.takeIf { it.targeted }?.let { definition ->
+                        val (teacher, other) =
+                            PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, availability.sessionId))
+                        if (waits || teacher < categories.first || other < categories.second) conflict("일행 전원을 수용할 수 없습니다.")
+                    }
                     // 이미 일행에 있는 사람을 다시 보내면 User가 새로 만들지 않고 QR만 다시 보낸다. 미리 거절한다.
                     val known = party.participants.map { it.name.trim() to it.occupation }.toSet()
                     if (added.any { (it.path("name").asString().trim() to it.path("occupation").asString()) in known }) {
@@ -184,6 +208,7 @@ class PreregisterRegistrationWorkflow(
                         added.size,
                         availability.representativeId,
                         waits,
+                        categories,
                     )
                     key
                 },
@@ -290,6 +315,21 @@ class PreregisterRegistrationWorkflow(
                 if (ex is ParticipantSaveRejectedException) waitlist.promoteQuietly(expoId, reservation.sessionId)
                 throw ex
             }
+        val categories =
+            try {
+                seatCategories(expoId, reservation, result)
+            } catch (ex: ResponseStatusException) {
+                // The User save already happened; keep its result and the seats until the category lookup succeeds or is reviewed.
+                ledger.transactions.executeWithoutResult {
+                    repository.lock(expoId)
+                    val current = reservations.find(expoId, requestId, "") ?: return@executeWithoutResult
+                    if (current.state == "RESERVED" && current.errorStatus == null) {
+                        reservations.result(current, result)
+                        if (ex is ParticipantIdsMismatchException) reservations.needsReview(current, 502) else reservations.retry(current)
+                    }
+                }
+                throw ex
+            }
         val failure =
             ledger.transactions.execute {
                 // Serialize completion, cancellation and purge after the HTTP call.
@@ -307,7 +347,7 @@ class PreregisterRegistrationWorkflow(
                     )
                 }
                 reservations.result(reserved, result)
-                reserved.companionOf?.let { return@execute completeCompanions(expoId, reserved, result, it) }
+                reserved.companionOf?.let { return@execute completeCompanions(expoId, reserved, result, it, categories) }
                 val ids = result.groupParticipantIds
                 if (repository.expoDeleted(expoId)) {
                     ids.forEach { attendance.cancelled(expoId, it) }
@@ -331,7 +371,15 @@ class PreregisterRegistrationWorkflow(
                     )
                 }
                 ids.forEach {
-                    repository.insert(expoId, reserved.sessionId, result.participantId, it, "CONFIRMED", reserved.requestId)
+                    repository.insert(
+                        expoId,
+                        reserved.sessionId,
+                        result.participantId,
+                        it,
+                        "CONFIRMED",
+                        reserved.requestId,
+                        seatCategory = categories[it],
+                    )
                     attendance.confirmed(expoId, it, reserved.sessionId)
                 }
                 reservations.enqueueCounts(expoId, ids)
@@ -355,6 +403,7 @@ class PreregisterRegistrationWorkflow(
         reserved: PreregisterReservation,
         result: ParticipantRegistrationResult,
         representativeId: Long,
+        categories: Map<Long, String?>,
     ): ResponseStatusException? {
         val ids = result.participantIds
         if (repository.expoDeleted(expoId)) {
@@ -385,12 +434,47 @@ class PreregisterRegistrationWorkflow(
                 reserved.requestId,
                 ApplicationActorType.USER,
                 representativeId,
+                categories[it],
             )
             attendance.confirmed(expoId, it, reserved.sessionId)
         }
         reservations.enqueueCounts(expoId, ids)
         reservations.finish(reserved)
         return null
+    }
+
+    // #173: the representative keeps its submitted answer. User returns companion IDs without their answers, so a party
+    // with mixed companion categories is read back from User and must match the reserved categories exactly.
+    // A companion addition (#169) only creates the new companions in participantIds; the representative already has a row.
+    private fun seatCategories(
+        expoId: UUID,
+        reservation: PreregisterReservation,
+        result: ParticipantRegistrationResult,
+    ): Map<Long, String?> {
+        val addition = reservation.companionOf != null
+        val ids = if (addition) result.participantIds else result.groupParticipantIds
+        // Malformed results and deleted expos are handled by the completion step; reservations from before V31 stay unknown.
+        if (reservation.categories == null || repository.expoDeleted(expoId) ||
+            ids.size != reservation.applicants || (result.participantId in ids) == addition ||
+            ids.distinct().size != ids.size
+        ) {
+            return emptyMap()
+        }
+        val occupations = PreregisterSeatCategory.partyOccupations(reservation.userRequest, mapper)
+        val expected = occupations.drop(1).map(PreregisterSeatCategory::of)
+        val companions = ids - result.participantId
+        val actual =
+            if (expected.distinct().size <= 1) {
+                companions.associateWith { expected.firstOrNull() }
+            } else {
+                gateway
+                    .participantOccupations(expoId.toString(), companions.toSet())
+                    .mapValues { PreregisterSeatCategory.of(it.value) }
+            }
+        if (actual.values.groupingBy { it }.eachCount() != expected.groupingBy { it }.eachCount()) {
+            throw ParticipantIdsMismatchException()
+        }
+        return if (addition) actual else actual + (result.participantId to PreregisterSeatCategory.of(occupations.first()))
     }
 }
 
