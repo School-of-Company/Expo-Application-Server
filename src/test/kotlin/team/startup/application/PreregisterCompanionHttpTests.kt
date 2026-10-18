@@ -1,0 +1,450 @@
+package team.startup.application
+
+import com.sun.net.httpserver.HttpServer
+import jakarta.servlet.http.Cookie
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.http.MediaType
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.mock.web.MockHttpServletResponse
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
+import org.springframework.test.context.DynamicPropertyRegistry
+import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.postgresql.PostgreSQLContainer
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
+import java.net.InetSocketAddress
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+@SpringBootTest(
+    properties = [
+        "eureka.client.enabled=false", "application.registration.enabled=true", "application.attendance.enabled=true",
+        "application.registration.waitlist-intake-enabled=true", "application.registration.recovery-delay-ms=3600000",
+        "application.registration.waitlist-promotion-delay-ms=3600000", "application.attendance.poll-delay-ms=3600000",
+    ],
+)
+@AutoConfigureMockMvc
+@Testcontainers
+class PreregisterCompanionHttpTests {
+    @Autowired private lateinit var mvc: MockMvc
+
+    @Autowired private lateinit var mapper: ObjectMapper
+
+    @Autowired private lateinit var jdbc: JdbcTemplate
+
+    @BeforeEach
+    fun reset() {
+        jdbc.execute(
+            "TRUNCATE tb_promotion_offer, tb_preregister_reservation, tb_preregister_count_outbox, tb_session_attendance_outbox, " +
+                "tb_preregister_transition, tb_preregister_request, tb_preregister_application, tb_preregister_session_change, " +
+                "tb_preregister_session_state, tb_preregister_deleted_expo RESTART IDENTITY CASCADE",
+        )
+        parties.clear()
+        smsTries.clear()
+        userRequests.clear()
+        nextId.set(42)
+        capacity.set(3)
+        maxSelection.set(4)
+        closed = false
+        startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
+        userReject.set(0)
+    }
+
+    @Test
+    fun `representative adds a companion within free seats and the new companion is confirmed and texted to the representative`() {
+        assertEquals(201, register(PHONE, "first").status)
+        val representative = representativeItem()
+        assertTrue(representative["companionAddable"].asBoolean(), representative.toString())
+        assertEquals(1, representative["remainingCompanionSlots"].asInt())
+        assertEquals("", representative["companionAddBlockedReason"].asString())
+        val companionItem = items().single { it["participantId"].asLong() == 43L }
+        assertFalse(companionItem["companionAddable"].asBoolean())
+        assertEquals("NOT_REPRESENTATIVE_PREREGISTRATION", companionItem["companionAddBlockedReason"].asString())
+
+        val response = add(representative["applicationId"].asString(), companion("second"))
+        assertEquals(201, response.status, response.contentAsString)
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(mapper.readTree("[44]"), body["participantIds"])
+        assertEquals(representative["applicationId"].asString(), body["applicationId"].asString())
+
+        // User는 같은 대표자 정보로 새 동행자만 받고, 등록 완료 이벤트로 새 동행자 QR을 대표자 번호에 보낸다.
+        val resent = userRequests.last()
+        assertEquals(PHONE, resent["phoneNumber"].asString())
+        val sentCompanions = mapper.readTree(resent["informationJson"].asString())["companions"]
+        assertEquals(listOf("second"), (0 until sentCompanions.size()).map { sentCompanions[it]["name"].asString() })
+        assertFalse(resent["requestId"].asString() == userRequests.first()["requestId"].asString())
+        assertEquals(
+            listOf("42:42:CONFIRMED", "42:43:CONFIRMED", "42:44:CONFIRMED"),
+            jdbc.query("SELECT representative_id, participant_id, status FROM tb_preregister_application ORDER BY id") { rs, _ ->
+                "${rs.getLong(1)}:${rs.getLong(2)}:${rs.getString(3)}"
+            },
+        )
+        assertEquals(
+            "USER:42",
+            jdbc.queryForObject(
+                "SELECT actor_type || ':' || actor_participant_id FROM tb_preregister_transition WHERE participant_id = 44",
+                String::class.java,
+            ),
+        )
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_session_attendance_outbox WHERE participant_id = 44", Int::class.java))
+        val full = representativeItem()
+        assertFalse(full["companionAddable"].asBoolean())
+        assertEquals(0, full["remainingCompanionSlots"].asInt())
+        assertEquals("SEATS_UNAVAILABLE", full["companionAddBlockedReason"].asString())
+    }
+
+    @Test
+    fun `missing seats reject the whole addition instead of queueing part of the party`() {
+        capacity.set(2)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        val sent = userRequests.size
+        assertEquals(409, add(id, companion("second")).status)
+        capacity.set(3)
+        assertEquals(409, add(id, companion("second"), companion("third")).status)
+        assertEquals(sent, userRequests.size)
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation", Int::class.java))
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE state = 'WAITING'", Int::class.java))
+    }
+
+    @Test
+    fun `form companion limit and session state block additions`() {
+        maxSelection.set(1)
+        capacity.set(5)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("second")).status)
+        maxSelection.set(4)
+        assertEquals(409, add(id, companion("first")).status)
+        closed = true
+        storedDefinition("closed", "true")
+        assertEquals("SESSION_CLOSED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("second")).status)
+        closed = false
+        storedDefinition("closed", "false")
+        startedAt.set(Instant.now().minusSeconds(60))
+        storedDefinition("startedAt", "\"${startedAt.get()}\"")
+        assertEquals("SESSION_STARTED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("second")).status)
+        startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
+        storedDefinition("startedAt", "\"${startedAt.get()}\"")
+        val companionRow = items().single { it["participantId"].asLong() == 43L }["applicationId"].asString()
+        assertEquals(404, add(companionRow, companion("second")).status)
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 42")
+        assertEquals(409, add(id, companion("second")).status)
+    }
+
+    @Test
+    fun `another owner's application, the five person party limit and a waiting queue block additions`() {
+        capacity.set(10)
+        assertEquals(201, register(PHONE, "first").status)
+        assertEquals(201, register(OTHER_PHONE, null, session = "other-owner").status)
+        val id = representativeItem()["applicationId"].asString()
+        val others = representativeItem("other-owner")["applicationId"].asString()
+        assertEquals(404, add(others, companion("intruder")).status)
+        assertEquals(201, add(id, companion("second"), companion("third"), companion("fourth")).status)
+        assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(0, representativeItem()["remainingCompanionSlots"].asInt())
+        assertEquals(409, add(id, companion("fifth")).status)
+
+        capacity.set(1)
+        storedDefinition("capacity", "1")
+        assertEquals(202, register(THIRD_PHONE, null, session = "third-owner").status)
+        capacity.set(10)
+        storedDefinition("capacity", "10")
+        val other = representativeItem("other-owner")
+        assertEquals("SEATS_UNAVAILABLE", other["companionAddBlockedReason"].asString())
+        assertEquals(409, add(others, companion("late"), session = "other-owner").status)
+    }
+
+    @Test
+    fun `concurrent additions from two parties never exceed the session capacity`() {
+        capacity.set(3)
+        assertEquals(201, register(PHONE, null).status)
+        assertEquals(201, register(OTHER_PHONE, null, session = "other-owner").status)
+        val first = representativeItem()["applicationId"].asString()
+        val second = representativeItem("other-owner")["applicationId"].asString()
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val results =
+                listOf(Triple(first, "owner", "late-a"), Triple(second, "other-owner", "late-b")).map { (id, session, name) ->
+                    pool.submit<Int> {
+                        start.await(10, TimeUnit.SECONDS)
+                        add(id, companion(name), session = session).status
+                    }
+                }
+            start.countDown()
+            assertEquals(listOf(201, 409), results.map { it.get(30, TimeUnit.SECONDS) }.sorted())
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE status = 'CONFIRMED'", Int::class.java))
+    }
+
+    @Test
+    fun `User rejection releases held seats and an idempotent retry does not save twice`() {
+        capacity.set(4)
+        assertEquals(201, register(PHONE, null).status)
+        val id = representativeItem()["applicationId"].asString()
+        userReject.set(409)
+        assertEquals(409, add(id, companion("second"), key = "rejected").status)
+        assertEquals(
+            "REJECTED",
+            jdbc.queryForObject("SELECT state FROM tb_preregister_reservation WHERE request_id = 'rejected'", String::class.java),
+        )
+        assertEquals(3, representativeItem()["remainingCompanionSlots"].asInt())
+        userReject.set(0)
+        val created = add(id, companion("second"), key = "added")
+        assertEquals(201, created.status)
+        val sent = userRequests.size
+        val replay = add(id, companion("second"), key = "added")
+        assertEquals(201, replay.status)
+        assertEquals(mapper.readTree(created.contentAsString), mapper.readTree(replay.contentAsString))
+        assertEquals(sent, userRequests.size)
+        assertEquals(409, add(id, companion("other"), key = "added").status)
+    }
+
+    @Test
+    fun `addition needs the participant session csrf token and valid companions`() {
+        assertEquals(201, register(PHONE, null).status)
+        val id = representativeItem()["applicationId"].asString()
+        val path = "/application/expos/$EXPO/my-applications/PREREGISTER/$id/companions"
+        val body = mapper.writeValueAsString(mapOf("companions" to listOf(companion("second"))))
+        assertEquals(
+            403,
+            mvc
+                .perform(post(path).cookie(Cookie("PARTICIPANT_SESSION", "owner")).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(
+            401,
+            mvc
+                .perform(post(path).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(400, add(id).status)
+        assertEquals(400, add(id, mapOf("name" to "x", "occupation" to "PILOT", "region" to "OTHER")).status)
+        assertEquals(400, add(id, companion("dup"), companion("dup")).status)
+    }
+
+    private fun register(
+        phone: String,
+        companion: String?,
+        session: String = "owner",
+    ): MockHttpServletResponse {
+        sessions[session] = phone
+        val companions = listOfNotNull(companion).map { companion(it) }
+        val body =
+            mapper.writeValueAsString(
+                mapOf(
+                    "name" to "person",
+                    "phoneNumber" to phone,
+                    "personalInformationStatus" to true,
+                    "informationJson" to mapper.writeValueAsString(mapOf("companions" to companions)),
+                    "sessionId" to 1,
+                ),
+            )
+        return mvc
+            .perform(post("/application/pre-standard/$EXPO").contentType(MediaType.APPLICATION_JSON).content(body))
+            .andReturn()
+            .response
+    }
+
+    private fun items(session: String = "owner"): List<JsonNode> {
+        val response =
+            mvc.perform(get("/application/expos/$EXPO/my-applications").cookie(Cookie("PARTICIPANT_SESSION", session))).andReturn().response
+        assertEquals(200, response.status, response.contentAsString)
+        return mapper.readTree(response.contentAsString)["applications"].toList()
+    }
+
+    private fun representativeItem(session: String = "owner"): JsonNode {
+        val representative = parties.getValue(sessions.getValue(session)).first().first
+        return items(session).single { it["type"].asString() == "PREREGISTER" && it["participantId"].asLong() == representative }
+    }
+
+    private fun add(
+        applicationId: String,
+        vararg companions: Map<String, String>,
+        key: String? = null,
+        session: String = "owner",
+    ): MockHttpServletResponse {
+        val request =
+            post("/application/expos/$EXPO/my-applications/PREREGISTER/$applicationId/companions")
+                .with(csrf())
+                .cookie(Cookie("PARTICIPANT_SESSION", session))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(mapOf("companions" to companions.toList())))
+        if (key != null) request.header("Idempotency-Key", key)
+        return mvc.perform(request).andReturn().response
+    }
+
+    // Expo가 승인한 회차 변경을 저장 정의에 반영한다. 이 테스트는 변경 승인 절차가 아니라 추가 조건만 본다.
+    private fun storedDefinition(
+        field: String,
+        value: String,
+    ) {
+        jdbc.update(
+            "UPDATE tb_preregister_session_state SET definition = jsonb_set(definition::jsonb, ?::text[], ?::jsonb)::text",
+            "{$field}",
+            value,
+        )
+    }
+
+    private fun companion(name: String) = mapOf("name" to name, "occupation" to "GENERAL", "region" to "OTHER")
+
+    companion object {
+        private val EXPO = UUID.fromString("00000000-0000-0000-0000-000000000168")
+        private const val PHONE = "01000000001"
+        private const val OTHER_PHONE = "01000000002"
+        private const val THIRD_PHONE = "01077778888"
+        private val capacity = AtomicInteger(3)
+        private val maxSelection = AtomicInteger(4)
+        private val startedAt = AtomicReference(Instant.parse("2030-01-01T00:00:00Z"))
+        private val userReject = AtomicInteger(0)
+        private val nextId = AtomicLong(42)
+
+        @Volatile private var closed = false
+        private val sessions = ConcurrentHashMap<String, String>()
+
+        // 번호별 User 일행: (참가자 ID, 이름). 첫 항목이 대표자다.
+        private val parties = ConcurrentHashMap<String, MutableList<Pair<Long, String>>>()
+        private val smsTries = ConcurrentHashMap<String, Int>()
+        private val userRequests = CopyOnWriteArrayList<JsonNode>()
+        private val json =
+            tools.jackson.module.kotlin
+                .jacksonObjectMapper()
+
+        private fun definition(id: Long) =
+            """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"${startedAt.get()}","endedAt":"2030-01-01T01:00:00Z",""" +
+                """"place":"Place","capacity":${capacity.get()},"waitingCapacity":5,"closed":$closed,""" +
+                """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
+
+        // User의 재등록 규칙: 같은 번호면 새 동행자만 만들어 participantIds로, 일행 전체를 groupParticipantIds로 준다.
+        @Synchronized
+        private fun saveParticipants(request: JsonNode): Pair<Int, String> {
+            userRequests.add(request)
+            val phone = request["phoneNumber"].asString()
+            val companions: JsonNode = json.readTree(request["informationJson"].asString()).path("companions")
+            val names = (0 until companions.size()).map { companions[it]["name"].asString() }
+            val party = parties[phone]
+            if (party == null) {
+                val created = (listOf("person") + names).map { nextId.getAndIncrement() to it }
+                parties[phone] = created.toMutableList()
+                smsTries[phone] = 1
+                val ids = created.joinToString(",") { it.first.toString() }
+                return 201 to
+                    """{"participantId":${created.first().first},"phoneNumber":"$phone","participantIds":[$ids],"groupParticipantIds":[$ids]}"""
+            }
+            if (userReject.get() != 0) return userReject.get() to "{}"
+            if (smsTries.getValue(phone) >= 2) return 409 to "{}"
+            val added = names.filter { name -> party.none { it.second == name } }.map { nextId.getAndIncrement() to it }
+            party.addAll(added)
+            smsTries.merge(phone, 1, Int::plus)
+            val texted = (if (added.isEmpty()) party else added).joinToString(",") { it.first.toString() }
+            val group = party.joinToString(",") { it.first.toString() }
+            return 201 to
+                """{"participantId":${party.first().first},"phoneNumber":"$phone","participantIds":[$texted],"groupParticipantIds":[$group]}"""
+        }
+
+        private val server =
+            HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                createContext("/internal/") { exchange ->
+                    val path = exchange.requestURI.path
+                    val requestBody = exchange.requestBody.bufferedReader().readText()
+                    val (status, body) =
+                        when {
+                            path == "/internal/participant-sessions/resolve" -> {
+                                val session = json.readTree(requestBody)["sessionId"].asString()
+                                200 to """{"expoId":"$EXPO","phoneNumber":"${sessions[session]}","expiresAt":"2100-01-01T00:00:00"}"""
+                            }
+
+                            path == "/internal/standard-participants/managed" -> {
+                                val party = parties[json.readTree(requestBody)["phoneNumber"].asString()].orEmpty()
+                                val people =
+                                    party.mapIndexed { index, (id, name) ->
+                                        """{"participantId":$id,"name":"$name","occupation":"GENERAL","representative":${index == 0},"applicationType":"PRE"}"""
+                                    }
+                                200 to """{"registered":${party.isNotEmpty()},"participants":[${people.joinToString(",")}]}"""
+                            }
+
+                            path.contains("cancellation-status") -> {
+                                503 to "{}"
+                            }
+
+                            path.endsWith("/preregister-session") || path.contains("/standard-registrations/") ||
+                                path.contains("cancellation-guard/") -> {
+                                204 to ""
+                            }
+
+                            path == "/internal/standard-participants" -> {
+                                saveParticipants(json.readTree(requestBody))
+                            }
+
+                            path.contains("/preregister-sessions/") -> {
+                                200 to definition(path.substringAfterLast('/').toLong())
+                            }
+
+                            path.startsWith("/internal/forms/") -> {
+                                val today = OffsetDateTime.now()
+                                200 to
+                                    """{"id":"$EXPO","startDate":"${today.minusDays(1)}","endDate":"${today.plusDays(1)}",""" +
+                                    """"dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},""" +
+                                    """"otherJson":{"maxSelection":${maxSelection.get()}},"dynamicFormType":"DEFAULT"}]}"""
+                            }
+
+                            else -> {
+                                val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
+                                200 to
+                                    """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                            }
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1 else bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                    exchange.close()
+                }
+                executor = Executors.newCachedThreadPool { task -> Thread(task).apply { isDaemon = true } }
+                start()
+            }
+
+        @Container @ServiceConnection @JvmStatic
+        val postgres = PostgreSQLContainer("postgres:17-alpine")
+
+        @DynamicPropertySource @JvmStatic
+        fun properties(registry: DynamicPropertyRegistry) {
+            listOf("expo", "form", "user").forEach {
+                registry.add("application.registration.$it-url") { "http://127.0.0.1:${server.address.port}" }
+                registry.add("application.registration.$it-internal-token") { "supplier-token" }
+            }
+            registry.add("application.attendance.url") { "http://127.0.0.1:${server.address.port}" }
+            registry.add("application.attendance.internal-token") { "supplier-token" }
+        }
+    }
+}

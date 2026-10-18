@@ -34,6 +34,7 @@ import team.startup.application.domain.application.service.impl.AttendanceCancel
 import team.startup.application.domain.application.service.impl.GetOwnerApplicationsServiceImpl
 import team.startup.application.domain.application.service.impl.OwnerCancellationDeadlineGateway
 import team.startup.application.domain.application.service.impl.OwnerCancellationGateway
+import team.startup.application.domain.application.service.impl.PreregisterCompanionPolicy
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import java.time.Clock
 import java.time.Instant
@@ -229,6 +230,11 @@ class OwnerCancellationEligibilityTests {
             deliveries,
             preregister,
             Clock.fixed(NOW, ZoneOffset.UTC),
+            // 동행자 추가 여부(#169)는 이 테스트 대상이 아니므로 공급자 장애로 둔다.
+            org.mockito.Mockito.mock(PreregisterCompanionPolicy::class.java) {
+                throw org.springframework.web.server
+                    .ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+            },
             transactions,
             enabled,
         )
