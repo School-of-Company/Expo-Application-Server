@@ -146,7 +146,7 @@ class PreregisterCompanionHttpTests {
         assertEquals(409, add(id, companion("second")).status)
         closed = false
         storedDefinition("closed", "false")
-        startedAt.set(Instant.now().minusSeconds(60))
+        startedAt.set(Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
         storedDefinition("startedAt", "\"${startedAt.get()}\"")
         assertEquals("SESSION_STARTED", representativeItem()["companionAddBlockedReason"].asString())
         assertEquals(409, add(id, companion("second")).status)
