@@ -30,6 +30,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
+import team.startup.application.domain.application.service.AddOwnerPreregisterCompanionsService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
@@ -51,6 +52,8 @@ class OwnerApplicationHttpTests {
     @MockitoBean private lateinit var waitlist: GetOwnerPreregisterWaitlistService
 
     @MockitoBean private lateinit var withdraw: WithdrawOwnerPreregisterWaitlistService
+
+    @MockitoBean private lateinit var addCompanions: AddOwnerPreregisterCompanionsService
 
     @Test
     fun `cookie is required and internal token or query session cannot replace it`() {
