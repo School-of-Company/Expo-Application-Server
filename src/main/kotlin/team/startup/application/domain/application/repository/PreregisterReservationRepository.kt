@@ -22,6 +22,8 @@ data class PreregisterReservation(
     // Non-null once the party entered the waitlist, including after promotion.
     val queueSeq: Long? = null,
     val withdrawn: Boolean = false,
+    // #169: 확정된 대표자 일행에 새 동행자만 더하는 예약이면 그 대표자 참가자 ID.
+    val companionOf: Long? = null,
 )
 
 @Repository
@@ -97,7 +99,57 @@ class PreregisterReservationRepository(
             rs.getInt("attempts"),
             rs.getObject("queue_seq", Long::class.javaObjectType),
             rs.getObject("withdrawn_at") != null,
+            rs.getObject("companion_representative_id", Long::class.javaObjectType),
         )
+
+    fun insertCompanions(
+        expoId: UUID,
+        requestId: String,
+        sessionId: Long,
+        command: String,
+        request: ParticipantRegistration,
+        applicants: Int,
+        representativeId: Long,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, companion_representative_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            expoId,
+            requestId,
+            sessionId,
+            command,
+            mapper.writeValueAsString(request),
+            applicants,
+            representativeId,
+        )
+    }
+
+    fun companionAdditionInProgress(
+        expoId: UUID,
+        representativeId: Long,
+    ): Boolean =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND companion_representative_id = ? AND state = 'RESERVED')",
+                Boolean::class.java,
+                expoId,
+                representativeId,
+            ),
+        )
+
+    /** 확정 신청을 만든 일행 예약의 원본 User 요청. 동행자 추가는 같은 대표자 정보로 User에 다시 저장한다. */
+    fun registrationOf(
+        expoId: UUID,
+        applicationId: Long,
+    ): ParticipantRegistration? =
+        jdbc
+            .query(
+                "SELECT r.user_request FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                    "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id WHERE a.expo_id = ? AND a.id = ?",
+                { rs, _ -> mapper.readValue(rs.getString(1), ParticipantRegistration::class.java) },
+                expoId,
+                applicationId,
+            ).singleOrNull()
 
     fun insertWaiting(
         expoId: UUID,

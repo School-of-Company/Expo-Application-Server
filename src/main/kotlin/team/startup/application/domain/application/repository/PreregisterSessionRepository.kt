@@ -282,6 +282,18 @@ class PreregisterSessionRepository(
                 participantId,
             ).singleOrNull()
 
+    fun owned(
+        expoId: UUID,
+        applicationId: Long,
+    ): Pair<PreregisterApplicationReceipt, Long>? =
+        jdbc
+            .query(
+                "SELECT id, participant_id, session_id, status, representative_id FROM tb_preregister_application WHERE expo_id = ? AND id = ?",
+                { rs, _ -> PreregisterApplicationReceipt(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4)) to rs.getLong(5) },
+                expoId,
+                applicationId,
+            ).singleOrNull()
+
     fun insert(
         expoId: UUID,
         sessionId: Long,
@@ -289,6 +301,8 @@ class PreregisterSessionRepository(
         participantId: Long,
         status: String,
         reservationRequestId: String? = null,
+        actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
+        actorParticipantId: Long? = null,
     ): PreregisterApplicationReceipt {
         val id =
             requireNotNull(
@@ -305,7 +319,7 @@ class PreregisterSessionRepository(
                     reservationRequestId,
                 ),
             )
-        transition(id)
+        transition(id, actorType, actorParticipantId)
         return PreregisterApplicationReceipt(id, participantId, sessionId, status)
     }
 
@@ -351,7 +365,8 @@ class PreregisterSessionRepository(
         transition(id, actorType, actorParticipantId)
     }
 
-    // Registration confirmations keep the column default UNKNOWN; only cancellations carry their executing actor.
+    // Registration confirmations keep the column default UNKNOWN; cancellations and owner companion additions (#169)
+    // carry their executing actor.
     private fun transition(
         id: Long,
         actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,

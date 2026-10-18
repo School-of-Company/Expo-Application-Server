@@ -3,6 +3,7 @@ package team.startup.application.domain.application.presentation
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.servlet.http.HttpServletRequest
+import jakarta.validation.Valid
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -10,16 +11,22 @@ import org.springframework.security.web.csrf.CsrfToken
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsCommand
+import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsRequest
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.GetOwnerApplicationsCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterCompanionsResult
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
+import team.startup.application.domain.application.service.AddOwnerPreregisterCompanionsService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
@@ -33,6 +40,7 @@ class OwnerApplicationController(
     private val cancelApplication: CancelOwnerApplicationService,
     private val getWaitlist: GetOwnerPreregisterWaitlistService,
     private val withdrawWaitlist: WithdrawOwnerPreregisterWaitlistService,
+    private val addCompanions: AddOwnerPreregisterCompanionsService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val sessionCookieName: String,
 ) {
     @GetMapping
@@ -82,6 +90,49 @@ class OwnerApplicationController(
         @PathVariable applicationId: String,
         request: HttpServletRequest,
     ) = cancelApplication.execute(CancelOwnerApplicationCommand(expoId, session(request), type, applicationId))
+
+    @PostMapping("/PREREGISTER/{applicationId}/companions")
+    @Operation(
+        summary = "내 사전등록 일행에 동행자 추가",
+        description =
+            "참가자 세션과 CSRF 토큰이 필요합니다. 세션 대표자 본인의 확정 사전등록에만 추가합니다. " +
+                "회차 잔여석과 폼 동행자 상한(maxSelection, 대표자 포함 5명)을 박람회 좌석 잠금 안에서 다시 확인하며, " +
+                "모자라면 대기로 받지 않고 409입니다. 새 동행자의 QR은 대표자 번호로 발송됩니다. " +
+                "같은 Idempotency-Key로 다시 보내면 같은 추가를 이어서 처리합니다.",
+        responses = [
+            ApiResponse(responseCode = "201", description = "추가 확정"),
+            ApiResponse(responseCode = "400", description = "동행자 형식 오류 또는 중복 입력"),
+            ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
+            ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
+            ApiResponse(responseCode = "404", description = "본인 대표자 사전등록이 아님"),
+            ApiResponse(
+                responseCode = "409",
+                description =
+                    "정원·동행자 상한 초과, 취소·마감·시작된 회차, 사전등록 기간 아님, 처리 중인 추가, 이미 일행인 동행자, " +
+                        "User 재등록 거절(같은 대표자 QR 재발송 한도)",
+            ),
+            ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류(좌석 유지, 운영 확인)"),
+            ApiResponse(responseCode = "503", description = "참여 서비스 통지 비활성 또는 공급자 연동 불가(같은 키로 재시도)"),
+        ],
+    )
+    fun addCompanions(
+        @PathVariable expoId: UUID,
+        @PathVariable applicationId: String,
+        @Valid @RequestBody body: AddOwnerPreregisterCompanionsRequest,
+        @RequestHeader("Idempotency-Key", required = false) idempotencyKey: String?,
+        request: HttpServletRequest,
+    ): ResponseEntity<OwnerPreregisterCompanionsResult> =
+        ResponseEntity.status(HttpStatus.CREATED).header("Cache-Control", "no-store").body(
+            addCompanions.execute(
+                AddOwnerPreregisterCompanionsCommand(
+                    expoId,
+                    session(request),
+                    applicationId,
+                    requireNotNull(body.companions),
+                    idempotencyKey,
+                ),
+            ),
+        )
 
     @GetMapping("/preregister-waitlist")
     @Operation(

@@ -5,7 +5,6 @@ import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.service.RegistrationCommand
-import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -19,19 +18,8 @@ class RegistrationWorkflow(
     private val mapper: ObjectMapper,
     private val preregistration: PreregisterRegistrationWorkflow,
 ) {
-    private val occupations =
-        setOf(
-            "KINDERGARTEN_STUDENT",
-            "ELEMENTARY_STUDENT",
-            "MIDDLE_SCHOOL_STUDENT",
-            "HIGH_SCHOOL_STUDENT",
-            "SCHOOL_STAFF",
-            "PARENT",
-            "GENERAL",
-            "TEACHER",
-            "PRE_SERVICE_TEACHER",
-        )
-    private val regions = setOf("GWANGJU", "JEONNAM", "OTHER")
+    private val occupations = CompanionAnswers.occupations
+    private val regions = CompanionAnswers.regions
 
     fun register(
         command: RegistrationCommand,
@@ -134,28 +122,14 @@ class RegistrationWorkflow(
         val companionKeys = mutableSetOf<List<String?>>()
         form?.dynamicForm?.filter { it.formType == "COMPANION" }?.forEach { field ->
             val companions = answers.get(field.title) ?: return@forEach
-            val limit = field.otherJson?.get("maxSelection")
-            if (limit != null && (!limit.isIntegralNumber || !limit.canConvertToInt() || limit.intValue() <= 0)) {
-                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "폼의 동행자 최대 인원 응답이 올바르지 않습니다.")
-            }
-            val maxCount = minOf(limit?.intValue() ?: 4, 4)
+            val maxCount = CompanionAnswers.limit(field)
             if (!companions.isArray) badRequest("동행자 답변은 JSON 배열이어야 합니다.")
             if (companions.size() > maxCount) badRequest("동행자는 최대 ${maxCount}명까지 입력할 수 있습니다.")
             companionCount += companions.size()
             if (companionCount > 4) badRequest("대표자를 포함해 최대 5명까지 신청할 수 있습니다.")
             companions.forEach {
-                validateCompanion(it)
-                companionKeys.add(
-                    listOf(
-                        it.path("name").asString().trim(),
-                        it.path("occupation").asString(),
-                        it
-                            .path("school")
-                            .asString()
-                            .trim()
-                            .takeIf(String::isNotEmpty),
-                    ),
-                )
+                CompanionAnswers.validate(it)
+                companionKeys.add(CompanionAnswers.key(it))
             }
         }
         val requestId = command.idempotencyKey ?: UUID.randomUUID().toString()
@@ -189,25 +163,6 @@ class RegistrationWorkflow(
 
     // Null keeps the existing 201 contract for confirmed registrations.
     private fun PreregisterRegistrationReceipt?.pendingOrNull() = this?.takeIf { it.status != "CONFIRMED" }
-
-    private fun validateCompanion(companion: JsonNode) {
-        if (!companion.isObject) badRequest("동행자 답변은 JSON 객체여야 합니다.")
-
-        fun text(key: String) = companion.get(key)?.takeIf { it.isString }?.stringValue()
-        val name = text("name")?.trim()
-        if (name.isNullOrEmpty() || name.length > 10) badRequest("동행자 이름은 1~10자여야 합니다.")
-        val occupation = text("occupation")
-        if (occupation !in occupations) {
-            badRequest("동행자 직업이 올바르지 않습니다.")
-        }
-        if (text("region") !in regions) badRequest("동행자 지역이 올바르지 않습니다.")
-        if (occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER")) {
-            val school = text("school")?.trim()
-            if (school.isNullOrEmpty() || school.length > 100) badRequest("동행자 학교는 1~100자여야 합니다.")
-        } else if (companion.has("school")) {
-            badRequest("이 직업은 동행자 학교를 받지 않습니다.")
-        }
-    }
 
     private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
 }

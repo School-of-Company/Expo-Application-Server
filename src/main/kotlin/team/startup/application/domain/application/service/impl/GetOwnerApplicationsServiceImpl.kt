@@ -32,6 +32,7 @@ class GetOwnerApplicationsServiceImpl(
     private val deliveries: OwnerCancellationDeliveryRepository,
     private val preregister: PreregisterSessionRepository,
     private val clock: Clock,
+    private val companions: PreregisterCompanionPolicy,
     transactionManager: PlatformTransactionManager,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
 ) : GetOwnerApplicationsService {
@@ -49,7 +50,7 @@ class GetOwnerApplicationsServiceImpl(
                     gateway.programDefinitions(command.expoId.toString(), type, items.map { it.sessionOrProgramId }, existing = true)
                 }.associateBy { it.programType.name to it.id }
         val applications = stored.map { it.copy(place = definitions[it.type.name to it.sessionOrProgramId]?.place) }
-        if (!attendanceEnabled) return OwnerApplicationsResponse(party.participants, applications)
+        if (!attendanceEnabled) return OwnerApplicationsResponse(party.participants, withCompanions(command, party, applications))
         val observations =
             applications.filter { it.applied }.map { it.participantId }.distinct().associateWith { participantId ->
                 runCatching {
@@ -114,8 +115,35 @@ class GetOwnerApplicationsServiceImpl(
                     }
                 application.copy(cancellable = reason == null, cancellationBlockedReason = reason ?: "")
             }
-        return OwnerApplicationsResponse(party.participants, eligible)
+        return OwnerApplicationsResponse(party.participants, withCompanions(command, party, eligible))
     }
+
+    // #169: 대표자 본인의 확정 사전등록에만 동행자 추가 가능 여부를 붙인다. 공급자 조회 실패는 목록을 막지 않는다.
+    private fun withCompanions(
+        command: GetOwnerApplicationsCommand,
+        party: OwnerApplicationParty,
+        applications: List<OwnerApplicationItem>,
+    ): List<OwnerApplicationItem> =
+        applications.map { application ->
+            if (application.type != OwnerApplicationType.PREREGISTER || application.status != "CONFIRMED" ||
+                application.participantId != party.representativeId
+            ) {
+                return@map application
+            }
+            val availability =
+                try {
+                    val id = application.applicationId.toLong()
+                    val observation = companions.observe(command.expoId, application.sessionOrProgramId)
+                    requireNotNull(reads.execute { companions.evaluate(command.expoId, party, id, observation, persist = false) })
+                } catch (_: ResponseStatusException) {
+                    CompanionAvailability(0, "EXTERNAL_CONTRACT_REQUIRED")
+                }
+            application.copy(
+                companionAddable = availability.addable,
+                remainingCompanionSlots = availability.remaining,
+                companionAddBlockedReason = availability.blockedReason,
+            )
+        }
 
     private fun blockedReason(
         command: GetOwnerApplicationsCommand,
