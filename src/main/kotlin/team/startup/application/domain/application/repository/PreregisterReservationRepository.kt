@@ -110,10 +110,13 @@ class PreregisterReservationRepository(
         request: ParticipantRegistration,
         applicants: Int,
         representativeId: Long,
+        waiting: Boolean = false,
     ) {
+        // 대기 추가는 일반 대기 일행과 같은 FIFO 순번을 받아 같은 승급·참여 제안 경로를 탄다.
         jdbc.update(
             "INSERT INTO tb_preregister_reservation " +
-                "(expo_id, request_id, session_id, command, user_request, applicants, companion_representative_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(expo_id, request_id, session_id, command, user_request, applicants, companion_representative_id, state, queue_seq) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, " + (if (waiting) "nextval('seq_preregister_waitlist'))" else "NULL)"),
             expoId,
             requestId,
             sessionId,
@@ -121,6 +124,7 @@ class PreregisterReservationRepository(
             mapper.writeValueAsString(request),
             applicants,
             representativeId,
+            if (waiting) "WAITING" else "RESERVED",
         )
     }
 
@@ -130,7 +134,8 @@ class PreregisterReservationRepository(
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
-                "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND companion_representative_id = ? AND state = 'RESERVED')",
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND companion_representative_id = ? " +
+                    "AND state IN ('RESERVED', 'WAITING'))",
                 Boolean::class.java,
                 expoId,
                 representativeId,
@@ -256,6 +261,20 @@ class PreregisterReservationRepository(
             reservation.expoId,
             reservation.requestId,
         ) == 1
+
+    /** 대표자 신청이 취소되면 그 대표자에게 붙이려고 기다리던 동행자 추가도 끝낸다(#169). */
+    fun withdrawCompanionWaits(
+        expoId: UUID,
+        representativeId: Long,
+        actorType: ApplicationActorType,
+    ): Int =
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
+                "withdrawn_actor_type = ? WHERE expo_id = ? AND companion_representative_id = ? AND state = 'WAITING'",
+            actorType.name,
+            expoId,
+            representativeId,
+        )
 
     // USER is the reservation's own representative after the session phone ownership check; the row is the reference.
     fun withdraw(

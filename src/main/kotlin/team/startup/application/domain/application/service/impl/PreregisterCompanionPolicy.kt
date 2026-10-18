@@ -31,7 +31,19 @@ data class CompanionAvailability(
     val representativeId: Long = 0,
     val snapshot: ParticipantRegistration? = null,
     val companionTitle: String? = null,
+    /** 지금 바로 확정할 수 있는 좌석 수. 대기 중인 일행이 있으면 앞지르지 않도록 0이다. */
+    val seats: Int = 0,
+    /** 자리가 모자랄 때 대기로 받을 수 있는 인원(#144 승급 대상). 대기 접수가 꺼져 있거나 회차가 시작됐으면 0이다. */
+    val waitRoom: Int = 0,
 ) {
+    /** [count]명을 지금 확정할지(false) 대기로 받을지(true). 둘 다 안 되면 null이다. */
+    fun waits(count: Int): Boolean? =
+        when {
+            count <= seats -> false
+            count <= waitRoom -> true
+            else -> null
+        }
+
     val addable: Boolean get() = blockedReason.isEmpty()
 
     fun require(): CompanionAvailability = if (addable) this else throw ResponseStatusException(status, message)
@@ -48,7 +60,9 @@ class PreregisterCompanionPolicy(
     private val repository: PreregisterSessionRepository,
     private val reservations: PreregisterReservationRepository,
     private val clock: Clock,
+    private val waitlist: PreregisterWaitlist,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
+    @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
 ) {
     fun observe(
         expoId: UUID,
@@ -111,9 +125,10 @@ class PreregisterCompanionPolicy(
         if (slots <= 0) {
             return blocked("COMPANION_LIMIT_REACHED", "동행자는 최대 ${minOf(limit, CompanionAnswers.MAX_PARTY - 1)}명까지 입력할 수 있습니다.")
         }
-        // 대기 일행이 있으면 새 인원이 대기열을 앞지르지 않는다. 대기로 받지 않고 거절한다.
+        // 대기 일행이 있으면 새 인원이 대기열을 앞지르지 않는다. 자리가 모자라면 대기열 뒤에 서서 #144 규칙으로 승급한다.
+        val queued = reservations.waitingApplicants(expoId, application.sessionId)
         val seats =
-            if (reservations.waitingApplicants(expoId, application.sessionId) > 0) {
+            if (queued > 0) {
                 0
             } else {
                 (
@@ -124,23 +139,29 @@ class PreregisterCompanionPolicy(
                         )
                 ).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
             }
-        if (seats <= 0) return blocked("SEATS_UNAVAILABLE", "일행 전원을 수용할 수 없습니다.")
+        val waitRoom =
+            if (waitlistIntake && waitlist.accepts(definition)) {
+                ((definition.waitingCapacity ?: 0).toLong() - queued).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+            } else {
+                0
+            }
+        val room = maxOf(seats, waitRoom)
+        if (room <= 0) return blocked("SEATS_UNAVAILABLE", "일행 전원을 수용할 수 없습니다.")
         return CompanionAvailability(
-            minOf(slots, seats),
+            minOf(slots, room),
             "",
-            sessionId = application.sessionId,
-            representativeId = representativeId,
-            snapshot = snapshot,
-            companionTitle = title,
-        ).copy(
             message =
-                if (slots <=
-                    seats
-                ) {
+                if (slots <= room) {
                     "동행자는 최대 ${minOf(limit, CompanionAnswers.MAX_PARTY - 1)}명까지 입력할 수 있습니다."
                 } else {
                     "일행 전원을 수용할 수 없습니다."
                 },
+            sessionId = application.sessionId,
+            representativeId = representativeId,
+            snapshot = snapshot,
+            companionTitle = title,
+            seats = seats,
+            waitRoom = waitRoom,
         )
     }
 

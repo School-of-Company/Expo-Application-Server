@@ -55,6 +55,10 @@ class PreregisterCompanionHttpTests {
 
     @Autowired private lateinit var jdbc: JdbcTemplate
 
+    @Autowired private lateinit var recovery: team.startup.application.domain.application.service.impl.PreregisterRecoveryScheduler
+
+    @Autowired private lateinit var waitlist: team.startup.application.domain.application.service.impl.PreregisterWaitlist
+
     @BeforeEach
     fun reset() {
         jdbc.execute(
@@ -67,6 +71,7 @@ class PreregisterCompanionHttpTests {
         userRequests.clear()
         nextId.set(42)
         capacity.set(3)
+        waitingCapacity.set(5)
         maxSelection.set(4)
         closed = false
         startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
@@ -78,7 +83,8 @@ class PreregisterCompanionHttpTests {
         assertEquals(201, register(PHONE, "first").status)
         val representative = representativeItem()
         assertTrue(representative["companionAddable"].asBoolean(), representative.toString())
-        assertEquals(1, representative["remainingCompanionSlots"].asInt())
+        // 좌석은 1석이지만 대기 정원까지 셈해 일행 상한(5명) 안에서 3명을 더 받을 수 있다.
+        assertEquals(3, representative["remainingCompanionSlots"].asInt())
         assertEquals("", representative["companionAddBlockedReason"].asString())
         val companionItem = items().single { it["participantId"].asLong() == 43L }
         assertFalse(companionItem["companionAddable"].asBoolean())
@@ -110,23 +116,93 @@ class PreregisterCompanionHttpTests {
             ),
         )
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_session_attendance_outbox WHERE participant_id = 44", Int::class.java))
+        // 좌석이 다 찼어도 대기 정원이 남아 있으면 대기로 더 받을 수 있다.
         val full = representativeItem()
-        assertFalse(full["companionAddable"].asBoolean())
-        assertEquals(0, full["remainingCompanionSlots"].asInt())
-        assertEquals("SEATS_UNAVAILABLE", full["companionAddBlockedReason"].asString())
+        assertTrue(full["companionAddable"].asBoolean())
+        assertEquals(2, full["remainingCompanionSlots"].asInt())
+        assertEquals("", full["companionAddBlockedReason"].asString())
     }
 
     @Test
-    fun `missing seats reject the whole addition instead of queueing part of the party`() {
+    fun `missing seats queue the addition and promotion attaches it to the confirmed representative`() {
         capacity.set(2)
         assertEquals(201, register(PHONE, "first").status)
         val id = representativeItem()["applicationId"].asString()
         val sent = userRequests.size
-        assertEquals(409, add(id, companion("second")).status)
-        capacity.set(3)
-        assertEquals(409, add(id, companion("second"), companion("third")).status)
+        val waiting = add(id, companion("second"), key = "wait-1")
+        assertEquals(202, waiting.status, waiting.contentAsString)
+        val body = mapper.readTree(waiting.contentAsString)
+        assertEquals("WAITING", body["status"].asString())
+        assertEquals(1, body["position"].asInt())
+        assertEquals(0, body["participantIds"].size())
         assertEquals(sent, userRequests.size)
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation", Int::class.java))
+        // 같은 키 재시도는 새 대기를 만들지 않고, 대기 중에는 다른 추가를 받지 않는다.
+        assertEquals(202, add(id, companion("second"), key = "wait-1").status)
+        assertEquals("ADDITION_IN_PROGRESS", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("third")).status)
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE state = 'WAITING'", Int::class.java))
+
+        // 자리가 나면 일반 대기 일행과 같은 승급 경로로 RESERVED가 되고, 복구가 대표자에게 붙여 확정한다.
+        capacity.set(3)
+        storedDefinition("capacity", "3")
+        recovery.promote()
+        waitlist.flush()
+        recovery.recover()
+        assertEquals(sent + 1, userRequests.size)
+        assertEquals(PHONE, userRequests.last()["phoneNumber"].asString())
+        assertEquals(
+            listOf("42:42:CONFIRMED", "42:43:CONFIRMED", "42:44:CONFIRMED"),
+            jdbc.query("SELECT representative_id, participant_id, status FROM tb_preregister_application ORDER BY id") { rs, _ ->
+                "${rs.getLong(1)}:${rs.getLong(2)}:${rs.getString(3)}"
+            },
+        )
+        assertEquals(201, add(id, companion("second"), key = "wait-1").status)
+    }
+
+    @Test
+    fun `a waiting addition is withdrawn by the owner and promotion of a stale one never saves to User`() {
+        capacity.set(2)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals(202, add(id, companion("second")).status)
+        val withdrawn =
+            mvc
+                .perform(
+                    post("/application/expos/$EXPO/my-applications/preregister-waitlist/cancellation")
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "owner")),
+                ).andReturn()
+                .response
+        assertEquals(204, withdrawn.status, withdrawn.contentAsString)
+        assertEquals("", representativeItem()["companionAddBlockedReason"].asString())
+
+        // 대표자 신청이 그사이 취소되면 승급된 추가는 User에 저장하지 않고 좌석을 돌려준다.
+        assertEquals(202, add(id, companion("third")).status)
+        val sent = userRequests.size
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 42")
+        capacity.set(3)
+        storedDefinition("capacity", "3")
+        recovery.promote()
+        waitlist.flush()
+        recovery.recover()
+        assertEquals(sent, userRequests.size)
+        assertEquals(
+            "REJECTED",
+            jdbc.queryForObject(
+                "SELECT state FROM tb_preregister_reservation WHERE companion_representative_id = 42 AND withdrawn_at IS NULL",
+                String::class.java,
+            ),
+        )
+    }
+
+    @Test
+    fun `without waiting intake missing seats still reject the whole addition`() {
+        capacity.set(2)
+        waitingCapacity.set(0)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals("SEATS_UNAVAILABLE", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("second")).status)
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE state = 'WAITING'", Int::class.java))
     }
 
@@ -176,13 +252,16 @@ class PreregisterCompanionHttpTests {
         assertEquals(202, register(THIRD_PHONE, null, session = "third-owner").status)
         capacity.set(10)
         storedDefinition("capacity", "10")
+        // 대기 중인 일행이 있으면 좌석이 비어도 앞지르지 않고 그 뒤에 선다.
         val other = representativeItem("other-owner")
-        assertEquals("SEATS_UNAVAILABLE", other["companionAddBlockedReason"].asString())
-        assertEquals(409, add(others, companion("late"), session = "other-owner").status)
+        assertEquals("", other["companionAddBlockedReason"].asString())
+        val late = add(others, companion("late"), session = "other-owner")
+        assertEquals(202, late.status, late.contentAsString)
+        assertEquals(2, mapper.readTree(late.contentAsString)["position"].asInt())
     }
 
     @Test
-    fun `concurrent additions from two parties never exceed the session capacity`() {
+    fun `concurrent additions from two parties never exceed the session capacity and the loser waits`() {
         capacity.set(3)
         assertEquals(201, register(PHONE, null).status)
         assertEquals(201, register(OTHER_PHONE, null, session = "other-owner").status)
@@ -199,7 +278,7 @@ class PreregisterCompanionHttpTests {
                     }
                 }
             start.countDown()
-            assertEquals(listOf(201, 409), results.map { it.get(30, TimeUnit.SECONDS) }.sorted())
+            assertEquals(listOf(201, 202), results.map { it.get(30, TimeUnit.SECONDS) }.sorted())
         } finally {
             pool.shutdownNow()
         }
@@ -217,7 +296,7 @@ class PreregisterCompanionHttpTests {
             "REJECTED",
             jdbc.queryForObject("SELECT state FROM tb_preregister_reservation WHERE request_id = 'rejected'", String::class.java),
         )
-        assertEquals(3, representativeItem()["remainingCompanionSlots"].asInt())
+        assertEquals(4, representativeItem()["remainingCompanionSlots"].asInt())
         userReject.set(0)
         val created = add(id, companion("second"), key = "added")
         assertEquals(201, created.status)
@@ -326,6 +405,7 @@ class PreregisterCompanionHttpTests {
         private const val THIRD_PHONE = "01077778888"
         private val capacity = AtomicInteger(3)
         private val maxSelection = AtomicInteger(4)
+        private val waitingCapacity = AtomicInteger(5)
         private val startedAt = AtomicReference(Instant.parse("2030-01-01T00:00:00Z"))
         private val userReject = AtomicInteger(0)
         private val nextId = AtomicLong(42)
@@ -343,7 +423,7 @@ class PreregisterCompanionHttpTests {
 
         private fun definition(id: Long) =
             """{"id":$id,"expoId":"$EXPO","title":"Morning","startedAt":"${startedAt.get()}","endedAt":"2030-01-01T01:00:00Z",""" +
-                """"place":"Place","capacity":${capacity.get()},"waitingCapacity":5,"closed":$closed,""" +
+                """"place":"Place","capacity":${capacity.get()},"waitingCapacity":${waitingCapacity.get()},"closed":$closed,""" +
                 """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"}"""
 
         // User의 재등록 규칙: 같은 번호면 새 동행자만 만들어 participantIds로, 일행 전체를 groupParticipantIds로 준다.
