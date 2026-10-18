@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse
 import io.swagger.v3.oas.annotations.responses.ApiResponses
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.PutMapping
@@ -36,12 +37,14 @@ class ProgramSessionWaitlistController(
         ],
     )
     @PutMapping("/internal/expos/{expoId}/program-changes/{changeId}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
     fun prepare(
         @PathVariable expoId: UUID,
         @PathVariable changeId: UUID,
         @Valid @RequestBody payload: ProgramChangePayload,
-    ) = prepare.execute(PrepareProgramChangeCommand(expoId, changeId, payload))
+    ): ResponseEntity<Void> {
+        prepare.execute(PrepareProgramChangeCommand(expoId, changeId, payload))
+        return ResponseEntity.noContent().header(PROMOTION_POLICY_HEADER, "1").build()
+    }
 
     @ApiResponses(
         value = [

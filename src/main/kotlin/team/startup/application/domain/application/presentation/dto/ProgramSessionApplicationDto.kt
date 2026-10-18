@@ -39,8 +39,41 @@ data class ProgramSessionPolicy(
     val onsiteStartedAt: Instant? = null,
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val onsiteEndedAt: Instant? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    @field:Schema(description = "Expo #143 자동 승급 허용. null/생략은 true, false면 관리자 수동 확정만 가능")
+    val autoPromotionEnabled: Boolean? = null,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
+    @field:Schema(description = "Expo #143 자동 승급 종료 시각(이 시각부터 자동 중단). null/생략은 promotionEndedAt까지 자동")
+    val autoPromotionEndedAt: Instant? = null,
 ) {
     fun hasAdmissionCapacities(): Boolean = preRegistrationCapacity != null || onsiteCapacity != null
+
+    /** 모든 자동 승급(취소·신청·스케줄러·정의 변경 재조정·학생/보호자 묶음·참여 제안 생성)이 공유하는 진행 조건(#172). */
+    fun autoPromotionOpen(now: Instant): Boolean =
+        !closed && !now.isBefore(applicationStartedAt) && now.isBefore(applicationEndedAt) && now.isBefore(promotionEndedAt) &&
+            !autoPromotionStopped(now)
+
+    /** 저장된 정책이 자동 승급을 끄거나 종료시킨 뒤인지. 기본 정책은 계속 false이며 수동 확정을 열지 않는다. */
+    fun autoPromotionStopped(now: Instant): Boolean =
+        autoPromotionEnabled == false || autoPromotionEndedAt?.let { !now.isBefore(it) } == true
+
+    /** 관리자 수동 확정을 막는 사유. 자동 승급 종료 뒤부터 최종 마감(promotionEndedAt) 전까지만 null이다. */
+    fun manualPromotionBlock(now: Instant): String? =
+        when {
+            closed || now.isBefore(applicationStartedAt) || !now.isBefore(promotionEndedAt) -> "PROMOTION_ENDED"
+            !autoPromotionStopped(now) -> "AUTO_PROMOTION_ACTIVE"
+            else -> null
+        }
+
+    /** Expo #143이 400/DB CHECK로 지키는 형식. 변경 승인에서도 같은 형식만 받는다. */
+    fun promotionSettingsValid(): Boolean =
+        (
+            autoPromotionEndedAt == null || (
+                autoPromotionEnabled != false && !autoPromotionEndedAt.isBefore(applicationStartedAt) &&
+                    !autoPromotionEndedAt.isAfter(promotionEndedAt) && autoPromotionEndedAt.nano % 1000 == 0
+            )
+        ) &&
+            (waitingCapacity > 0 || (autoPromotionEnabled != false && autoPromotionEndedAt == null))
 
     /** 접수 경로의 신청 기간. 현장 기간이 설정되지 않았으면 null이며 사전 모집 기간으로 대신 열지 않는다. */
     fun admissionWindow(onsite: Boolean): Pair<Instant, Instant>? =

@@ -3,6 +3,7 @@ package team.startup.application
 import com.sun.net.httpserver.HttpServer
 import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -33,6 +34,7 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.transaction.support.TransactionTemplate
@@ -54,6 +56,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramGuard
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.presentation.dto.PromoteAdminApplicationCommand
 import team.startup.application.domain.application.presentation.dto.StudentGuardianBatchRequest
 import team.startup.application.domain.application.presentation.dto.StudentGuardianEligibilityQuery
 import team.startup.application.domain.application.presentation.dto.StudentGuardianLink
@@ -61,6 +64,7 @@ import team.startup.application.domain.application.presentation.dto.StudentGuard
 import team.startup.application.domain.application.presentation.dto.TraineeReference
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
+import team.startup.application.domain.application.repository.PromotionOfferRepository
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingOperationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
@@ -74,6 +78,7 @@ import team.startup.application.domain.application.service.CancelStudentGuardian
 import team.startup.application.domain.application.service.DeleteStandardProgramApplicationsService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
+import team.startup.application.domain.application.service.PromoteAdminApplicationService
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 import team.startup.application.domain.application.service.StudentGuardianEligibilityProvider
 import team.startup.application.domain.application.service.impl.ProgramFormAdapter
@@ -150,6 +155,8 @@ class ProgramSessionApplicationTests {
         allowed = "[\"TEACHER\"]"
         channels = null
         admissionCapacities = null
+        promotionPolicy = null
+        promoteAccessStatus = 200
         closed = false
         expired = false
         badExpo = false
@@ -3789,6 +3796,268 @@ class ProgramSessionApplicationTests {
         assertEquals(409, error.statusCode.value())
     }
 
+    // #172 manual confirmation after the stored Expo #143 policy stops automatic promotion.
+    private fun promoteByAdmin(
+        id: UUID,
+        expected: Int,
+        reason: String? = null,
+        expo: String = EXPO,
+    ) = mvc
+        .perform(
+            post("/application/admin/expos/$expo/program-session-applications/$id/promotion").header("Authorization", "Bearer admin"),
+        ).andExpect(status().`is`(expected))
+        .also { result -> reason?.let { result.andExpect(jsonPath("$.code").value(it)) } }
+
+    private fun confirmations(id: UUID): List<Map<String, Any?>> =
+        jdbc.queryForList(
+            "SELECT actor_type, actor_id, previous_status, created_at FROM tb_program_session_history " +
+                "WHERE application_id = ? AND status = 'CONFIRMED'",
+            id,
+        )
+
+    @Test
+    fun `auto promotion off keeps waiters through every automatic entry point and an admin confirms the chosen one once`() {
+        capacity = 1
+        waitingCapacity = 2
+        promotionPolicy = "\"autoPromotionEnabled\":false"
+        addParticipant(3)
+        val confirmed = service.execute(command())
+        val head = service.execute(command(participant = 2))
+        val chosen = service.execute(command(participant = 3))
+        cancel(confirmed.applicationId)
+        reconcile()
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
+        change { it.put("capacity", 1) }
+        reconcile()
+        assertEquals("WAITING", status(head.applicationId))
+        assertEquals("WAITING", status(chosen.applicationId))
+        assertEquals(0L, count("tb_standard_program_application"))
+
+        promoteAccessStatus = 403
+        promoteByAdmin(chosen.applicationId, 403)
+        promoteAccessStatus = 200
+        promoteByAdmin(chosen.applicationId, 404, expo = UUID(9, 9).toString())
+        promoteByAdmin(chosen.applicationId, 200).andExpect(jsonPath("$.status").value("CONFIRMED"))
+        promoteByAdmin(chosen.applicationId, 200)
+        applied(3, true)
+        val history = confirmations(chosen.applicationId).single()
+        assertEquals("ADMIN", history["actor_type"])
+        assertEquals(42L, (history["actor_id"] as Number).toLong())
+        assertEquals("WAITING", history["previous_status"])
+        assertNotNull(history["created_at"])
+        assertEquals(
+            true,
+            jdbc.queryForObject(
+                "SELECT is_promotion FROM tb_program_session_event WHERE application_id = ? AND status = 'CONFIRMED'",
+                Boolean::class.java,
+                chosen.applicationId,
+            ),
+        )
+        // The last seat is taken; the remaining waiter stays waiting and a cancelled row is not reopened.
+        promoteByAdmin(head.applicationId, 409, "CAPACITY_CHANGED")
+        assertEquals("WAITING", status(head.applicationId))
+        promoteByAdmin(confirmed.applicationId, 409, "NOT_WAITING")
+    }
+
+    @Test
+    fun `auto promotion end boundary and final manual deadline before at and after`() {
+        val autoEnd = Instant.parse("2026-10-12T10:00:00Z")
+        val finalEnd = Instant.parse("2026-10-13T10:00:00Z")
+        for (offset in listOf(-1000L, 0L)) {
+            reset()
+            capacity = 1
+            waitingCapacity = 2
+            promotionEnd = finalEnd
+            promotionPolicy = "\"autoPromotionEndedAt\":\"$autoEnd\""
+            addParticipant(3)
+            val confirmed = service.execute(command())
+            val head = service.execute(command(participant = 2))
+            val chosen = service.execute(command(participant = 3))
+            testClock.current = autoEnd.plusNanos(offset)
+            if (offset < 0) {
+                promoteByAdmin(chosen.applicationId, 409, "AUTO_PROMOTION_ACTIVE")
+                cancel(confirmed.applicationId)
+                assertEquals("CONFIRMED", status(head.applicationId))
+                assertEquals("SYSTEM", confirmations(head.applicationId).single()["actor_type"])
+            } else {
+                cancel(confirmed.applicationId)
+                assertEquals("WAITING", status(head.applicationId))
+                promoteByAdmin(chosen.applicationId, 200)
+                assertEquals("WAITING", status(head.applicationId))
+            }
+        }
+        for (offset in listOf(-1000L, 0L, 1000L)) {
+            reset()
+            capacity = 2
+            waitingCapacity = 1
+            promotionEnd = finalEnd
+            promotionPolicy = "\"autoPromotionEndedAt\":\"$autoEnd\""
+            service.execute(command())
+            change { it.put("capacity", 1) }
+            val waiting = service.execute(command(participant = 2))
+            change { it.put("capacity", 2) }
+            testClock.current = finalEnd.plusNanos(offset)
+            if (offset < 0) {
+                promoteByAdmin(waiting.applicationId, 200)
+            } else {
+                promoteByAdmin(waiting.applicationId, 409, "PROMOTION_ENDED")
+                assertEquals("WAITING", status(waiting.applicationId))
+            }
+        }
+        reset()
+        waitingCapacity = 1
+        promotionPolicy = "\"autoPromotionEnabled\":false"
+        service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        change { it.put("closed", true) }
+        promoteByAdmin(waiting.applicationId, 409, "PROMOTION_ENDED")
+        // A default policy keeps automatic promotion and never opens manual confirmation.
+        reset()
+        waitingCapacity = 1
+        service.execute(command())
+        promoteByAdmin(service.execute(command(participant = 2)).applicationId, 409, "AUTO_PROMOTION_ACTIVE")
+    }
+
+    @Test
+    fun `concurrent admin confirmations take the last seat once and repeat requests confirm once`() {
+        capacity = 1
+        waitingCapacity = 2
+        promotionPolicy = "\"autoPromotionEnabled\":false"
+        addParticipant(3)
+        val confirmed = service.execute(command())
+        val first = service.execute(command(participant = 2))
+        val second = service.execute(command(participant = 3))
+        cancel(confirmed.applicationId)
+        val promote = context.getBean(PromoteAdminApplicationService::class.java)
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(4)
+        try {
+            val results =
+                listOf(first, second, first, second)
+                    .map { receipt ->
+                        pool.submit<Int> {
+                            assertTrue(start.await(10, TimeUnit.SECONDS))
+                            try {
+                                promote.execute(
+                                    PromoteAdminApplicationCommand(UUID.fromString(EXPO), receipt.applicationId, "Bearer admin"),
+                                )
+                                200
+                            } catch (exception: ResponseStatusException) {
+                                exception.statusCode.value()
+                            }
+                        }
+                    }.also { start.countDown() }
+                    .map { it.get(30, TimeUnit.SECONDS) }
+            assertEquals(listOf(200, 200, 409, 409), results.sorted())
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(1L, count("tb_standard_program_application"))
+        val statuses = listOf(status(first.applicationId), status(second.applicationId))
+        assertEquals(listOf("CONFIRMED", "WAITING"), statuses.sortedBy { it })
+        assertEquals(1, confirmations(first.applicationId).size + confirmations(second.applicationId).size)
+    }
+
+    @Test
+    fun `manual confirmation links a training waiter once and a whole guardian batch with the admin actor`() {
+        waitingCapacity = 1
+        promotionPolicy = "\"autoPromotionEnabled\":false"
+        val confirmed = service.execute(command(type = ProgramSessionType.TRAINING))
+        val waiting = service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        cancel(confirmed.applicationId)
+        assertEquals(2, linkCalls.get())
+        promoteByAdmin(waiting.applicationId, 200)
+        assertEquals(3, linkCalls.get())
+        mvc
+            .perform(
+                get("/internal/program-applications/training/1/trainees/502").header("X-Internal-Token", "test-token"),
+            ).andExpect(jsonPath("$.applied").value(true))
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT version FROM tb_training_application_version WHERE trainee_id = 502", Long::class.java),
+        )
+
+        reset()
+        enableGuardianPolicy(2, 4)
+        promotionPolicy = "\"autoPromotionEnabled\":false"
+        val receipt = batchService.execute(guardianBatch(1, 2))
+        assertTrue(receipt.applications.all { it.application.status == "WAITING" })
+        change { it.put("capacity", 3) }
+        reconcile()
+        assertEquals(0L, count("tb_standard_program_application"))
+        promoteByAdmin(
+            receipt.applications
+                .last()
+                .application.applicationId,
+            200,
+        )
+        receipt.applications.forEach {
+            applied(it.application.participantId, true)
+            assertEquals("ADMIN", confirmations(it.application.applicationId).single()["actor_type"])
+        }
+        assertEquals(3L, count("tb_standard_program_application"))
+    }
+
+    @Test
+    fun `offers made before auto promotion ends keep their held seats and no new offer starts after it`() {
+        capacity = 1
+        waitingCapacity = 2
+        val autoEnd = nineKst.plusSeconds(3600)
+        promotionPolicy = "\"autoPromotionEndedAt\":\"$autoEnd\""
+        addParticipant(3)
+        val confirmed = service.execute(command())
+        val head = service.execute(command(participant = 2))
+        val next = service.execute(command(participant = 3))
+        testClock.current = nineKst
+        cancel(confirmed.applicationId)
+        val offer = activeOffer()
+        assertEquals(head.applicationId, offer["application_id"])
+        testClock.current = autoEnd
+        reconcile()
+        assertEquals(offer["id"], activeOffer()["id"])
+        promoteByAdmin(head.applicationId, 409, "OFFER_ACTIVE")
+        promoteByAdmin(next.applicationId, 409, "CAPACITY_CHANGED")
+        deliver(offer, "ACCEPTED", autoEnd)
+        respond(offer["id"], "decline", 200)
+        assertEquals("CANCELLED", status(head.applicationId))
+        reconcile()
+        assertEquals(0, offerRows().count { it["state"] in PromotionOfferRepository.ACTIVE_STATES })
+        promoteByAdmin(next.applicationId, 200)
+    }
+
+    @Test
+    fun `policy support headers and change approval accept only Expo shaped promotion settings`() {
+        mvc
+            .perform(get("/internal/expos/$EXPO/program-policy-capabilities").header("X-Internal-Token", "test-token"))
+            .andExpect(status().isNoContent)
+            .andExpect(header().string("X-Program-Promotion-Policy-Version", "1"))
+            .andExpect(header().string("X-Program-Guardian-Policy-Version", "1"))
+        waitingCapacity = 1
+        service.execute(command())
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        for ((fields, expected) in listOf(
+            """{"autoPromotionEnabled":false,"autoPromotionEndedAt":"2030-01-01T00:00:00Z"}""" to 400,
+            """{"autoPromotionEndedAt":"2019-12-31T23:59:59Z"}""" to 400,
+            """{"autoPromotionEndedAt":"2100-01-01T00:00:00.000001Z"}""" to 400,
+            """{"autoPromotionEndedAt":"2030-01-01T00:00:00.0000001Z"}""" to 400,
+            """{"autoPromotionEnabled":false,"waitingCapacity":0}""" to 400,
+            """{"autoPromotionEndedAt":"2030-01-01T00:00:00Z"}""" to 204,
+        )) {
+            val next = previous.deepCopy().asObject()
+            next.put("revision", revision + 1)
+            mapper.readTree(fields).properties().forEach { (name, value) -> next.path("policy").asObject().set(name, value) }
+            val result =
+                mvc
+                    .perform(
+                        put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                            .header("X-Internal-Token", "test-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                    ).andExpect(status().`is`(expected))
+            if (expected == 204) result.andExpect(header().string("X-Program-Promotion-Policy-Version", "1"))
+        }
+    }
+
     // #144 participation offers. Program 1 starts 2030-01-01 11:00 KST, so offers start 2029-12-31 00:00 KST.
     private val offerSwitch = Instant.parse("2029-12-30T15:00:00Z")
     private val nineKst = Instant.parse("2029-12-31T00:00:00Z")
@@ -4412,6 +4681,12 @@ class ProgramSessionApplicationTests {
                                 "{}"
                             }
 
+                            path.endsWith("/admin-application-promote-access") -> {
+                                status = promoteAccessStatus
+                                val owner = path.substringAfter("/internal/expo/").substringBefore('/')
+                                """{"expoId":"$owner","adminId":$attributionActor,"permission":"APPLICATION_PROMOTE","scope":"EXPO_ADMIN","policyVersion":"EXPO_ADMIN_APPLICATION_PROMOTE_V1"}"""
+                            }
+
                             path.endsWith("/admin-application-cancel-access") || path.endsWith("/admin-access") -> {
                                 status = attributionAccessStatus
                                 val owner = path.substringAfter("/internal/expo/").substringBefore('/')
@@ -4603,6 +4878,10 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var admissionCapacities: String? = null
 
+        @Volatile private var promotionPolicy: String? = null
+
+        @Volatile private var promoteAccessStatus = 200
+
         private fun definition(
             id: String,
             type: String,
@@ -4612,7 +4891,7 @@ class ProgramSessionApplicationTests {
                     ",\"channels\":$it"
                 } ?: ""}}}"""
             val json = ObjectMapper().readTree(response).asObject()
-            admissionCapacities?.let { fields ->
+            listOfNotNull(admissionCapacities, promotionPolicy).forEach { fields ->
                 val policy = json.path("policy").asObject()
                 ObjectMapper().readTree("{$fields}").properties().forEach { (name, value) -> policy.set(name, value) }
             }
