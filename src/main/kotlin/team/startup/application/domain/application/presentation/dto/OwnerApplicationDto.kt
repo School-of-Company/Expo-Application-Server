@@ -2,6 +2,8 @@ package team.startup.application.domain.application.presentation.dto
 
 import com.fasterxml.jackson.annotation.JsonIgnore
 import io.swagger.v3.oas.annotations.media.Schema
+import jakarta.validation.constraints.NotNull
+import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
 import java.util.UUID
 
@@ -61,6 +63,52 @@ data class OwnerApplicationItem(
     val place: String? = null,
     @field:Schema(description = "신청 당시 프로그램 회차 장소. 기존 스냅샷에 없거나 사전등록이면 null")
     val snapshotPlace: String? = null,
+    @field:Schema(description = "대표자 본인의 확정 사전등록에 동행자를 더 추가할 수 있는지(#169). 다른 신청은 false", example = "true")
+    val companionAddable: Boolean = false,
+    @field:Schema(description = "지금 더 추가할 수 있는 동행자 수. 동행자 상한과 회차 잔여석 중 작은 값이며 추가할 수 없으면 0", example = "2")
+    val remainingCompanionSlots: Int = 0,
+    @field:Schema(
+        description =
+            "동행자 추가 불가 사유. 가능하면 빈 문자열. NOT_REPRESENTATIVE_PREREGISTRATION, APPLICATION_STATE_CHANGED, " +
+                "SESSION_CHANGE_PENDING, SESSION_CLOSED, SESSION_STARTED, REGISTRATION_PERIOD_ENDED, COMPANION_NOT_ALLOWED, " +
+                "SNAPSHOT_UNAVAILABLE, ADDITION_IN_PROGRESS, COMPANION_LIMIT_REACHED, SEATS_UNAVAILABLE, EXTERNAL_CONTRACT_REQUIRED",
+        example = "NOT_REPRESENTATIVE_PREREGISTRATION",
+    )
+    val companionAddBlockedReason: String = "NOT_REPRESENTATIVE_PREREGISTRATION",
+)
+
+@Schema(description = "확정된 사전등록 대표자 일행에 더할 동행자")
+data class AddOwnerPreregisterCompanionsRequest(
+    @field:NotNull
+    @field:Size(min = 1, max = 4)
+    @field:Schema(
+        description = "새 동행자 1~4명. 사전등록 동행자 답변과 같은 형식: name(1~10자), occupation, region, 교사·예비교사만 school(1~100자)",
+    )
+    val companions: List<JsonNode>?,
+)
+
+data class AddOwnerPreregisterCompanionsCommand(
+    val expoId: UUID,
+    val sessionId: String,
+    val applicationId: String,
+    val companions: List<JsonNode>,
+    val idempotencyKey: String?,
+) {
+    override fun toString() =
+        "AddOwnerPreregisterCompanionsCommand(expoId=$expoId, applicationId=$applicationId, companions=${companions.size})"
+}
+
+@Schema(description = "동행자 추가 결과")
+data class OwnerPreregisterCompanionsResult(
+    @field:Schema(description = "동행자를 더한 대표자 사전등록 ID", example = "123") val applicationId: String,
+    @field:Schema(description = "새로 확정된 동행자 참가자 ID. QR은 대표자 번호로 발송된다. 대기·처리 중이면 빈 목록") val participantIds: List<Long>,
+    @field:Schema(
+        description = "CONFIRMED(확정), WAITING(자리가 모자라 회차 대기열에 섬, #144 규칙으로 승급), PROCESSING(승급 뒤 User 저장 중)",
+        example = "CONFIRMED",
+    )
+    val status: String = "CONFIRMED",
+    @field:Schema(description = "WAITING일 때 회차 대기 순번(1부터). 그 외 null", example = "2")
+    val position: Int? = null,
 )
 
 @Schema(description = "인증된 대표자의 참가자와 신청 목록")

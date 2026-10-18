@@ -3,6 +3,7 @@ package team.startup.application.domain.application.service.impl
 import org.springframework.stereotype.Component
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
+import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
@@ -20,6 +21,7 @@ class PreregisterCancellation(
     private val ledger: PreregisterSessionLedger,
     private val attendance: SessionAttendanceOutbox,
     private val clock: Clock,
+    private val reservations: PreregisterReservationRepository,
 ) {
     fun lockParticipant(
         participantId: Long,
@@ -53,6 +55,14 @@ class PreregisterCancellation(
             if (actorParticipantId == null) ApplicationActorType.UNKNOWN else ApplicationActorType.USER,
             actorParticipantId,
         )
+        // 이 대표자에게 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.
+        if (participantId == representativeId) {
+            reservations.withdrawCompanionWaits(
+                expoId,
+                participantId,
+                if (actorParticipantId == null) ApplicationActorType.UNKNOWN else ApplicationActorType.USER,
+            )
+        }
         val outboxId = attendance.cancelled(expoId, participantId)
         permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L))
     }

@@ -6,10 +6,14 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
+import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
+import team.startup.application.domain.application.repository.PreregisterReservation
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.RegistrationCommand
+import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
 
@@ -23,6 +27,7 @@ class PreregisterRegistrationWorkflow(
     private val attendance: SessionAttendanceOutbox,
     private val mapper: ObjectMapper,
     private val waitlist: PreregisterWaitlist,
+    private val companions: PreregisterCompanionPolicy,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
 ) {
@@ -125,6 +130,93 @@ class PreregisterRegistrationWorkflow(
         return deliver(expoId, reserved)
     }
 
+    /**
+     * 확정된 대표자 일행에 동행자를 더한다(#169). 정원은 일반 신청과 같은 박람회 잠금·좌석 예약으로 지킨다.
+     * 자리가 모자라면 대기열 뒤에 세우고, 일반 대기 일행과 같은 승급(#144: 전날 전 자동, 전날부터 참여 제안)으로 RESERVED가 된다.
+     * 저장·확정은 기존 RESERVED 복구 경로([recover])가 끝낸다.
+     */
+    fun addCompanions(
+        expoId: UUID,
+        applicationId: Long,
+        party: OwnerApplicationParty,
+        added: List<JsonNode>,
+        idempotencyKey: String?,
+    ): CompanionAddition {
+        val sessionId =
+            repository.owned(expoId, applicationId)?.first?.sessionId
+                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "신청을 찾을 수 없습니다.")
+        val observation = companions.observe(expoId, sessionId)
+        val fingerprint = mapper.writeValueAsString(mapOf("companionsOf" to applicationId, "companions" to added))
+        val key = idempotencyKey ?: UUID.randomUUID().toString()
+        val reserved =
+            requireNotNull(
+                ledger.transactions.execute {
+                    ledger.lock(expoId)
+                    reservations.find(expoId, idempotencyKey, fingerprint)?.let {
+                        if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
+                        return@execute it.requestId
+                    }
+                    val availability = companions.evaluate(expoId, party, applicationId, observation, persist = true).require()
+                    if (added.size > availability.remaining) conflict(availability.message)
+                    val waits = availability.waits(added.size) ?: conflict("일행 전원을 수용할 수 없습니다.")
+                    // 이미 일행에 있는 사람을 다시 보내면 User가 새로 만들지 않고 QR만 다시 보낸다. 미리 거절한다.
+                    val known = party.participants.map { it.name.trim() to it.occupation }.toSet()
+                    if (added.any { (it.path("name").asString().trim() to it.path("occupation").asString()) in known }) {
+                        conflict("이미 일행에 있는 동행자입니다.")
+                    }
+                    val snapshot = requireNotNull(availability.snapshot)
+                    val answers = mapper.readTree(snapshot.informationJson).deepCopy().asObject()
+                    snapshot.questions.orEmpty().filter { it.formType == "COMPANION" }.forEach {
+                        answers.set(it.title, mapper.createArrayNode().apply { if (it.title == availability.companionTitle) addAll(added) })
+                    }
+                    // 같은 대표자 정보에 새 동행자만 담아 새 User requestId로 다시 저장한다. 대표자는 새로 만들어지지 않는다.
+                    val request =
+                        snapshot.copy(
+                            informationJson = mapper.writeValueAsString(answers),
+                            requestId = UUID.randomUUID().toString(),
+                        )
+                    reservations.insertCompanions(
+                        expoId,
+                        key,
+                        availability.sessionId,
+                        fingerprint,
+                        request,
+                        added.size,
+                        availability.representativeId,
+                        waits,
+                    )
+                    key
+                },
+            )
+        recover(expoId, reserved)
+        return requireNotNull(
+            ledger.transactions.execute {
+                val saved = reservations.find(expoId, reserved, "") ?: return@execute CompanionAddition("CONFIRMED", emptyList(), null)
+                when {
+                    saved.state == "WAITING" -> {
+                        CompanionAddition("WAITING", emptyList(), reservations.position(saved))
+                    }
+
+                    saved.state == "RESERVED" -> {
+                        CompanionAddition("PROCESSING", emptyList(), null)
+                    }
+
+                    saved.withdrawn -> {
+                        throw WaitlistWithdrawnException()
+                    }
+
+                    saved.state == "REJECTED" -> {
+                        throw ResponseStatusException(HttpStatus.valueOf(requireNotNull(saved.errorStatus)), "참가자 저장이 거절되었습니다.")
+                    }
+
+                    else -> {
+                        CompanionAddition("CONFIRMED", saved.result?.participantIds.orEmpty(), null)
+                    }
+                }
+            },
+        )
+    }
+
     fun recover(
         expoId: UUID,
         requestId: String,
@@ -145,6 +237,11 @@ class PreregisterRegistrationWorkflow(
                             "복구할 신청이 없습니다.",
                         )
                     if (saved.state != "RESERVED") return@execute saved
+                    // 대기했다 승급된 동행자 추가는 그사이 대표자 신청이 바뀌었을 수 있다. User에 저장하기 전에 좌석을 돌려준다.
+                    if (saved.companionOf != null && saved.result == null && !representativeConfirmed(expoId, saved)) {
+                        reservations.finish(saved, 409)
+                        return@execute saved.copy(state = "REJECTED", errorStatus = 409)
+                    }
                     if (repository.expoDeleted(expoId) && saved.attempts == 0) {
                         reservations.finish(saved, 409)
                         saved.copy(state = "REJECTED", errorStatus = 409)
@@ -210,6 +307,7 @@ class PreregisterRegistrationWorkflow(
                     )
                 }
                 reservations.result(reserved, result)
+                reserved.companionOf?.let { return@execute completeCompanions(expoId, reserved, result, it) }
                 val ids = result.groupParticipantIds
                 if (repository.expoDeleted(expoId)) {
                     ids.forEach { attendance.cancelled(expoId, it) }
@@ -242,4 +340,63 @@ class PreregisterRegistrationWorkflow(
             }
         if (failure != null) throw failure
     }
+
+    private fun representativeConfirmed(
+        expoId: UUID,
+        reserved: PreregisterReservation,
+    ): Boolean {
+        val representative = repository.active(expoId, requireNotNull(reserved.companionOf))
+        return representative?.status == "CONFIRMED" && representative.sessionId == reserved.sessionId
+    }
+
+    // 동행자 추가 예약의 완료. User는 새로 만든 동행자만 participantIds로, 일행 전체를 groupParticipantIds로 준다.
+    private fun completeCompanions(
+        expoId: UUID,
+        reserved: PreregisterReservation,
+        result: ParticipantRegistrationResult,
+        representativeId: Long,
+    ): ResponseStatusException? {
+        val ids = result.participantIds
+        if (repository.expoDeleted(expoId)) {
+            ids.forEach { attendance.cancelled(expoId, it) }
+            reservations.finish(reserved, 409)
+            return ResponseStatusException(HttpStatus.CONFLICT, "삭제된 박람회입니다.")
+        }
+        if (result.participantId != representativeId || ids.size != reserved.applicants || representativeId in ids ||
+            !result.groupParticipantIds.containsAll(ids) || ids.any { it <= 0 } || ids.distinct().size != ids.size
+        ) {
+            reservations.needsReview(reserved, 502)
+            return ResponseStatusException(HttpStatus.BAD_GATEWAY, "User 참가자 목록과 선점 인원이 일치하지 않습니다. 좌석을 유지합니다.")
+        }
+        val representative = repository.active(expoId, representativeId)
+        if (representative?.status != "CONFIRMED" || representative.sessionId != reserved.sessionId ||
+            ids.any { repository.active(expoId, it) != null }
+        ) {
+            reservations.needsReview(reserved, 409)
+            return ResponseStatusException(HttpStatus.CONFLICT, "대표자 신청 또는 동행자 상태가 바뀌었습니다. 좌석을 유지합니다.")
+        }
+        ids.forEach {
+            repository.insert(
+                expoId,
+                reserved.sessionId,
+                representativeId,
+                it,
+                "CONFIRMED",
+                reserved.requestId,
+                ApplicationActorType.USER,
+                representativeId,
+            )
+            attendance.confirmed(expoId, it, reserved.sessionId)
+        }
+        reservations.enqueueCounts(expoId, ids)
+        reservations.finish(reserved)
+        return null
+    }
 }
+
+/** 동행자 추가 결과. 자리가 있으면 CONFIRMED, 대기열에 섰으면 WAITING과 순번, User 저장 중이면 PROCESSING이다. */
+data class CompanionAddition(
+    val status: String,
+    val participantIds: List<Long>,
+    val position: Int?,
+)
