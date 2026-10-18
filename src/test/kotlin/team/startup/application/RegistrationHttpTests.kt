@@ -151,7 +151,7 @@ class RegistrationHttpTests {
     @Test
     fun `사전 일반 등록은 폼 답변을 분리하고 인원을 집계하며 재시도 키를 전달한다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.minusDays(1).toString(), today.plusDays(1).toString()))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(2).toString()))
         `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(
             registrationForm(
                 OffsetDateTime.now().minusDays(1).toString(),
@@ -199,6 +199,19 @@ class RegistrationHttpTests {
             ).andExpect(status().isCreated)
         verify(gateway).participant("STANDARD", registration)
         verify(gateway).countStandard(EXPO_1, 42)
+    }
+
+    @Test
+    fun `일반 사전등록 신규 접수는 행사 시작일 00시 KST부터 폼 조회 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        for (started in listOf(today, today.minusDays(1))) {
+            `when`(gateway.expoPeriod(EXPO_4)).thenReturn(ExpoPeriod(started.toString(), today.plusDays(1).toString()))
+            mockMvc
+                .perform(post("/application/pre-standard/$EXPO_4").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
+                .andExpect(status().isBadRequest)
+        }
+        verify(gateway, org.mockito.Mockito.times(2)).expoPeriod(EXPO_4)
+        verifyNoMoreInteractions(gateway)
     }
 
     @Test
@@ -345,7 +358,7 @@ class RegistrationHttpTests {
     @Test
     fun `학교가 필요한 직업에 학교 답변이 없으면 참가자를 만들지 않는다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         `when`(gateway.form(EXPO_3, "STANDARD", "PRE", true)).thenReturn(
             registrationForm(
                 OffsetDateTime.now().minusDays(1).toString(),
@@ -369,7 +382,7 @@ class RegistrationHttpTests {
     @Test
     fun `아홉 직업은 교사와 예비교사만 학교를 포함해 그대로 전달한다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_3)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         val fields = listOf(field(1, "직업", "OCCUPATION"), field(2, "학교", "SCHOOL"))
         `when`(gateway.form(EXPO_3, "STANDARD", "PRE", true)).thenReturn(
             registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields),
@@ -458,6 +471,9 @@ class RegistrationHttpTests {
             Triple("field/standard", "STANDARD", "FIELD"),
             Triple("field", "TRAINEE", "FIELD"),
         )) {
+            // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
+            val day = (if (route == "pre-standard") today.plusDays(1) else today).toString()
+            `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(day, day))
             `when`(gateway.form(EXPO_1, type, applicationType, applicationType == "PRE")).thenReturn(form)
             for ((index, group) in (listOf(emptyList<Map<String, String>>()) + companions.chunked(4)).withIndex()) {
                 val answers = mapper.writeValueAsString(mapOf("함께 오는 사람" to group))
@@ -530,6 +546,9 @@ class RegistrationHttpTests {
             Triple("field/standard", "STANDARD", "FIELD"),
             Triple("field", "TRAINEE", "FIELD"),
         )) {
+            // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
+            val day = (if (route == "pre-standard") today.plusDays(1) else today).toString()
+            `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(day, day))
             `when`(gateway.form(EXPO_1, type, applicationType, applicationType == "PRE")).thenReturn(
                 registrationForm(
                     OffsetDateTime.now().minusDays(1).toString(),
@@ -559,7 +578,7 @@ class RegistrationHttpTests {
     @Test
     fun `동행자는 폼별 상한과 여러 문항의 합계 상한을 넘길 수 없다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         val companion = mapOf("name" to "동행자", "occupation" to "GENERAL", "region" to "OTHER")
         val fields =
             listOf(
@@ -589,7 +608,7 @@ class RegistrationHttpTests {
     @Test
     fun `Form의 동행자 상한이 잘못되면 User 호출 없이 502로 반환한다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         val invalidLimits = listOf("null", "\"2\"", "2.5", "true", "[]", "{}", "0", "-1", "2147483648")
         for (limit in invalidLimits) {
             `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(
@@ -623,7 +642,7 @@ class RegistrationHttpTests {
     @Test
     fun `학교 답변이 문자열이 아니면 참가자를 만들지 않는다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_4)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_4)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         `when`(gateway.form(EXPO_4, "STANDARD", "PRE", true)).thenReturn(
             registrationForm(
                 OffsetDateTime.now().minusDays(1).toString(),
@@ -903,7 +922,7 @@ class RegistrationHttpTests {
     @Test
     fun `폼 날짜 응답이 잘못되면 502를 반환한다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.plusDays(1).toString(), today.plusDays(1).toString()))
         `when`(gateway.form(EXPO_1, "STANDARD", "PRE", true)).thenReturn(registrationForm("invalid", "2026-12-31T00:00:00Z"))
         mockMvc
             .perform(post("/application/pre-standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body("{}")))

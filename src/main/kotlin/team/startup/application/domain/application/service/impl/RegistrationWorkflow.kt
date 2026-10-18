@@ -67,6 +67,10 @@ class RegistrationWorkflow(
         if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
             badRequest("박람회 등록 기간이 아닙니다.")
         }
+        // 일반 사전등록 신규 접수는 행사 시작일 00:00 KST에 닫는다(#171). 기존 예약의 멱등·복구는 위 resume이 먼저 처리한다.
+        if (sessionRegistration && !today.isBefore(started)) {
+            badRequest("사전 등록 기간이 아닙니다.")
+        }
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {

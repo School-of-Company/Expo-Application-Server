@@ -89,7 +89,8 @@ class PreregisterRegistrationHttpTests {
         upstreamAvailable = true
         userGate.set(null)
         countGate.set(null)
-        expoDayOffset.set(0)
+        // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
+        expoDayOffset.set(1)
         formDayOffset.set(0)
         phoneVerificationRequired = false
         sessionStatus.set(200)
@@ -239,6 +240,20 @@ class PreregisterRegistrationHttpTests {
             )
         }
         assertEquals(1, userRequests.size)
+    }
+
+    @Test
+    fun `new STANDARD PRE closes at 00_00 KST on the event start day even when the form is still open`() {
+        // 폼은 내일까지 열려 있다. 당일·다음 날 신규 접수만 닫히고 전날은 받는다.
+        for ((index, offset) in listOf(0, -1).withIndex()) {
+            expoDayOffset.set(offset)
+            assertEquals(400, submit("closed-$index", phone = "0100000000$index"))
+        }
+        assertTrue(userRequests.isEmpty())
+        assertEquals(0, count("tb_preregister_reservation"))
+        expoDayOffset.set(1)
+        assertEquals(201, submit())
+        assertEquals(1, count("tb_preregister_application"))
     }
 
     @Test
@@ -568,6 +583,8 @@ class PreregisterRegistrationHttpTests {
         assertEquals(1, userRequests.size)
         upstreamAvailable = true
         formDayOffset.set(10)
+        // 행사 시작 뒤에도 이미 좌석을 확보한 예약의 복구와 완료 재조회는 신규 접수가 아니다(#171).
+        expoDayOffset.set(0)
         assertEquals(201, submit(people = 2))
         assertTrue(userRequests.all { it == original })
         assertEquals(1, stored.size)

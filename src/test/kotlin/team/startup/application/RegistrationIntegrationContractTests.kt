@@ -39,7 +39,7 @@ class RegistrationIntegrationContractTests {
         val requests = mutableListOf<String>()
         val saved = mutableListOf<JsonNode>()
         var expoStatus = 200
-        val dates = """"startedDay":"$today","finishedDay":"$today""""
+        var dates = """"startedDay":"$today","finishedDay":"$today""""
         var setting = """"participantPhoneVerificationRequired":true,"participantPhoneVerificationRevision":1"""
         var sessionStatus = 200
         var sessionBody = """{"expoId":"$expoId","phoneNumber":"01099998888","expiresAt":"2100-01-01T00:00:00"}"""
@@ -128,6 +128,10 @@ class RegistrationIntegrationContractTests {
             val body =
                 """{"name":"person","phoneNumber":"01012345678","informationJson":"{}","personalInformationStatus":true,"trainingId":"training-1","sessionId":1}"""
             for (route in listOf("", "/pre-standard", "/field", "/field/standard")) {
+                // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
+                val startedDay = if (route == "/pre-standard") today.plusDays(1) else today
+                dates = """"startedDay":"$startedDay","finishedDay":"$startedDay""""
+
                 fun submit(sessionCookie: String? = "valid") =
                     mvc.perform(
                         post("/application$route/$expoId")
@@ -292,6 +296,7 @@ class RegistrationIntegrationContractTests {
         val now = OffsetDateTime.now()
         val start = now.minusDays(1).toString()
         val end = now.plusDays(1).toString()
+        var startedDay = today
         val requests = mutableListOf<Pair<String, JsonNode>>()
         val counts = mutableListOf<String>()
         val queries = mutableListOf<String>()
@@ -316,7 +321,7 @@ class RegistrationIntegrationContractTests {
                         assertEquals("GET", exchange.requestMethod)
                         assertEquals("expo-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
                         200 to
-                            """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                            """{"startedDay":"$startedDay","finishedDay":"$startedDay","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                     }
 
                     path.startsWith("/internal/forms/") -> {
@@ -409,6 +414,8 @@ class RegistrationIntegrationContractTests {
                 )
             val routes = listOf("" to "TRAINEE", "/pre-standard" to "STANDARD", "/field" to "TRAINEE", "/field/standard" to "STANDARD")
             for ((index, route) in routes.withIndex()) {
+                // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
+                startedDay = if (route.first == "/pre-standard") today.plusDays(1) else today
                 mvc
                     .perform(
                         post(
@@ -448,6 +455,7 @@ class RegistrationIntegrationContractTests {
                     assertEquals(mapper.readTree("[]"), sent.get("questions"))
                 }
             }
+            startedDay = today
             assertEquals(List(2) { "/internal/expo/$expoId/standard-registrations/42" }, counts)
             countAvailable = false
             mvc
@@ -533,6 +541,7 @@ class RegistrationIntegrationContractTests {
                 assertEquals(countBeforeInvalidResponse, counts.size)
             }
             val requestsBeforeInvalidRegion = requests.size
+            startedDay = today.plusDays(1)
             for (region in listOf("\"SEOUL\"", "\" JEONNAM \"", "123", "null", "[]", "{}", "\"\"")) {
                 mvc
                     .perform(
@@ -552,6 +561,7 @@ class RegistrationIntegrationContractTests {
                     ).andExpect(status().isBadRequest)
             }
             assertEquals(requestsBeforeInvalidRegion, requests.size)
+            startedDay = today
 
             for (invalid in listOf(
                 "null",
