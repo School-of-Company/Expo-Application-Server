@@ -31,6 +31,6 @@ class AddOwnerPreregisterCompanionsServiceImpl(
         }
         val party = gateway.managedParty(command.expoId, command.sessionId)
         val added = workflow.addCompanions(command.expoId, applicationId, party, command.companions, command.idempotencyKey)
-        return OwnerPreregisterCompanionsResult(applicationId.toString(), added)
+        return OwnerPreregisterCompanionsResult(applicationId.toString(), added.participantIds, added.status, added.position)
     }
 }

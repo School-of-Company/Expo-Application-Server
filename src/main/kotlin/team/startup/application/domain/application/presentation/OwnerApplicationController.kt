@@ -96,11 +96,14 @@ class OwnerApplicationController(
         summary = "내 사전등록 일행에 동행자 추가",
         description =
             "참가자 세션과 CSRF 토큰이 필요합니다. 세션 대표자 본인의 확정 사전등록에만 추가합니다. " +
-                "회차 잔여석과 폼 동행자 상한(maxSelection, 대표자 포함 5명)을 박람회 좌석 잠금 안에서 다시 확인하며, " +
-                "모자라면 대기로 받지 않고 409입니다. 새 동행자의 QR은 대표자 번호로 발송됩니다. " +
+                "회차 잔여석과 폼 동행자 상한(maxSelection, 대표자 포함 5명)을 박람회 좌석 잠금 안에서 다시 확인합니다. " +
+                "자리가 모자라면 대기 접수가 켜져 있고 대기 정원이 남은 경우 회차 대기열 뒤에 세우고(202 WAITING), " +
+                "일반 대기 일행과 같은 규칙(#144: 회차 전날 전 자동 승급, 전날부터 참여 제안·수락)으로 확정합니다. " +
+                "새 동행자의 QR은 대표자 번호로 발송됩니다. 대기 중인 추가는 내 대기 취소로 철회할 수 있습니다. " +
                 "같은 Idempotency-Key로 다시 보내면 같은 추가를 이어서 처리합니다.",
         responses = [
             ApiResponse(responseCode = "201", description = "추가 확정"),
+            ApiResponse(responseCode = "202", description = "대기 접수(WAITING, position) 또는 승급 뒤 User 저장 중(PROCESSING). QR 없음"),
             ApiResponse(responseCode = "400", description = "동행자 형식 오류 또는 중복 입력"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
@@ -122,8 +125,8 @@ class OwnerApplicationController(
         @RequestHeader("Idempotency-Key", required = false) idempotencyKey: String?,
         request: HttpServletRequest,
     ): ResponseEntity<OwnerPreregisterCompanionsResult> =
-        ResponseEntity.status(HttpStatus.CREATED).header("Cache-Control", "no-store").body(
-            addCompanions.execute(
+        addCompanions
+            .execute(
                 AddOwnerPreregisterCompanionsCommand(
                     expoId,
                     session(request),
@@ -131,8 +134,12 @@ class OwnerApplicationController(
                     requireNotNull(body.companions),
                     idempotencyKey,
                 ),
-            ),
-        )
+            ).let { result ->
+                ResponseEntity
+                    .status(if (result.status == "CONFIRMED") HttpStatus.CREATED else HttpStatus.ACCEPTED)
+                    .header("Cache-Control", "no-store")
+                    .body(result)
+            }
 
     @GetMapping("/preregister-waitlist")
     @Operation(

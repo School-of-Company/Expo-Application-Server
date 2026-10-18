@@ -101,7 +101,14 @@ data class AddOwnerPreregisterCompanionsCommand(
 @Schema(description = "동행자 추가 결과")
 data class OwnerPreregisterCompanionsResult(
     @field:Schema(description = "동행자를 더한 대표자 사전등록 ID", example = "123") val applicationId: String,
-    @field:Schema(description = "새로 확정된 동행자 참가자 ID. QR은 대표자 번호로 발송된다") val participantIds: List<Long>,
+    @field:Schema(description = "새로 확정된 동행자 참가자 ID. QR은 대표자 번호로 발송된다. 대기·처리 중이면 빈 목록") val participantIds: List<Long>,
+    @field:Schema(
+        description = "CONFIRMED(확정), WAITING(자리가 모자라 회차 대기열에 섬, #144 규칙으로 승급), PROCESSING(승급 뒤 User 저장 중)",
+        example = "CONFIRMED",
+    )
+    val status: String = "CONFIRMED",
+    @field:Schema(description = "WAITING일 때 회차 대기 순번(1부터). 그 외 null", example = "2")
+    val position: Int? = null,
 )
 
 @Schema(description = "인증된 대표자의 참가자와 신청 목록")
