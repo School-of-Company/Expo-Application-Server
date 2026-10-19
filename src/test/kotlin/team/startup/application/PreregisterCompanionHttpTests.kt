@@ -355,6 +355,58 @@ class PreregisterCompanionHttpTests {
     }
 
     @Test
+    fun `representative reapplies after the whole party is cancelled with any companion composition`() {
+        // #196: User 재신청 응답의 일행에는 취소된 동행자가 남는다. 이 표가 이슈의 재현 표다.
+        data class Case(
+            val previous: List<String>,
+            val next: List<String>,
+            val status: Int,
+            val confirmed: List<Long>,
+            // 원장에 신청 행이 없는 User 동행자(이전 동행자 중 마지막)
+            val orphan: Boolean = false,
+        )
+        val cases =
+            listOf(
+                Case(emptyList(), emptyList(), 201, listOf(42L)),
+                Case(listOf("b"), listOf("b"), 201, listOf(42L, 43L)),
+                Case(listOf("b"), emptyList(), 201, listOf(42L)),
+                Case(listOf("b"), listOf("c"), 201, listOf(42L, 44L)),
+                // User 일행이 5명을 넘어도 취소된 동행자를 빼면 맞는다.
+                Case(listOf("b", "c", "d", "e"), listOf("f"), 201, listOf(42L, 47L)),
+                // 취소된 동행자 중 일부만 다시 신청하면 어느 ID가 이번 일행인지 알 수 없다. 좌석을 잡고 검토로 남긴다.
+                Case(listOf("b", "c"), listOf("b"), 502, emptyList()),
+                // 취소되지 않은 ID가 남으면 인원이 맞아도 다른 사람을 확정하지 않는다.
+                Case(listOf("b", "x"), listOf("b"), 502, emptyList(), orphan = true),
+            )
+        cases.forEach { (previous, next, status, confirmed, orphan) ->
+            reset()
+            capacity.set(5)
+            assertEquals(201, register(PHONE, null, companions = previous).status, "$previous")
+            jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED'")
+            if (orphan) jdbc.update("DELETE FROM tb_preregister_application WHERE participant_id = ?", 42L + previous.size)
+            val response = register(PHONE, null, companions = next)
+            assertEquals(status, response.status, "$previous -> $next: ${response.contentAsString}")
+            assertEquals(
+                confirmed,
+                jdbc.queryForList(
+                    "SELECT participant_id FROM tb_preregister_application WHERE status = 'CONFIRMED' ORDER BY participant_id",
+                    Long::class.java,
+                ),
+                "$previous -> $next",
+            )
+            if (status == 502) {
+                assertEquals(
+                    502,
+                    jdbc.queryForObject(
+                        "SELECT error_status FROM tb_preregister_reservation WHERE state = 'RESERVED'",
+                        Int::class.java,
+                    ),
+                )
+            }
+        }
+    }
+
+    @Test
     fun `User rejection releases held seats and an idempotent retry does not save twice`() {
         capacity.set(4)
         assertEquals(201, register(PHONE, null).status)
@@ -406,9 +458,10 @@ class PreregisterCompanionHttpTests {
         phone: String,
         companion: String?,
         session: String = "owner",
+        companions: List<String> = emptyList(),
     ): MockHttpServletResponse {
         sessions[session] = phone
-        val companions = listOfNotNull(companion).map { companion(it) }
+        val companions = (listOfNotNull(companion) + companions).map { companion(it) }
         val body =
             mapper.writeValueAsString(
                 mapOf(
@@ -530,8 +583,10 @@ class PreregisterCompanionHttpTests {
             smsTries.merge(phone, 1, Int::plus)
             val texted = (if (added.isEmpty()) party else added).joinToString(",") { it.first.toString() }
             val group = party.joinToString(",") { it.first.toString() }
+            val created = added.joinToString(",") { it.first.toString() }
             return 201 to
-                """{"participantId":${party.first().first},"phoneNumber":"$phone","participantIds":[$texted],"groupParticipantIds":[$group]}"""
+                """{"participantId":${party.first().first},"phoneNumber":"$phone","participantIds":[$texted],""" +
+                """"groupParticipantIds":[$group],"createdIds":[$created]}"""
         }
 
         private val server =
