@@ -460,6 +460,7 @@ class OwnerCancellationRevisionServiceTests {
                                     ) {
                                         exchange.requestURI.query
                                             .substringAfter("revision=")
+                                            .substringBefore('&')
                                             .toLong()
                                     } else {
                                         MAPPER.readTree(body).path("revision").asLong()

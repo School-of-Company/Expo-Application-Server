@@ -372,7 +372,7 @@ class PreregisterRegistrationWorkflow(
                 reserved.companionOf?.let { return@execute completeCompanions(expoId, reserved, result, it, categories) }
                 val ids = result.groupParticipantIds
                 if (repository.expoDeleted(expoId)) {
-                    ids.forEach { attendance.cancelled(expoId, it) }
+                    ids.forEach { attendance.cancelled(expoId, it, reserved.sessionId) }
                     reservations.finish(reserved, 409)
                     return@execute ResponseStatusException(HttpStatus.CONFLICT, "삭제된 박람회입니다.")
                 }
@@ -429,7 +429,7 @@ class PreregisterRegistrationWorkflow(
     ): ResponseStatusException? {
         val ids = result.participantIds
         if (repository.expoDeleted(expoId)) {
-            ids.forEach { attendance.cancelled(expoId, it) }
+            ids.forEach { attendance.cancelled(expoId, it, reserved.sessionId) }
             reservations.finish(reserved, 409)
             return ResponseStatusException(HttpStatus.CONFLICT, "삭제된 박람회입니다.")
         }
