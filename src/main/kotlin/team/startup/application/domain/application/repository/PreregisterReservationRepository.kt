@@ -26,6 +26,8 @@ data class PreregisterReservation(
     val companionOf: Long? = null,
     // (teacher, other) seats reserved from the snapshot (#173); null for reservations stored before V31.
     val categories: Pair<Int, Int>? = null,
+    // #199: 이미 저장된 일행의 다른 회차 추가. result에 참석자가 미리 담겨 User에 저장하지 않는다.
+    val sessionAddition: Boolean = false,
 )
 
 @Repository
@@ -103,6 +105,86 @@ class PreregisterReservationRepository(
             rs.getObject("withdrawn_at") != null,
             rs.getObject("companion_representative_id", Long::class.javaObjectType),
             rs.getObject("teacher_applicants", Int::class.javaObjectType)?.let { it to rs.getInt("other_applicants") },
+            rs.getBoolean("session_addition"),
+        )
+
+    /**
+     * 다른 회차 추가(#199). 참가자가 이미 User에 있으므로 [result]에 대표자와 참석자를 미리 담는다.
+     * 대기 추가는 일반 대기 일행과 같은 FIFO 순번을 받는다.
+     */
+    fun insertSessionAddition(
+        expoId: UUID,
+        requestId: String,
+        sessionId: Long,
+        command: String,
+        request: ParticipantRegistration,
+        result: ParticipantRegistrationResult,
+        waiting: Boolean,
+        categories: Pair<Int, Int>,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, result, applicants, teacher_applicants, other_applicants, " +
+                "session_addition, state, queue_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?, " +
+                (if (waiting) "nextval('seq_preregister_waitlist'))" else "NULL)"),
+            expoId,
+            requestId,
+            sessionId,
+            command,
+            mapper.writeValueAsString(request),
+            mapper.writeValueAsString(result),
+            result.participantIds.size,
+            categories.first,
+            categories.second,
+            if (waiting) "WAITING" else "RESERVED",
+        )
+    }
+
+    /** 같은 대표 번호로 이 회차에 처리 중이거나 대기 중인 예약이 있는지(#199). */
+    fun sessionInProgress(
+        expoId: UUID,
+        sessionId: Long,
+        phone: String,
+    ): Boolean =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? " +
+                    "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? AND state IN ('RESERVED', 'WAITING'))",
+                Boolean::class.java,
+                expoId,
+                sessionId,
+                phone,
+            ),
+        )
+
+    /** 대표자가 처음 낸 일행 신청의 원본 User 요청(가장 최근). 다른 회차 추가(#199)가 답변을 다시 쓴다. */
+    fun partyRegistration(
+        expoId: UUID,
+        representativeId: Long,
+    ): ParticipantRegistration? =
+        jdbc
+            .query(
+                "SELECT r.user_request FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                    "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id WHERE a.expo_id = ? " +
+                    "AND a.participant_id = ? AND a.representative_id = ? AND r.companion_representative_id IS NULL " +
+                    "AND NOT r.session_addition ORDER BY a.id DESC LIMIT 1",
+                { rs, _ -> mapper.readValue(rs.getString(1), ParticipantRegistration::class.java) },
+                expoId,
+                representativeId,
+                representativeId,
+            ).singleOrNull()
+
+    /** 대표자 일행을 저장한 완료 예약의 User 요청들. 처음 신청과 동행자 추가(#169)의 동행자 답변을 모은다. */
+    fun partyRequests(
+        expoId: UUID,
+        representativeId: Long,
+    ): List<ParticipantRegistration> =
+        jdbc.query(
+            "SELECT user_request FROM tb_preregister_reservation WHERE expo_id = ? AND state = 'COMPLETED' AND NOT session_addition " +
+                "AND (result::jsonb ->> 'participantId')::bigint = ?",
+            { rs, _ -> mapper.readValue(rs.getString(1), ParticipantRegistration::class.java) },
+            expoId,
+            representativeId,
         )
 
     fun insertCompanions(

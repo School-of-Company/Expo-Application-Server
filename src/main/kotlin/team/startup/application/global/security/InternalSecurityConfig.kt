@@ -69,6 +69,9 @@ class InternalSecurityConfig(
                     // #169: the participant session cookie authenticates and the POST stays CSRF protected.
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/PREREGISTER/{applicationId}/companions")
                     .permitAll()
+                    // #199: same session cookie and CSRF protection as #169.
+                    .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-sessions")
+                    .permitAll()
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/preregister-waitlist/cancellation")
                     .permitAll()
                     // #144 offers: the participant session cookie authenticates, and the POSTs stay CSRF protected.

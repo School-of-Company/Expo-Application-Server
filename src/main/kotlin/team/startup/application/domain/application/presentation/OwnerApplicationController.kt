@@ -21,20 +21,25 @@ import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsCommand
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsRequest
+import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterSessionCommand
+import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterSessionRequest
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
 import team.startup.application.domain.application.presentation.dto.GetOwnerApplicationsCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterCompanionsResult
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterSessionResult
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
 import team.startup.application.domain.application.service.AddOwnerPreregisterCompanionsService
+import team.startup.application.domain.application.service.AddOwnerPreregisterSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
+import team.startup.application.domain.application.service.impl.PreregisterFormChangedException
 import java.util.UUID
 
 @RestController
@@ -46,6 +51,7 @@ class OwnerApplicationController(
     private val getWaitlists: GetOwnerPreregisterWaitlistsService,
     private val withdrawWaitlist: WithdrawOwnerPreregisterWaitlistService,
     private val addCompanions: AddOwnerPreregisterCompanionsService,
+    private val addSession: AddOwnerPreregisterSessionService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val sessionCookieName: String,
 ) {
     @GetMapping
@@ -146,6 +152,53 @@ class OwnerApplicationController(
                     .body(result)
             }
 
+    @PostMapping("/preregister-sessions")
+    @Operation(
+        summary = "내 일행의 다른 사전등록 회차 추가",
+        description =
+            "참가자 세션과 CSRF 토큰이 필요합니다(#199). 이미 신청한 일행에서 이 회차에 갈 참가자를 고르면 처음 신청 답변을 다시 써서 " +
+                "일반 신청과 같은 정원·대기 규칙으로 받습니다. 대표자는 빠져도 되지만 학생만으로는 안 됩니다. " +
+                "User에 다시 저장하지 않으므로 QR과 문자는 그대로입니다. 신청 뒤 사전등록 폼이 바뀌었으면 409 FORM_CHANGED로 다시 입력을 요구합니다. " +
+                "같은 Idempotency-Key로 다시 보내면 같은 추가를 이어서 처리합니다.",
+        responses = [
+            ApiResponse(responseCode = "201", description = "회차 확정"),
+            ApiResponse(responseCode = "202", description = "대기 접수(WAITING, position) 또는 승급 뒤 확정 중(PROCESSING)"),
+            ApiResponse(responseCode = "400", description = "형식 오류, 같은 참석자 중복, 일행에 없는 참가자, 학생만 참석, 직업 없는 대상별 정원 회차 참석자"),
+            ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
+            ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
+            ApiResponse(responseCode = "404", description = "신청한 일행 또는 다시 쓸 답변 없음"),
+            ApiResponse(
+                responseCode = "409",
+                description =
+                    "{status:409, code:FORM_CHANGED}(폼 변경, 다시 입력) 또는 이미 신청한 회차, 확정된 다른 회차와 시간 겹침, " +
+                        "마감·시작된 회차, 사전등록 기간 아님, 정원 초과, 같은 키의 다른 내용",
+            ),
+            ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
+            ApiResponse(responseCode = "503", description = "참여 서비스 통지 비활성 또는 공급자 연동 불가(같은 키로 재시도)"),
+        ],
+    )
+    fun addSession(
+        @PathVariable expoId: UUID,
+        @Valid @RequestBody body: AddOwnerPreregisterSessionRequest,
+        @RequestHeader("Idempotency-Key", required = false) idempotencyKey: String?,
+        request: HttpServletRequest,
+    ): ResponseEntity<OwnerPreregisterSessionResult> =
+        addSession
+            .execute(
+                AddOwnerPreregisterSessionCommand(
+                    expoId,
+                    session(request),
+                    requireNotNull(body.sessionId),
+                    requireNotNull(body.participantIds),
+                    idempotencyKey,
+                ),
+            ).let { result ->
+                ResponseEntity
+                    .status(if (result.status == "CONFIRMED") HttpStatus.CREATED else HttpStatus.ACCEPTED)
+                    .header("Cache-Control", "no-store")
+                    .body(result)
+            }
+
     @GetMapping("/preregister-waitlist")
     @Operation(
         summary = "내 사전등록 대기 조회",
@@ -224,10 +277,15 @@ class OwnerApplicationController(
             ?: throw ParticipantSessionException("SESSION_REQUIRED")
 }
 
-// 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를 싣는다. 다른 상태와 응답은 건드리지 않는다(#188).
+// 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199) 싣는다.
+// 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
 class OwnerApplicationSessionExceptionHandler {
     @ExceptionHandler(ParticipantSessionException::class)
     fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("status" to 401, "code" to ex.code))
+
+    @ExceptionHandler(PreregisterFormChangedException::class)
+    fun formChanged(ex: PreregisterFormChangedException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "FORM_CHANGED"))
 }

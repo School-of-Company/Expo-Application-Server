@@ -32,6 +32,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
 import team.startup.application.domain.application.service.AddOwnerPreregisterCompanionsService
+import team.startup.application.domain.application.service.AddOwnerPreregisterSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
@@ -60,6 +61,8 @@ class OwnerApplicationHttpTests {
 
     @MockitoBean private lateinit var addCompanions: AddOwnerPreregisterCompanionsService
 
+    @MockitoBean private lateinit var addSession: AddOwnerPreregisterSessionService
+
     @Test
     fun `cookie is required and internal token or query session cannot replace it`() {
         mvc.perform(get(PATH)).andExpect(status().isUnauthorized)
@@ -84,6 +87,10 @@ class OwnerApplicationHttpTests {
                     .with(csrf())
                     .contentType("application/json")
                     .content("""{"companions":[{"name":"a","occupation":"STUDENT","region":"SEOUL"}]}"""),
+                post("$PATH/preregister-sessions")
+                    .with(csrf())
+                    .contentType("application/json")
+                    .content("""{"sessionId":2,"participantIds":[1]}"""),
             )
         paths.forEach {
             mvc
@@ -92,7 +99,7 @@ class OwnerApplicationHttpTests {
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
         }
-        verifyNoInteractions(query, cancel, waitlist, withdraw, addCompanions)
+        verifyNoInteractions(query, cancel, waitlist, withdraw, addCompanions, addSession)
     }
 
     @Test
