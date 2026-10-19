@@ -40,14 +40,16 @@ class ApplyPreregisterSessionServiceImpl(
                 replay(command, serialized)?.let { return@execute it }
                 val definition = ledger.current(command.expoId, command.sessionId, observation)
                 if (definition.closed) conflict("마감된 회차입니다.")
-                val existing = command.participantIds.associateWith { repository.activeOwned(command.expoId, it) }
-                if (existing.values.filterNotNull().any {
-                        it.first.sessionId != command.sessionId || it.second != command.representativeId
-                    }
-                ) {
-                    conflict("다른 회차 또는 대표자의 활성 신청이 있습니다.")
+                val existing = command.participantIds.associateWith { repository.activeOwned(command.expoId, command.sessionId, it) }
+                if (existing.values.filterNotNull().any { it.second != command.representativeId }) {
+                    conflict("다른 대표자의 활성 신청이 있습니다.")
                 }
-                val newCount = existing.values.count { it == null }
+                val added = existing.filterValues { it == null }.keys
+                // #198: other sessions are allowed unless their times overlap this one.
+                if (repository.overlapping(command.expoId, command.sessionId, added, definition)) {
+                    conflict("시간이 겹치는 회차에 활성 신청이 있습니다.")
+                }
+                val newCount = added.size
                 // This trusted-ID path carries no occupations, so it cannot take seats from a target session (#173).
                 if (newCount > 0 && definition.targeted) conflict("대상별 정원 회차는 사전등록 신청으로만 좌석을 확보합니다.")
                 if (newCount.toLong() > definition.capacity.toLong() - repository.occupied(command.expoId, command.sessionId)) {
