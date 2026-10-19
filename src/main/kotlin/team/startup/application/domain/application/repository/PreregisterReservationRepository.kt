@@ -164,6 +164,57 @@ class PreregisterReservationRepository(
                 applicationId,
             ).singleOrNull()
 
+    /**
+     * 대표자의 동행자 중 원장에서 신청이 취소된 참가자 ID(#190). 대표자 본인과 다시 활성 신청이 생긴 사람,
+     * 대기 중인 사람(취소가 아님)은 뺀다. 같은 박람회 잠금 안에서 부른다.
+     */
+    fun cancelledCompanions(
+        expoId: UUID,
+        representativeId: Long,
+    ): List<Long> =
+        jdbc.query(
+            "SELECT DISTINCT a.participant_id FROM tb_preregister_application a WHERE a.expo_id = ? AND a.representative_id = ? " +
+                "AND a.participant_id <> a.representative_id AND a.status = 'CANCELLED' " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
+                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') ORDER BY a.participant_id",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            representativeId,
+        )
+
+    /** 같은 전화번호(숫자만)로 이미 저장된 대표자 일행의 취소된 동행자. 대표자 재신청에서 쓴다. */
+    fun cancelledCompanionsOfPhone(
+        expoId: UUID,
+        phone: String,
+    ): List<Long> =
+        jdbc.query(
+            "SELECT DISTINCT a.participant_id FROM tb_preregister_application a WHERE a.expo_id = ? AND a.status = 'CANCELLED' " +
+                "AND a.participant_id <> a.representative_id AND a.representative_id IN (" +
+                "SELECT (r.result::jsonb ->> 'participantId')::bigint FROM tb_preregister_reservation r WHERE r.expo_id = a.expo_id " +
+                "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL " +
+                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?) " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
+                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') ORDER BY a.participant_id",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            phone,
+        )
+
+    /** User로 처음 보내기 전에 계산한 취소 동행자 ID를 원본 요청에 고정한다. 재시도는 같은 본문을 보내야 User 멱등 검사를 통과한다. */
+    fun saveReleased(
+        reservation: PreregisterReservation,
+        ids: List<Long>,
+    ) {
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET user_request = " +
+                "(user_request::jsonb || jsonb_build_object('releasedParticipantIds', ?::jsonb))::text " +
+                "WHERE expo_id = ? AND request_id = ?",
+            mapper.writeValueAsString(ids),
+            reservation.expoId,
+            reservation.requestId,
+        )
+    }
+
     fun insertWaiting(
         expoId: UUID,
         requestId: String,

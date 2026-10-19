@@ -242,6 +242,19 @@ class PreregisterRegistrationWorkflow(
         )
     }
 
+    private fun withReleased(saved: PreregisterReservation): PreregisterReservation {
+        val ids =
+            saved.companionOf?.let { reservations.cancelledCompanions(saved.expoId, it) }
+                ?: saved.userRequest.phoneNumber
+                    .filter { it in '0'..'9' }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { reservations.cancelledCompanionsOfPhone(saved.expoId, it) }
+                    .orEmpty()
+        if (ids.isEmpty()) return saved
+        reservations.saveReleased(saved, ids)
+        return saved.copy(userRequest = saved.userRequest.copy(releasedParticipantIds = ids))
+    }
+
     fun recover(
         expoId: UUID,
         requestId: String,
@@ -272,8 +285,17 @@ class PreregisterRegistrationWorkflow(
                         saved.copy(state = "REJECTED", errorStatus = 409)
                     } else {
                         // Persist attempted delivery before HTTP, even if the process dies after User commits.
+                        // #190: 처음 User로 보내는 시도에서만 취소된 동행자를 계산해 요청에 고정한다. 이후 재시도는 같은 본문이다.
+                        val prepared =
+                            if (saved.attempts == 0 && saved.result == null &&
+                                saved.errorStatus == null
+                            ) {
+                                withReleased(saved)
+                            } else {
+                                saved
+                            }
                         if (saved.errorStatus == null || repository.expoDeleted(expoId)) reservations.retry(saved)
-                        saved
+                        prepared
                     }
                 },
             )
