@@ -16,6 +16,7 @@
 | POST `/targets` | 아래 SELECTED/FILTERED JSON | 동일 목록 조건의 현재 대상 해석, 최대 5000행 |
 | GET `/summary` | 기존 계약 그대로 | 전체 행사·회차별 고유 확정/취소, 대기 인원 및 복구 예약 집계 |
 | POST `/cancellation` | `{"keys":[...]}` | 관리자 취소·대기 철회(#182). 아래 "관리자 취소" 참조 |
+| GET `/activities` | `action`, `sessionId`, `from`, `until`, `q`, `page=0`, `size=20` | 상태 변경 이력(#189). 아래 "상태 변경 이력" 참조 |
 
 `status`는 CONFIRMED, WAITING, CANCELLED, PENDING의 쉼표 목록이다.
 JSON 필터는 단일 상태 문자열 또는 배열을 받는다. `sessionId`는 양수다.
@@ -106,6 +107,22 @@ APPLICATION_CANCEL, Attendance 관리자 acquire/abort, 마감·입장·스캔 �
 - 실행자는 `ADMIN`과 관리자 ID(V32 `tb_preregister_transition.actor_id`, `tb_preregister_reservation.withdrawn_actor_id`)로 기록하고
   목록·상세·대상 행의 `cancellationActorId`로 내려준다. 그 외 주체와 과거 행은 null이다.
 - 확인 팝업과 동행자 함께 취소 선택은 Client 몫이다(Expo-Client#664).
+
+## 상태 변경 이력 (#189)
+
+`GET /application/admin/expos/{expoId}/preregistrations/activities`는 `APPLICATION_READ`를 검증하고 `no-store`로 응답한다.
+새 로그 테이블 없이 기존 원장에서 읽는다. 행은 시각 역순(`createdAt` 미기록은 맨 뒤, 같으면 `key` 역순)이다.
+
+- `CONFIRMED`/`CANCELLED`: `tb_preregister_transition` 한 행(참가자 단위, `applicants=1`). `previousStatus`는 같은 신청의 앞선 전이
+  상태이며 없으면 null이다(최초 전이 또는 앞선 기록이 없는 과거 행). 전이에는 이전 상태 컬럼이 없어 조회 때 계산한다.
+- `WAITING_WITHDRAWN`: 철회된 대기 예약(`withdrawn_at`) 한 행(일행 단위, `participantId=null`, `reservationRequestId`).
+  `previousStatus=WAITING`, `status=CANCELLED`이고 `reservation.name/phoneNumber`는 제출 당시 대표자 값이다.
+- 대기 접수와 승급은 포함하지 않는다. 예약에 접수 시각이 없고, 승급은 확정 전이와 구분할 기록이 없다(추정하지 않는다).
+- 실행자 필드는 접수대장 취소 필드와 같은 의미다: `actorType`(과거 행·내부 호출은 `UNKNOWN`), ADMIN의 `actorId`,
+  USER의 `actorUser`(확정은 `CURRENT_USER` 이름, 대기는 `REGISTRATION_SNAPSHOT` 이름). `participant`는 조회 시점 User 정보다.
+- 필터: `action`, `sessionId`, `from`(포함)/`until`(미포함), `q`. 기간 조건은 시각이 NULL인 과거 행을 제외한다. `q`는 확정·취소는
+  User 현재 이름·번호 검색 결과, 대기 철회는 제출 당시 이름·번호다. 지원하지 않거나 반복·빈 query, `from>=until`은 400이다.
+- 응답 `ledgerKey`는 목록·상세의 `key`와 같아 Client가 접수대장 행으로 이동할 수 있다.
 
 ## 의존 이슈 초안 (아직 GitHub에 생성하지 않음)
 
