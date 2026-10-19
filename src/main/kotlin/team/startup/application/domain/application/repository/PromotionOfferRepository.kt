@@ -240,21 +240,20 @@ class PromotionOfferRepository(
             )
         }
 
-    // Latest preregistration offer of the party whose representative phone the session verified.
+    // Latest preregistration offer per waiting reservation of the party whose representative phone the session verified (#198).
     fun forPhone(
         expoId: UUID,
         phone: String,
-    ): PromotionOffer? =
-        jdbc
-            .query(
-                "SELECT o.* FROM tb_promotion_offer o JOIN tb_preregister_reservation r " +
-                    "ON r.expo_id = o.expo_id AND r.request_id = o.request_id WHERE o.expo_id = ? AND o.target = 'PREREGISTER' " +
-                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
-                    "ORDER BY o.created_at DESC, o.id LIMIT 1",
-                mapper,
-                expoId,
-                phone,
-            ).singleOrNull()
+    ): List<PromotionOffer> =
+        jdbc.query(
+            "SELECT DISTINCT ON (o.request_id) o.* FROM tb_promotion_offer o JOIN tb_preregister_reservation r " +
+                "ON r.expo_id = o.expo_id AND r.request_id = o.request_id WHERE o.expo_id = ? AND o.target = 'PREREGISTER' " +
+                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "ORDER BY o.request_id, o.created_at DESC, o.id",
+            mapper,
+            expoId,
+            phone,
+        )
 
     fun due(now: Instant): List<UUID> =
         jdbc.query(

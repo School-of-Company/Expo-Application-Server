@@ -32,7 +32,7 @@ class GetOwnerPromotionOffersServiceImpl(
             reads.execute {
                 (
                     offers.forParty(command.expoId, party.participants.map { it.participantId }, party.representativeId) +
-                        listOfNotNull(offers.forPhone(command.expoId, phone))
+                        offers.forPhone(command.expoId, phone)
                 ).map { shared.owner(it, now) }
             },
         )

@@ -25,7 +25,9 @@ class WithdrawOwnerPreregisterWaitlistServiceImpl(
                 ledger.transactions.execute {
                     ledger.lock(command.expoId)
                     val reservation =
-                        reservations.waitlistedByPhone(command.expoId, phone) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
+                        reservations.waitlistedByPhone(command.expoId, phone).firstOrNull {
+                            command.sessionId == null || it.sessionId == command.sessionId
+                        } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
                     if (!reservations.withdraw(reservation, ApplicationActorType.USER)) {
                         conflict("승급 처리 중입니다. 확정 뒤 신청 취소를 이용해 주세요.")
                     }
