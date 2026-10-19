@@ -35,6 +35,7 @@ import team.startup.application.domain.application.service.AddOwnerPreregisterCo
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.global.security.InternalSecurityConfig
@@ -52,6 +53,8 @@ class OwnerApplicationHttpTests {
     @MockitoBean private lateinit var cancel: CancelOwnerApplicationService
 
     @MockitoBean private lateinit var waitlist: GetOwnerPreregisterWaitlistService
+
+    @MockitoBean private lateinit var waitlists: GetOwnerPreregisterWaitlistsService
 
     @MockitoBean private lateinit var withdraw: WithdrawOwnerPreregisterWaitlistService
 

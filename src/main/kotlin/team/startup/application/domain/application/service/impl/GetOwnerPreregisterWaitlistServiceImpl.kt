@@ -2,48 +2,17 @@ package team.startup.application.domain.application.service.impl
 
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
-import org.springframework.transaction.PlatformTransactionManager
-import org.springframework.transaction.annotation.Propagation
-import org.springframework.transaction.annotation.Transactional
-import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlistCommand
-import team.startup.application.domain.application.repository.PreregisterReservationRepository
-import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 
-// A waiting party has no User participant yet, so the verified session phone identifies the owner.
+// The latest waiting party, or the one for command.sessionId; the list operation owns the lookup (#198).
 @Service
 class GetOwnerPreregisterWaitlistServiceImpl(
-    private val gateway: RegistrationGateway,
-    private val reservations: PreregisterReservationRepository,
-    private val sessions: PreregisterSessionRepository,
-    private val waitlist: PreregisterWaitlist,
-    transactionManager: PlatformTransactionManager,
+    private val waitlists: GetOwnerPreregisterWaitlistsService,
 ) : GetOwnerPreregisterWaitlistService {
-    private val reads = TransactionTemplate(transactionManager).apply { isReadOnly = true }
-
-    @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
-    override fun execute(command: OwnerPreregisterWaitlistCommand): OwnerPreregisterWaitlist {
-        val phone = gateway.participantSessionPhone(command.expoId.toString(), command.participantSession)
-        return reads.execute {
-            reservations.waitlistedByPhone(command.expoId, phone)?.let {
-                val waiting = it.state == "WAITING"
-                val ended = waiting && sessions.definition(command.expoId, it.sessionId)?.let(waitlist::accepts) == false
-                OwnerPreregisterWaitlist(
-                    it.sessionId,
-                    it.applicants,
-                    if (ended) {
-                        "PROMOTION_ENDED"
-                    } else if (waiting) {
-                        "WAITING"
-                    } else {
-                        "PROCESSING"
-                    },
-                    if (waiting && !ended) reservations.position(it) else null,
-                )
-            }
-        } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
-    }
+    override fun execute(command: OwnerPreregisterWaitlistCommand): OwnerPreregisterWaitlist =
+        waitlists.execute(command).firstOrNull() ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
 }

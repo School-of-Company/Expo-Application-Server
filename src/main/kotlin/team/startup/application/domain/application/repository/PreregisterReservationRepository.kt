@@ -302,20 +302,19 @@ class PreregisterReservationRepository(
             java.sql.Timestamp.from(now),
         )
 
-    // The phone index from V8 keeps owner lookup cheap; samePhoneInUse allows at most one such reservation.
+    // The phone index from V8 keeps owner lookup cheap. Latest first; a party may wait for several sessions (#198).
     fun waitlistedByPhone(
         expoId: UUID,
         phone: String,
-    ): PreregisterReservation? =
-        jdbc
-            .query(
-                "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
-                    "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
-                    "AND queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq DESC LIMIT 1",
-                { rs, _ -> reservation(rs) },
-                expoId,
-                phone,
-            ).singleOrNull()
+    ): List<PreregisterReservation> =
+        jdbc.query(
+            "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
+                "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq DESC",
+            { rs, _ -> reservation(rs) },
+            expoId,
+            phone,
+        )
 
     fun promote(reservation: PreregisterReservation): Boolean =
         jdbc.update(

@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.bind.annotation.RestControllerAdvice
@@ -31,6 +32,7 @@ import team.startup.application.domain.application.service.AddOwnerPreregisterCo
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import java.util.UUID
@@ -41,6 +43,7 @@ class OwnerApplicationController(
     private val getApplications: GetOwnerApplicationsService,
     private val cancelApplication: CancelOwnerApplicationService,
     private val getWaitlist: GetOwnerPreregisterWaitlistService,
+    private val getWaitlists: GetOwnerPreregisterWaitlistsService,
     private val withdrawWaitlist: WithdrawOwnerPreregisterWaitlistService,
     private val addCompanions: AddOwnerPreregisterCompanionsService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val sessionCookieName: String,
@@ -146,7 +149,9 @@ class OwnerApplicationController(
     @GetMapping("/preregister-waitlist")
     @Operation(
         summary = "내 사전등록 대기 조회",
-        description = "참가자 세션의 검증 번호로 대기 일행을 찾습니다. 대기 일행은 User 저장 전이라 QR이 없습니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
+        description =
+            "참가자 세션의 검증 번호로 대기 일행을 찾습니다. sessionId가 없으면 가장 최근 대기 1건입니다. " +
+                "대기 일행은 User 저장 전이라 QR이 없습니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
         responses = [
             ApiResponse(responseCode = "200", description = "대기 또는 승급 처리 중인 일행"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
@@ -157,6 +162,7 @@ class OwnerApplicationController(
     )
     fun waitlist(
         @PathVariable expoId: UUID,
+        @RequestParam(required = false) sessionId: Long?,
         request: HttpServletRequest,
         csrf: CsrfToken,
     ): ResponseEntity<OwnerPreregisterWaitlist> =
@@ -164,12 +170,34 @@ class OwnerApplicationController(
             .ok()
             .header("Cache-Control", "no-store")
             .header(csrf.headerName, csrf.token)
-            .body(getWaitlist.execute(OwnerPreregisterWaitlistCommand(expoId, session(request))))
+            .body(getWaitlist.execute(OwnerPreregisterWaitlistCommand(expoId, session(request), sessionId)))
+
+    @GetMapping("/preregister-waitlists")
+    @Operation(
+        summary = "내 사전등록 대기 목록 조회",
+        description = "회차마다 대기한 일행을 최근 순으로 돌려줍니다(#198). 없으면 빈 배열입니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
+        responses = [
+            ApiResponse(responseCode = "200", description = "대기 또는 승급 처리 중인 일행 목록"),
+            ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
+            ApiResponse(responseCode = "502", description = "User 응답 계약 또는 내부 인증 오류"),
+            ApiResponse(responseCode = "503", description = "User 연동 불가"),
+        ],
+    )
+    fun waitlists(
+        @PathVariable expoId: UUID,
+        request: HttpServletRequest,
+        csrf: CsrfToken,
+    ): ResponseEntity<List<OwnerPreregisterWaitlist>> =
+        ResponseEntity
+            .ok()
+            .header("Cache-Control", "no-store")
+            .header(csrf.headerName, csrf.token)
+            .body(getWaitlists.execute(OwnerPreregisterWaitlistCommand(expoId, session(request))))
 
     @PostMapping("/preregister-waitlist/cancellation")
     @Operation(
         summary = "내 사전등록 대기 일행 전체 취소",
-        description = "참가자 세션과 CSRF 토큰이 필요합니다. 취소된 대기는 같은 Idempotency-Key로 다시 만들 수 없고, 재신청은 새 키로 합니다.",
+        description = "참가자 세션과 CSRF 토큰이 필요합니다. sessionId가 없으면 가장 최근 대기 1건을 취소합니다. 취소된 대기는 같은 Idempotency-Key로 다시 만들 수 없고, 재신청은 새 키로 합니다.",
         responses = [
             ApiResponse(responseCode = "204", description = "대기 취소 완료"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
@@ -183,8 +211,9 @@ class OwnerApplicationController(
     @ResponseStatus(HttpStatus.NO_CONTENT)
     fun withdraw(
         @PathVariable expoId: UUID,
+        @RequestParam(required = false) sessionId: Long?,
         request: HttpServletRequest,
-    ) = withdrawWaitlist.execute(OwnerPreregisterWaitlistCommand(expoId, session(request)))
+    ) = withdrawWaitlist.execute(OwnerPreregisterWaitlistCommand(expoId, session(request), sessionId))
 
     private fun session(request: HttpServletRequest): String =
         request.cookies
