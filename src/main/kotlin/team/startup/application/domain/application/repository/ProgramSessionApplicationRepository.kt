@@ -28,6 +28,11 @@ class ProgramSessionApplicationRepository(
     private val attribution: LegacyTraineeAttributionRepository,
     private val gateway: RegistrationGateway,
 ) {
+    // ponytail: 회차 신청 트랜잭션 전체에 고정 5초. 락 안의 User 연수자 호출(최대 8초)이 길어지면 대기자는 재시도로 빠진다.
+    fun limitLockWait() {
+        jdbc.execute("SET LOCAL lock_timeout = '5s'")
+    }
+
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
     }
