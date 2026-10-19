@@ -328,6 +328,7 @@ class PreregisterReservationRepository(
     /** 대표자 신청이 취소되면 그 대표자에게 붙이려고 기다리던 동행자 추가도 끝낸다(#169). */
     fun withdrawCompanionWaits(
         expoId: UUID,
+        sessionId: Long,
         representativeId: Long,
         actorType: ApplicationActorType,
         actorId: Long? = null,
@@ -335,10 +336,11 @@ class PreregisterReservationRepository(
         jdbc.update(
             "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
                 "withdrawn_actor_type = ?, withdrawn_actor_id = ? " +
-                "WHERE expo_id = ? AND companion_representative_id = ? AND state = 'WAITING'",
+                "WHERE expo_id = ? AND session_id = ? AND companion_representative_id = ? AND state = 'WAITING'",
             actorType.name,
             actorId,
             expoId,
+            sessionId,
             representativeId,
         )
 
