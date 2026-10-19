@@ -20,6 +20,7 @@ import team.startup.application.domain.application.presentation.dto.CancelPrereg
 import team.startup.application.domain.application.presentation.dto.PreparePreregisterSessionChangeCommand
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionChangeRequest
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionKey
+import team.startup.application.domain.application.presentation.dto.PurgeExpoRequest
 import team.startup.application.domain.application.service.AdoptPreregisterWaitingCapacityService
 import team.startup.application.domain.application.service.CancelPreregisterSessionService
 import team.startup.application.domain.application.service.PreparePreregisterSessionChangeService
@@ -129,7 +130,10 @@ class PreregisterSessionChangeController(
         @Valid @RequestBody request: AdoptPreregisterWaitingCapacityRequest,
     ) = adopt.execute(AdoptPreregisterWaitingCapacityCommand(expoId, sessionId, request.expected))
 
-    @Operation(summary = "박람회 회차 원장 정리와 영구 삭제 표식")
+    @Operation(
+        summary = "박람회 회차 원장·프로그램 신청 정리와 영구 삭제 표식",
+        description = "body의 프로그램마다 프로그램 신청 삭제와 삭제 표식을 남기고, 박람회의 프로그램 회차 신청·대기·제안·보호자 배치·리포트 스냅샷을 지운다. 재시도해도 같은 결과다.",
+    )
     @ApiResponses(
         value = [
             ApiResponse(responseCode = "204", description = "처리 완료"),
@@ -139,5 +143,6 @@ class PreregisterSessionChangeController(
     @ResponseStatus(HttpStatus.NO_CONTENT)
     fun purge(
         @PathVariable expoId: UUID,
-    ) = purge.execute(expoId)
+        @RequestBody(required = false) request: PurgeExpoRequest?,
+    ) = purge.execute(expoId, request?.standardProgramIds.orEmpty(), request?.trainingProgramIds.orEmpty())
 }
