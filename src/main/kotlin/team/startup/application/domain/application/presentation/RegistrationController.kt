@@ -23,6 +23,7 @@ import team.startup.application.domain.application.service.RegisterStandardPreSe
 import team.startup.application.domain.application.service.RegisterTraineeFieldService
 import team.startup.application.domain.application.service.RegisterTraineePreService
 import team.startup.application.domain.application.service.RegistrationCommand
+import team.startup.application.domain.application.service.impl.OccupationNotOpenException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.WaitlistWithdrawnException
 
@@ -51,6 +52,12 @@ class RegistrationController(
     @ExceptionHandler(ParticipantSessionException::class)
     fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("status" to 401, "code" to ex.code))
+
+    @ExceptionHandler(OccupationNotOpenException::class)
+    fun occupationNotOpen(ex: OccupationNotOpenException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(mapOf("status" to 400, "code" to "OCCUPATION_NOT_OPEN", "message" to ex.reason.orEmpty()))
 
     @ExceptionHandler(WaitlistWithdrawnException::class)
     fun withdrawn(): ResponseEntity<Map<String, Any>> =

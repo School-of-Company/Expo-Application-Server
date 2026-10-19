@@ -173,6 +173,11 @@ class PreregisterRegistrationWorkflow(
                         if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
                         return@execute it.requestId
                     }
+                    PreregisterSeatCategory.requireOpen(
+                        observation.occupationOpenAt,
+                        waitlist.now(),
+                        added.map { it.path("occupation").asString() },
+                    )
                     val availability = companions.evaluate(expoId, party, applicationId, observation, persist = true).require()
                     if (added.size > availability.remaining) conflict(availability.message)
                     val waits = availability.waits(added.size) ?: conflict("일행 전원을 수용할 수 없습니다.")
@@ -284,6 +289,7 @@ class PreregisterRegistrationWorkflow(
                         if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
                         return@execute it.requestId
                     }
+                    PreregisterSeatCategory.requireOpen(observation.occupationOpenAt, waitlist.now(), attendees.map { it.occupation })
                     val original =
                         reservations.partyRegistration(expoId, representativeId)
                             ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "다시 쓸 사전등록 답변이 없습니다.")
