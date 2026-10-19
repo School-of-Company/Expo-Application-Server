@@ -46,6 +46,7 @@ import team.startup.application.domain.application.repository.ProgramPromotionRe
 import team.startup.application.domain.application.service.impl.ProgramPromotionKafkaConfig
 import team.startup.application.domain.application.service.impl.ProgramPromotionPolicy
 import team.startup.application.domain.application.service.impl.ProgramPromotionPublisher
+import team.startup.application.global.scheduling.DefaultTaskSchedulerConfig
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
 import java.time.Clock
@@ -251,7 +252,7 @@ class ProgramPromotionTests {
             context.registerBean(
                 "taskScheduler",
                 ThreadPoolTaskScheduler::class.java,
-                Supplier { ProgramPromotionKafkaConfig().taskScheduler() },
+                Supplier { DefaultTaskSchedulerConfig().taskScheduler() },
             )
             context.registerBean(
                 "programPromotionScheduler",
