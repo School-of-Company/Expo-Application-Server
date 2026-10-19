@@ -42,4 +42,20 @@ class AdminPreregisterSummaryController(
         authorization.execute(AuthorizeAdminApplicationCommand(expoId, bearer))
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(summary.execute(expoId))
     }
+
+    @Operation(
+        summary = "내부 사전등록 고유 인원 집계",
+        description = "관리자 경로와 같은 집계를 X-Internal-Token으로 조회합니다(Notification 등록 인원 리포트). 원장에 없는 행사는 0명입니다.",
+        responses = [
+            ApiResponse(responseCode = "200", description = "행사 및 회차별 사전등록 집계"),
+            ApiResponse(responseCode = "401", description = "X-Internal-Token 인증 실패"),
+            ApiResponse(responseCode = "409", description = "삭제된 행사"),
+            ApiResponse(responseCode = "502", description = "User 참가자 응답 계약 오류"),
+            ApiResponse(responseCode = "503", description = "User 연동 불가"),
+        ],
+    )
+    @GetMapping("/internal/expos/{expoId}/preregistrations/summary")
+    fun getInternal(
+        @PathVariable expoId: UUID,
+    ): ResponseEntity<AdminPreregisterSummary> = ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(summary.execute(expoId))
 }
