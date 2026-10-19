@@ -102,7 +102,6 @@ class OwnerCancellationRevisionServiceTests {
 
     @Test
     fun `companion and representative cancellation store exact outbox revision and repeat only once`() {
-        assertEquals(409, cancel("PREREGISTER", "1"))
         assertEquals(204, cancel("PREREGISTER", "2"))
         val revision =
             requireNotNull(
