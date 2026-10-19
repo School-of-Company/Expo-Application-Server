@@ -37,6 +37,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
@@ -177,6 +178,7 @@ class ProgramSessionApplicationTests {
         batchCalls.set(0)
         checkTraineeLock = false
         lockChecks.set(0)
+        formCallsInTransaction.set(0)
         capacity = 1
         waitingCapacity = 0
         revision = 1
@@ -703,6 +705,7 @@ class ProgramSessionApplicationTests {
                 context.getBean(ProgramWaitlist::class.java),
                 context.getBean(ProgramWaitlistRepository::class.java),
                 context.getBeanProvider(StudentGuardianEligibilityProvider::class.java),
+                transactions,
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
@@ -711,6 +714,35 @@ class ProgramSessionApplicationTests {
         assertEquals(503, error.statusCode.value())
         assertEquals(0L, count("tb_program_session_application"))
         assertEquals(0, linkCalls.get())
+    }
+
+    @ParameterizedTest
+    @CsvSource("STANDARD", "TRAINING")
+    fun `remote reads run before the admission transaction and a held program lock fails fast with retry`(type: ProgramSessionType) {
+        // #212: Expo·Form 조회 중에는 DB 커넥션·락을 쥐지 않고, 프로그램 락 대기는 커넥션을 쥔 채 무한히 줄 서지 않는다.
+        assertEquals("CONFIRMED", service.execute(command(type = type)).status)
+        assertEquals(0, formCallsInTransaction.get())
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { holder ->
+            holder.autoCommit = false
+            holder.createStatement().use { it.execute("SELECT pg_advisory_xact_lock(1)") }
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val started = System.nanoTime()
+                val blocked =
+                    pool.submit<Any> {
+                        runCatching { service.execute(command(participant = 2, type = type)) }.exceptionOrNull()
+                            ?: Unit
+                    }
+                val error = blocked.get(15, TimeUnit.SECONDS)
+                assertTrue(error is ProgramApplicationConflictException && error.message.orEmpty().contains("재시도"), error.toString())
+                assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 10)
+            } finally {
+                holder.rollback()
+                pool.shutdownNow()
+            }
+        }
+        assertEquals(1L, count("tb_program_session_application"))
+        assertEquals(0, formCallsInTransaction.get())
     }
 
     @ParameterizedTest
@@ -3786,6 +3818,7 @@ class ProgramSessionApplicationTests {
                 context.getBean(ProgramWaitlist::class.java),
                 context.getBean(ProgramWaitlistRepository::class.java),
                 DefaultListableBeanFactory().getBeanProvider(StudentGuardianEligibilityProvider::class.java),
+                transactions,
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
@@ -4591,6 +4624,7 @@ class ProgramSessionApplicationTests {
                     version: Long,
                     answers: JsonNode,
                 ): ProgramFormSnapshot {
+                    if (TransactionSynchronizationManager.isActualTransactionActive()) formCallsInTransaction.incrementAndGet()
                     if (formMode == "real") return ProgramFormAdapter(gateway).loadAndValidate(expoId, formId, version, answers)
                     if ((answers.size() != 1 && (formMode != "training-id" || answers.size() != 2)) ||
                         answers.get("101")?.stringValue() !in setOf("a", "b")
@@ -4628,6 +4662,7 @@ class ProgramSessionApplicationTests {
         private val linkRequests = ConcurrentLinkedQueue<String>()
         private val batchCalls = AtomicInteger()
         private val lockChecks = AtomicInteger()
+        private val formCallsInTransaction = AtomicInteger()
         private val testClock =
             object : Clock() {
                 @Volatile var current: Instant = Instant.parse("2026-10-11T10:00:00Z")

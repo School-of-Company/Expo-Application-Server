@@ -21,9 +21,6 @@ import java.util.concurrent.TimeUnit
 @ConditionalOnProperty(name = ["application.promotions.enabled"], havingValue = "true")
 class ProgramPromotionKafkaConfig {
     @Bean
-    fun taskScheduler(): ThreadPoolTaskScheduler = ThreadPoolTaskScheduler().apply { setThreadNamePrefix("application-scheduler-") }
-
-    @Bean
     fun programPromotionScheduler(): ThreadPoolTaskScheduler = ThreadPoolTaskScheduler().apply { setThreadNamePrefix("program-promotion-") }
 
     @Bean(destroyMethod = "close")

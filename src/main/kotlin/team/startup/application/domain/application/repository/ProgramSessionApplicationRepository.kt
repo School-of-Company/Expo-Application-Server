@@ -28,6 +28,11 @@ class ProgramSessionApplicationRepository(
     private val attribution: LegacyTraineeAttributionRepository,
     private val gateway: RegistrationGateway,
 ) {
+    // ponytail: 회차 신청 트랜잭션 전체에 고정 5초. 락 안의 User 연수자 호출(최대 8초)이 길어지면 대기자는 재시도로 빠진다.
+    fun limitLockWait() {
+        jdbc.execute("SET LOCAL lock_timeout = '5s'")
+    }
+
     fun lockParticipant(participantId: Long) {
         lock(43, participantId.toString())
     }
@@ -540,6 +545,26 @@ class ProgramSessionApplicationRepository(
             type.name,
             programId,
         )
+    }
+
+    // Expo purge (#211). Receipt sequences stay so receipt numbers are never reused.
+    fun purge(expoId: UUID) {
+        val applications = "SELECT id FROM tb_program_session_application WHERE expo_id = ?"
+        jdbc.update("DELETE FROM tb_promotion_offer WHERE expo_id = ?", expoId)
+        jdbc.update("DELETE FROM tb_program_guardian_link WHERE student_application_id IN ($applications)", expoId)
+        jdbc.update("DELETE FROM tb_program_guardian_member WHERE application_id IN ($applications)", expoId)
+        listOf("tb_program_session_receipt", "tb_program_session_history", "tb_program_session_event").forEach {
+            jdbc.update("DELETE FROM $it WHERE application_id IN ($applications)", expoId)
+        }
+        listOf(
+            "tb_program_guardian_batch",
+            "tb_program_session_application",
+            "tb_program_session_state",
+            "tb_program_change_receipt",
+            "tb_report_application_snapshot",
+        ).forEach {
+            jdbc.update("DELETE FROM $it WHERE expo_id = ?", expoId)
+        }
     }
 
     fun removeTrainingPrograms(

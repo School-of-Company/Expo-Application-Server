@@ -5,6 +5,7 @@ import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.Mockito.`when`
@@ -945,6 +946,42 @@ class RegistrationHttpTests {
                     .content(body("{}")),
             ).andExpect(status().isCreated)
         verify(gateway).countStandard(EXPO_1, 42)
+    }
+
+    @Test
+    fun `인증이 꺼진 박람회는 휴대전화가 아닌 번호를 저장 전에 400으로 거부한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        for (phone in listOf("0212345678", "1012345678", "010123", "+8201012345678")) {
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("{}").replace("01012345678", phone)),
+                ).andExpect(status().isBadRequest)
+        }
+        verify(gateway, times(4)).expoPeriod(EXPO_1)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
+    fun `인증이 꺼진 박람회는 하이픈과 국가번호를 정규화한 번호를 전달한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "STANDARD", "FIELD", false)).thenReturn(null)
+        for ((index, phone) in listOf("010-1234-5678", "+82 10 12345678").withIndex()) {
+            val registration =
+                ParticipantRegistration(EXPO_1, "홍길동", "01012345678", "{}", true, "FIELD", null, null, null, "phone-$index", null, null)
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(ParticipantRegistrationResult(42, "01012345678"))
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_1")
+                        .header("Idempotency-Key", "phone-$index")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("{}").replace("01012345678", phone)),
+                ).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration)
+        }
     }
 
     @Test

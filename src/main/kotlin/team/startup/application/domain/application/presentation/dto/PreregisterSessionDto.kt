@@ -137,3 +137,13 @@ private fun PreregisterSessionDefinition.targetCapacitiesValid(): Boolean {
     val nonTeacher = nonTeacherCapacity ?: return false
     return teacher >= 0 && nonTeacher >= 0 && teacher.toLong() + nonTeacher == capacity.toLong()
 }
+
+@Schema(description = "박람회 삭제 때 함께 정리할 프로그램 ID", example = """{"standardProgramIds":[1],"trainingProgramIds":[2]}""")
+data class PurgeExpoRequest(
+    val standardProgramIds: List<Long> = emptyList(),
+    val trainingProgramIds: List<Long> = emptyList(),
+) {
+    init {
+        require((standardProgramIds + trainingProgramIds).all { it > 0 })
+    }
+}

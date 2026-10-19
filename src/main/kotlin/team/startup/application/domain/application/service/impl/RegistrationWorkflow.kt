@@ -53,6 +53,11 @@ class RegistrationWorkflow(
                     ?: throw ParticipantSessionException("SESSION_REQUIRED")
             val phone = gateway.participantSessionPhone(expoId, session)
             request = request.copy(phoneNumber = phone)
+        } else {
+            // Notification drops QR events whose phone is not 01X digits (#214), so reject before reserving or saving.
+            val phone = request.phoneNumber.filter { it in '0'..'9' }.replace(Regex("^82"), "0")
+            if (!phone.matches(Regex("01[0-9]{8,9}"))) badRequest("휴대전화 번호가 올바르지 않습니다.")
+            request = request.copy(phoneNumber = phone)
         }
         val authenticatedCommand = command.copy(expoId = expoId, request = request)
         if (sessionRegistration) {
