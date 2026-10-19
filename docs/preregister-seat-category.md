@@ -37,6 +37,12 @@ Expo #144 계약은 Expo 브랜치 `feat/144-preregister-target-capacity` 커밋
 - 내 신청의 `remainingCompanionSlots`는 기존처럼 전체 빈자리 기준이다. 일행 상한 4명 이하로 잘리고 인증된 확정 소유자에게만 보인다. 실제 구분 판정은 추가 요청 때 한다.
 - 사용량에는 확정 행, User 확정 전 RESERVED 예약, 참여 제안(#144)이 잡은 대기 일행이 들어간다. 불확실한 User 결과와 운영자 확인 대기 예약도 좌석을 계속 잡는다.
 
+## 유형별 오픈 시각(#209)
+
+- PRE 폼 응답의 `occupationOpenAt`(Form #164, ISO-8601 offset, nullable) 전에는 교원·예비교사(`TEACHER`/`PRE_SERVICE_TEACHER`)만 새로 신청한다. 일반 사전등록(대표·동행자), 동행자 추가(추가 인원), 다른 회차 추가(참석자)가 `PreregisterSeatCategory.requireOpen` 하나를 쓴다. 직업이 없는 사람도 거절하며, 응답은 400 `{"status":400,"code":"OCCUPATION_NOT_OPEN","message":"교원·예비교사 외 유형은 2026-10-26 08:30(KST)부터 신청할 수 있습니다."}`이다. 그 시각부터는 자동으로 풀린다.
+- 필드가 없거나 null이면 제한하지 않으므로 Form보다 먼저 배포해도 된다. 기존 예약의 멱등 재시도·복구는 이 검사 전에 처리한다.
+- 신뢰 ID 내부 `apply`는 직업이 없어 검사하지 않는다. 대상별 정원 회차는 이 경로로 좌석을 잡지 않는다(위 #173 규칙).
+
 ## 조회
 
 - 공개 `GET .../preregister-sessions/{sessionId}/capacity`는 대상별 정원 회차에서 `remaining`·`maxApplicants`·`confirmed`를 null로 내린다. 합계에서 교사 숫자를 거꾸로 계산할 수 있기 때문이다. 대신 `targetSeats {teacherAvailable, nonTeacherRemaining, nonTeacherMaxApplicants, ownTeacherRemaining}`를 내린다. 교사 쪽은 1석 이상 남았는지만 알린다.

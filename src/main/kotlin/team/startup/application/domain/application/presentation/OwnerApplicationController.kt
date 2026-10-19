@@ -38,6 +38,7 @@ import team.startup.application.domain.application.service.GetOwnerApplicationsS
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.impl.OccupationNotOpenException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.PreregisterFormChangedException
 import java.util.UUID
@@ -277,13 +278,20 @@ class OwnerApplicationController(
             ?: throw ParticipantSessionException("SESSION_REQUIRED")
 }
 
-// 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199) 싣는다.
+// 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199),
+// 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209) 싣는다.
 // 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
 class OwnerApplicationSessionExceptionHandler {
     @ExceptionHandler(ParticipantSessionException::class)
     fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("status" to 401, "code" to ex.code))
+
+    @ExceptionHandler(OccupationNotOpenException::class)
+    fun occupationNotOpen(ex: OccupationNotOpenException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity
+            .status(HttpStatus.BAD_REQUEST)
+            .body(mapOf("status" to 400, "code" to "OCCUPATION_NOT_OPEN", "message" to ex.reason.orEmpty()))
 
     @ExceptionHandler(PreregisterFormChangedException::class)
     fun formChanged(ex: PreregisterFormChangedException): ResponseEntity<Map<String, Any>> =
