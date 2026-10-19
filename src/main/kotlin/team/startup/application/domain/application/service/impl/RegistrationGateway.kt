@@ -91,6 +91,8 @@ data class ParticipantRegistrationResult(
     val phoneNumber: String,
     val participantIds: List<Long> = listOf(participantId),
     val groupParticipantIds: List<Long> = participantIds,
+    /** 이번 요청으로 User가 새로 만든 참가자. 없으면 알 수 없다. */
+    val createdIds: List<Long>? = null,
 )
 
 data class TraineeRegistrationResult(
@@ -486,7 +488,7 @@ class RegistrationGateway(
                     throw ParticipantIdsMismatchException()
                 }
             }
-            val result =
+            val raw =
                 if (body.isArray) {
                     if (body.size() !in 1..5) throw ParticipantIdsMismatchException()
                     val ids =
@@ -499,6 +501,7 @@ class RegistrationGateway(
                 } else {
                     decode(response.body(), ParticipantRegistrationResult::class.java)
                 }
+            val result = withoutReleased(registration, raw)
             if (result.participantIds.size !in 1..5 || result.participantId <= 0 ||
                 result.participantIds.any { it <= 0 } ||
                 result.participantIds.distinct().size != result.participantIds.size ||
@@ -521,6 +524,21 @@ class RegistrationGateway(
             if (trainee.traineeId <= 0) invalidParticipantResponse()
             ParticipantRegistrationResult(trainee.traineeId, trainee.phoneNumber)
         }
+    }
+
+    // #196: User 재신청 응답은 이 서비스에서 취소된 동행자(releasedParticipantIds)도 일행에 담는다. 기존 동행자를 아무도 다시 신청하지
+    // 않았을 때(이번 일행 = 대표자 + 새로 만든 동행자)만 뺀다. 다시 신청한 동행자는 User가 같은 ID를 돌려주므로 어느 ID인지 알 수 없어
+    // 그대로 두고, 인원이 맞지 않으면 완료 단계가 검토로 남긴다.
+    private fun withoutReleased(
+        registration: ParticipantRegistration,
+        result: ParticipantRegistrationResult,
+    ): ParticipantRegistrationResult {
+        val released = result.groupParticipantIds.toSet() intersect registration.releasedParticipantIds.orEmpty().toSet()
+        val created = result.createdIds ?: return result
+        if (released.isEmpty() || 1 + created.size != PreregisterSeatCategory.partyOccupations(registration, mapper).size) {
+            return result
+        }
+        return result.copy(participantIds = result.participantIds - released, groupParticipantIds = result.groupParticipantIds - released)
     }
 
     private fun invalidParticipantResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "등록 서비스 참가자 응답이 올바르지 않습니다.")
