@@ -111,6 +111,8 @@ class PreregisterRegistrationWorkflow(
                     }
                     val phone = request.phoneNumber.filter { it in '0'..'9' }
                     if (phone.isEmpty()) badSessionRequest("전화번호가 올바르지 않습니다.")
+                    // #198: User returns the whole existing party for a known phone, so a second session cannot be matched to
+                    // this submission. Further sessions of an existing party take participant IDs instead (#199).
                     if (reservations.samePhoneInUse(expoId, phone, waitlist.now())) {
                         conflict("대표자의 활성 신청 또는 복구 중인 신청이 있습니다.")
                     }
@@ -385,7 +387,14 @@ class PreregisterRegistrationWorkflow(
                         "User 참가자 목록과 선점 인원이 일치하지 않습니다. 좌석을 유지합니다.",
                     )
                 }
-                if (ids.any { repository.active(expoId, it) != null }) {
+                if (ids.any { repository.active(expoId, reserved.sessionId, it) != null } ||
+                    repository
+                        .definition(
+                            expoId,
+                            reserved.sessionId,
+                        )?.let { repository.overlapping(expoId, reserved.sessionId, ids, it) } ==
+                    true
+                ) {
                     reservations.needsReview(reserved, 409)
                     return@execute ResponseStatusException(
                         HttpStatus.CONFLICT,
@@ -414,10 +423,7 @@ class PreregisterRegistrationWorkflow(
     private fun representativeConfirmed(
         expoId: UUID,
         reserved: PreregisterReservation,
-    ): Boolean {
-        val representative = repository.active(expoId, requireNotNull(reserved.companionOf))
-        return representative?.status == "CONFIRMED" && representative.sessionId == reserved.sessionId
-    }
+    ): Boolean = repository.active(expoId, reserved.sessionId, requireNotNull(reserved.companionOf))?.status == "CONFIRMED"
 
     // 동행자 추가 예약의 완료. User는 새로 만든 동행자만 participantIds로, 일행 전체를 groupParticipantIds로 준다.
     private fun completeCompanions(
@@ -439,9 +445,8 @@ class PreregisterRegistrationWorkflow(
             reservations.needsReview(reserved, 502)
             return ResponseStatusException(HttpStatus.BAD_GATEWAY, "User 참가자 목록과 선점 인원이 일치하지 않습니다. 좌석을 유지합니다.")
         }
-        val representative = repository.active(expoId, representativeId)
-        if (representative?.status != "CONFIRMED" || representative.sessionId != reserved.sessionId ||
-            ids.any { repository.active(expoId, it) != null }
+        if (repository.active(expoId, reserved.sessionId, representativeId)?.status != "CONFIRMED" ||
+            ids.any { repository.active(expoId, reserved.sessionId, it) != null }
         ) {
             reservations.needsReview(reserved, 409)
             return ResponseStatusException(HttpStatus.CONFLICT, "대표자 신청 또는 동행자 상태가 바뀌었습니다. 좌석을 유지합니다.")

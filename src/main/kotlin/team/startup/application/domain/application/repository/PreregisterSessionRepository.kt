@@ -315,21 +315,49 @@ class PreregisterSessionRepository(
 
     fun active(
         expoId: UUID,
+        sessionId: Long,
         participantId: Long,
-    ): PreregisterApplicationReceipt? = activeOwned(expoId, participantId)?.first
+    ): PreregisterApplicationReceipt? = activeOwned(expoId, sessionId, participantId)?.first
 
+    // #198: a participant holds at most one active application per session, and may hold several sessions.
     fun activeOwned(
         expoId: UUID,
+        sessionId: Long,
         participantId: Long,
     ): Pair<PreregisterApplicationReceipt, Long>? =
         jdbc
             .query(
                 "SELECT id, participant_id, session_id, status, representative_id FROM tb_preregister_application " +
-                    "WHERE expo_id = ? AND participant_id = ? AND status <> 'CANCELLED'",
+                    "WHERE expo_id = ? AND session_id = ? AND participant_id = ? AND status <> 'CANCELLED'",
                 { rs, _ -> PreregisterApplicationReceipt(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4)) to rs.getLong(5) },
                 expoId,
+                sessionId,
                 participantId,
             ).singleOrNull()
+
+    /** 다른 회차에서 [window] 시간과 일부라도 겹치는 확정 신청을 가진 참가자가 있는지(#198). */
+    fun overlapping(
+        expoId: UUID,
+        sessionId: Long,
+        participantIds: Collection<Long>,
+        window: PreregisterSessionDefinition,
+    ): Boolean =
+        participantIds.isNotEmpty() &&
+            namedJdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_application a JOIN tb_preregister_session_state st " +
+                    "ON st.expo_id = a.expo_id AND st.session_id = a.session_id WHERE a.expo_id = :expoId " +
+                    "AND a.session_id <> :sessionId AND a.participant_id IN (:ids) AND a.status = 'CONFIRMED' " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < :endedAt " +
+                    "AND :startedAt < (st.definition::jsonb ->> 'endedAt')::timestamptz)",
+                mapOf(
+                    "expoId" to expoId,
+                    "sessionId" to sessionId,
+                    "ids" to participantIds,
+                    "startedAt" to java.sql.Timestamp.from(window.startedAt),
+                    "endedAt" to java.sql.Timestamp.from(window.endedAt),
+                ),
+                Boolean::class.java,
+            ) == true
 
     fun owned(
         expoId: UUID,

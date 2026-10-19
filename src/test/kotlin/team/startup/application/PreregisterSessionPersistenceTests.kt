@@ -200,18 +200,30 @@ class PreregisterSessionPersistenceTests {
         assertEquals("CONFIRMED", new.status)
         assertTrue(new.id > receipt.last().id)
         assertTrue(cancel.execute(cancellation).isEmpty())
-        assertEquals("CONFIRMED", repository.active(expoId, 1)?.status)
+        assertEquals("CONFIRMED", repository.active(expoId, 1, 1)?.status)
     }
 
     @Test
-    fun `one active session per expo and cancelled participant can switch`() {
-        val old = apply.execute(command(1)).single()
-        publish(definition.copy(id = 2))
-        assertConflict { apply.execute(command(1, session = 2)) }
-        publish(definition)
-        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(old.id)))
-        publish(definition.copy(id = 2))
+    fun `participant holds sessions that do not overlap and keeps others after one cancellation`() {
+        val morning = apply.execute(command(1)).single()
+        val afternoon = definition.copy(id = 2, startedAt = definition.endedAt, endedAt = definition.endedAt.plusSeconds(3600))
+        publish(afternoon)
         assertEquals(2L, apply.execute(command(1, session = 2)).single().sessionId)
+        // Partial overlap with the morning session is refused even though the afternoon one does not overlap it.
+        val overlapping =
+            definition.copy(
+                id = 3,
+                startedAt = definition.startedAt.plusSeconds(1800),
+                endedAt = definition.endedAt.minusSeconds(1),
+            )
+        publish(overlapping)
+        assertConflict { apply.execute(command(1, session = 3)) }
+        publish(definition)
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, listOf(morning.id)))
+        publish(overlapping)
+        assertEquals(3L, apply.execute(command(1, session = 3)).single().sessionId)
+        assertEquals("CONFIRMED", repository.active(expoId, 2, 1)?.status)
+        assertEquals(null, repository.active(expoId, 1, 1))
     }
 
     @Test
@@ -310,7 +322,7 @@ class PreregisterSessionPersistenceTests {
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
         assertConflict { apply.execute(command(4)) }
         cancel.execute(CancelPreregisterSessionCommand(expoId, 1, 1, repository.applications(expoId, 1).map { it.id }))
-        assertTrue(repository.active(expoId, 1) == null)
+        assertTrue(repository.active(expoId, 1, 1) == null)
         val opened = closed.copy(closed = false, revision = 3)
         prepare.execute(change(opened, false))
         publish(opened)
