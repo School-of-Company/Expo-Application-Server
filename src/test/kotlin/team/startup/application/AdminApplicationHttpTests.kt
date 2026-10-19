@@ -730,7 +730,7 @@ class AdminApplicationHttpTests {
     }
 
     @Test
-    fun `관리자 사전등록 집계는 고유 참가자와 예약 인원을 분리한다`() {
+    fun `사전등록 집계는 고유 참가자와 예약 인원을 분리하고 내부 경로도 같은 집계를 낸다`() {
         jdbc.execute(
             "TRUNCATE tb_preregister_transition, tb_preregister_application, tb_preregister_reservation, tb_preregister_session_state CASCADE",
         )
@@ -832,6 +832,37 @@ class AdminApplicationHttpTests {
         assertEquals(0, body["sessions"][1]["confirmedParticipants"].asInt())
         assertEquals(1, body["sessions"][1]["cancelledParticipants"].asInt())
         assertEquals(3, body["sessions"][1]["pendingApplicants"].asInt())
+
+        val internalPath = "/internal/expos/$expoId/preregistrations/summary"
+        assertEquals(
+            401,
+            mvc
+                .perform(get(internalPath).header("X-Internal-Token", "wrong"))
+                .andReturn()
+                .response.status,
+        )
+        expoRequests.clear()
+        val internal = mvc.perform(get(internalPath).header("X-Internal-Token", "test-token")).andReturn().response
+        assertEquals(200, internal.status)
+        assertEquals("no-store", internal.getHeader("Cache-Control"))
+        assertEquals(body, mapper.readTree(internal.contentAsString))
+        assertTrue(expoRequests.isEmpty())
+        val unknown =
+            mvc.perform(
+                get("/internal/expos/${UUID.randomUUID()}/preregistrations/summary").header("X-Internal-Token", "test-token"),
+            )
+        assertEquals(200, unknown.andReturn().response.status)
+        val unknownBody = mapper.readTree(unknown.andReturn().response.contentAsString)
+        assertEquals(0, unknownBody["confirmedUniqueParticipants"].asInt())
+        assertEquals(0, unknownBody["sessions"].size())
+        jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", expoId)
+        assertEquals(
+            409,
+            mvc
+                .perform(get(internalPath).header("X-Internal-Token", "test-token"))
+                .andReturn()
+                .response.status,
+        )
     }
 
     @Test
