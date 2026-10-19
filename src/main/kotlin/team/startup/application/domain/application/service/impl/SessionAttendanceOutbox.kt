@@ -20,12 +20,14 @@ class SessionAttendanceOutbox(
         repository.append(expoId, participantId, sessionId)
     }
 
+    // #198: a cancellation releases only its session; the participant may keep other sessions.
     @Transactional(propagation = Propagation.MANDATORY)
     fun cancelled(
         expoId: UUID,
         participantId: Long,
+        sessionId: Long,
     ): Long {
-        require(participantId > 0)
-        return repository.append(expoId, participantId, null)
+        require(participantId > 0 && sessionId > 0)
+        return repository.append(expoId, participantId, sessionId, cancelled = true)
     }
 }

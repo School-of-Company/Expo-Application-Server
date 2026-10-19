@@ -84,7 +84,7 @@ class SessionAttendanceOutboxTests {
     fun `확정 취소 재신청을 참가자 ID와 토큰을 포함해 계약 순서대로 발송한다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 42, 2)
         }
         repeat(3) { assertTrue(dispatcher.dispatchNext()) }
@@ -93,7 +93,7 @@ class SessionAttendanceOutboxTests {
         assertEquals(
             listOf(
                 Request("PUT", path, "{\"sessionId\":1,\"revision\":2}", TOKEN, "application/json"),
-                Request("DELETE", "$path?revision=5", "", TOKEN, null),
+                Request("DELETE", "$path?revision=5&sessionId=1", "", TOKEN, null),
                 Request("PUT", path, "{\"sessionId\":2,\"revision\":6}", TOKEN, "application/json"),
             ),
             requests.toList(),
@@ -134,7 +134,7 @@ class SessionAttendanceOutboxTests {
     fun `5xx는 지속 저장하고 후속 취소를 막으며 다른 참가자는 발송한다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 43, 1)
         }
         responseStatus.set(503)
@@ -160,7 +160,7 @@ class SessionAttendanceOutboxTests {
     fun `404와 인증 오류 및 예상 밖 성공 응답도 유실시키지 않는다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
         }
         for (status in listOf(404, 401, 429, 200)) {
             responseStatus.set(status)
@@ -175,7 +175,7 @@ class SessionAttendanceOutboxTests {
     @Test
     fun `취소 실패는 재신청 PUT보다 먼저 재시도한다`() {
         inTransaction {
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 42, 2)
         }
         responseStatus.set(500)
@@ -192,7 +192,7 @@ class SessionAttendanceOutboxTests {
     fun `응답 유실도 재시도하며 후속 취소를 먼저 보내지 않는다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
         }
         responseStatus.set(0)
         assertFalse(dispatcher.dispatchNext())
@@ -215,8 +215,8 @@ class SessionAttendanceOutboxTests {
     @ValueSource(booleans = [false, true])
     fun `타임아웃된 요청이 재시작 뒤 재신청보다 늦게 완료돼도 최신 회차를 유지한다`(cancelled: Boolean) {
         inTransaction {
-            if (cancelled) outbox.cancelled(EXPO, 42) else outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            if (cancelled) outbox.cancelled(EXPO, 42, 1) else outbox.confirmed(EXPO, 42, 1)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 42, 2)
         }
         val entered = CountDownLatch(1)
@@ -287,7 +287,7 @@ class SessionAttendanceOutboxTests {
     fun `동시 발송기는 진행 중인 참가자의 후속 요청을 건너뛴다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 43, 1)
         }
         val entered = CountDownLatch(1)
@@ -315,7 +315,7 @@ class SessionAttendanceOutboxTests {
     @Test
     fun `발송은 호출자의 DB 트랜잭션 안에서 실행할 수 없다`() {
         inTransaction {
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 42, 2)
         }
         assertThrows(org.springframework.transaction.IllegalTransactionStateException::class.java) {
@@ -332,7 +332,7 @@ class SessionAttendanceOutboxTests {
     @Test
     fun `HTTP 성공 뒤 DB 완료 실패는 순서 선두를 남기고 동일 통지를 재발송한다`() {
         inTransaction {
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
             outbox.confirmed(EXPO, 42, 2)
         }
         jdbc.execute(
@@ -362,7 +362,7 @@ class SessionAttendanceOutboxTests {
         lateinit var second: Future<*>
         try {
             inTransaction {
-                outbox.cancelled(EXPO, 42)
+                outbox.cancelled(EXPO, 42, 1)
                 second =
                     executor.submit {
                         inTransaction {
@@ -390,7 +390,7 @@ class SessionAttendanceOutboxTests {
     fun `정리된 박람회의 미발송 PUT은 QR 취소 DELETE로 발송한다`() {
         inTransaction {
             outbox.confirmed(EXPO, 42, 1)
-            outbox.cancelled(EXPO, 42)
+            outbox.cancelled(EXPO, 42, 1)
         }
         purge.execute(EXPO)
         assertTrue(dispatcher.dispatchNext())
@@ -471,7 +471,7 @@ class SessionAttendanceOutboxTests {
         val revision: Long
             get() =
                 if (method == "DELETE") {
-                    path.substringAfter("?revision=").toLong()
+                    path.substringAfter("?revision=").substringBefore('&').toLong()
                 } else {
                     body.substringAfter("\"revision\":").substringBefore('}').toLong()
                 }
