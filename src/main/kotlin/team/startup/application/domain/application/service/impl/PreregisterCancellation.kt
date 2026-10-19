@@ -2,11 +2,13 @@ package team.startup.application.domain.application.service.impl
 
 import org.springframework.stereotype.Component
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
+import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
+import team.startup.application.domain.application.service.CancelProgramSessionService
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import java.time.Clock
 import java.util.UUID
@@ -22,6 +24,7 @@ class PreregisterCancellation(
     private val attendance: SessionAttendanceOutbox,
     private val clock: Clock,
     private val reservations: PreregisterReservationRepository,
+    private val cancelProgram: CancelProgramSessionService,
 ) {
     fun lockParticipant(
         participantId: Long,
@@ -42,6 +45,8 @@ class PreregisterCancellation(
         actorParticipantId: Long?,
         // The verified admin for admin cancellation (#182); never passed together with actorParticipantId.
         adminId: Long? = null,
+        // #200: the owner's confirmed list of program applications to cancel together; null skips the comparison.
+        programApplicationIds: Set<UUID>? = null,
     ) {
         val actorType =
             when {
@@ -51,8 +56,17 @@ class PreregisterCancellation(
             }
         if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
         ledger.ensureAvailable(expoId, sessionId)
-        if (owners.activePrograms(expoId, participantId, permit.linkedTraineeId)) {
+        if (owners.legacyPrograms(expoId, participantId, permit.linkedTraineeId)) {
             conflict("활성 프로그램 신청을 먼저 취소해야 합니다.")
+        }
+        // #200: programs left without an overlapping confirmed session are cancelled in this transaction. Their own
+        // deadline, guardian-batch and promotion rules still apply; any refusal rolls back the whole cancellation.
+        val cascade = programs.preregisterCascade(expoId, participantId, applicationId).map { it.applicationId }
+        if (programApplicationIds != null && programApplicationIds != cascade.toSet()) {
+            conflict("함께 취소될 프로그램 신청이 변경되었습니다. 다시 확인해 주세요.")
+        }
+        cascade.forEach { id ->
+            cancelProgram.execute(CancelProgramSessionCommand(id, actorType, actorId = adminId, actorParticipantId = actorParticipantId))
         }
         preregister.status(applicationId, "CANCELLED", actorType, actorParticipantId, adminId)
         // 이 회차의 대표자 신청에 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.

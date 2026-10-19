@@ -37,6 +37,7 @@ import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
@@ -299,9 +300,8 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `confirmed and waiting programs block preregistration and program cancellation preserves history`() {
+    fun `program cancellation preserves history and preregistration cancellation cascades a waiting program`() {
         val confirmed = applyProgram.execute(programCommand(2))
-        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("2")) }
         cancel.execute(cancelCommand(confirmed.applicationId.toString(), OwnerApplicationType.STANDARD))
         cancel.execute(cancelCommand(confirmed.applicationId.toString(), OwnerApplicationType.STANDARD))
         // The companion (target 2) was cancelled by the session's representative (1); the replay adds no second actor row.
@@ -327,9 +327,8 @@ class OwnerApplicationTests {
         val retry = applyProgram.execute(programCommand(2).copy(idempotencyKey = "new-key"))
         assertTrue(retry.applicationId != confirmed.applicationId)
         assertEquals("WAITING", retry.status)
-        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("2")) }
-        cancel.execute(cancelCommand(retry.applicationId.toString(), OwnerApplicationType.STANDARD))
         cancel.execute(cancelCommand("2"))
+        assertEquals("CANCELLED", programStatus(retry.applicationId))
         val old =
             query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications.single {
                 it.applicationId ==
@@ -341,11 +340,9 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `internal cancellation shares owner protections and waiting program blocks it`() {
-        applyProgram.execute(programCommand())
-        assertEquals("WAITING", applyProgram.execute(programCommand(2)).status)
+    fun `internal cancellation shares owner protections and a legacy program blocks it`() {
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (2, 50)")
         assertEquals(409, internalCancel("""{"representativeId":1,"applicationIds":[2]}"""))
-        assertEquals(409, internalCancel("""{"applicationIds":[1]}"""))
         jdbc.execute("TRUNCATE tb_program_session_application, tb_standard_program_application CASCADE")
         deadline = NOW
         assertEquals(409, internalCancel("""{"applicationIds":[2]}"""))
@@ -398,14 +395,10 @@ class OwnerApplicationTests {
                     },
                     { applyProgram.execute(programCommand(2)) },
                 )
-            val programs = count("tb_program_session_application")
-            if (state(2) == "CANCELLED") {
-                assertEquals(0L, programs)
-                assertEquals(listOf("ok", "blocked"), results)
-            } else {
-                assertEquals(1L, programs)
-                assertEquals(listOf("blocked", "ok"), results)
-            }
+            // #200: an application committed first is cancelled together; one committed after is refused.
+            assertEquals("CANCELLED", state(2))
+            assertEquals(0L, activeProgramCount())
+            assertTrue(results == listOf("ok", "blocked") || results == listOf("ok", "ok"))
         }
     }
 
@@ -423,6 +416,104 @@ class OwnerApplicationTests {
             assertEquals(4L, count("tb_preregister_transition"))
             assertEquals(1L, count("tb_session_attendance_outbox"))
         }
+    }
+
+    @Test
+    fun `preregistration cancellation cascades programs after owner confirmation and promotes the waitlist`() {
+        val companion = applyProgram.execute(programCommand(2))
+        val waiting = applyProgram.execute(programCommand())
+        assertEquals("WAITING", waiting.status)
+        val preview =
+            mvc
+                .perform(
+                    get("/application/expos/$EXPO/my-applications/PREREGISTER/2/cancellation-preview")
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                ).andExpect(status().isOk)
+                .andReturn()
+        assertEquals("no-store", preview.response.getHeader("Cache-Control"))
+        val programsNode = mapper.readTree(preview.response.contentAsString).path("programs")
+        assertEquals(1, programsNode.size())
+        assertEquals(companion.applicationId.toString(), programsNode[0].path("applicationId").asString())
+        assertEquals("CONFIRMED", programsNode[0].path("status").asString())
+        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("2").copy(programApplicationIds = emptySet())) }
+        assertEquals(listOf("CONFIRMED", "CONFIRMED"), listOf(state(2), programStatus(companion.applicationId)))
+        cancel.execute(cancelCommand("2").copy(programApplicationIds = setOf(companion.applicationId)))
+        assertEquals("CANCELLED", state(2))
+        assertEquals("CANCELLED", programStatus(companion.applicationId))
+        assertEquals("CONFIRMED", programStatus(waiting.applicationId))
+        assertEquals(
+            listOf("USER:1"),
+            jdbc.query(
+                "SELECT actor_type, actor_participant_id FROM tb_program_session_history WHERE application_id = ? AND status = 'CANCELLED'",
+                { rs, _ -> "${rs.getString(1)}:${rs.getString(2)}" },
+                companion.applicationId,
+            ),
+        )
+        assertEquals(
+            listOf(1L),
+            jdbc.queryForList("SELECT participant_id FROM tb_standard_program_application", Long::class.java),
+        )
+        assertEquals(
+            0,
+            mapper
+                .readTree(
+                    mvc
+                        .perform(
+                            get("/application/expos/$EXPO/my-applications/PREREGISTER/2/cancellation-preview")
+                                .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                        ).andReturn()
+                        .response.contentAsString,
+                ).path("programs")
+                .size(),
+        )
+    }
+
+    @Test
+    fun `cancelling one of two sessions cancels only programs left without an overlapping session`() {
+        // Session 1 10-12, session 2 13-15 (KST); the program runs 10:30-11:30 inside session 1 only.
+        val afternoon = twoSessions()
+        currentDefinition = definition.copy(startedAt = "2026-10-31T10:30:00+09:00", endedAt = "2026-10-31T11:30:00+09:00")
+        val program = applyProgram.execute(programCommand(2))
+        assertEquals(0, previewSize(afternoon))
+        cancel.execute(cancelCommand(afternoon.toString()).copy(programApplicationIds = emptySet()))
+        assertEquals(listOf("CONFIRMED", "CANCELLED"), listOf(programStatus(program.applicationId), state(afternoon)))
+        assertEquals(1, previewSize(2))
+        cancel.execute(cancelCommand("2").copy(programApplicationIds = setOf(program.applicationId)))
+        assertEquals("CANCELLED", programStatus(program.applicationId))
+    }
+
+    @Test
+    fun `a program spanning both sessions survives cancelling either one`() {
+        val afternoon = twoSessions()
+        // 11:30-13:30 ends inside session 1's end and starts before session 2's start, overlapping both.
+        currentDefinition = definition.copy(startedAt = "2026-10-31T11:30:00+09:00", endedAt = "2026-10-31T13:30:00+09:00")
+        val program = applyProgram.execute(programCommand(2))
+        assertEquals(0, previewSize(2))
+        cancel.execute(cancelCommand("2"))
+        assertEquals(listOf("CANCELLED", "CONFIRMED"), listOf(state(2), programStatus(program.applicationId)))
+        assertEquals(1, previewSize(afternoon))
+    }
+
+    @Test
+    fun `internal party cancellation cascades every member's programs`() {
+        applyProgram.execute(programCommand())
+        applyProgram.execute(programCommand(2))
+        assertEquals(200, internalCancel("""{"representativeId":1,"applicationIds":[1,2]}"""))
+        assertEquals(0L, activeProgramCount())
+        assertEquals(
+            listOf("UNKNOWN", "UNKNOWN"),
+            jdbc.queryForList("SELECT actor_type FROM tb_program_session_history WHERE status = 'CANCELLED'", String::class.java),
+        )
+    }
+
+    @Test
+    fun `an expired program cancellation deadline rolls back the whole preregistration cancellation`() {
+        currentDefinition = definition.copy(policy = requireNotNull(definition.policy).copy(cancelEndedAt = NOW))
+        val program = applyProgram.execute(programCommand(2))
+        val refused = assertThrows(ProgramApplicationConflictException::class.java) { cancel.execute(cancelCommand("2")) }
+        assertEquals("프로그램 취소 기간이 끝났습니다.", refused.message)
+        assertEquals(listOf("CONFIRMED", "CONFIRMED"), listOf(state(2), programStatus(program.applicationId)))
+        assertEquals(0L, count("tb_session_attendance_outbox"))
     }
 
     @Test
@@ -584,12 +675,9 @@ class OwnerApplicationTests {
                 { cancel.execute(cancelCommand("2")) },
                 { applyProgram.execute(programCommand(2)) },
             )
-        assertEquals(1, outcomes.count { it == "ok" })
-        if (state(2) == "CANCELLED") {
-            assertEquals(0L, count("tb_program_session_application"))
-        } else {
-            assertEquals(1L, count("tb_program_session_application"))
-        }
+        assertEquals("ok", outcomes[0])
+        assertEquals("CANCELLED", state(2))
+        assertEquals(0L, activeProgramCount())
     }
 
     @Test
@@ -723,6 +811,38 @@ class OwnerApplicationTests {
             "SELECT participant_id, actor_type, actor_participant_id, created_at IS NOT NULL FROM tb_preregister_transition " +
                 "WHERE status = 'CANCELLED' ORDER BY participant_id",
         ) { rs, _ -> "${rs.getLong(1)}:${rs.getString(2)}:${rs.getString(3)}:${rs.getBoolean(4)}" }
+
+    // Moves session 1 to 10-12 KST and confirms participant 2 in a new session 2 at 13-15 KST; returns that application ID.
+    private fun twoSessions(): Long {
+        val day = Instant.parse("2026-10-31T01:00:00Z")
+        transactions.executeWithoutResult {
+            preregister.saveDefinition(session.copy(startedAt = day, endedAt = day.plusSeconds(7200)))
+            preregister.saveDefinition(session.copy(id = 2, startedAt = day.plusSeconds(10800), endedAt = day.plusSeconds(18000)))
+            preregister.insert(EXPO, 2, 1, 2, "CONFIRMED")
+        }
+        return requireNotNull(
+            jdbc.queryForObject(
+                "SELECT id FROM tb_preregister_application WHERE session_id = 2 AND participant_id = 2",
+                Long::class.java,
+            ),
+        )
+    }
+
+    private fun previewSize(applicationId: Long) =
+        mapper
+            .readTree(
+                mvc
+                    .perform(
+                        get("/application/expos/$EXPO/my-applications/PREREGISTER/$applicationId/cancellation-preview")
+                            .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                    ).andExpect(status().isOk)
+                    .andReturn()
+                    .response.contentAsString,
+            ).path("programs")
+            .size()
+
+    private fun activeProgramCount() =
+        jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status <> 'CANCELLED'", Long::class.java)
 
     private fun count(table: String) = jdbc.queryForObject("SELECT count(*) FROM $table", Long::class.java)
 

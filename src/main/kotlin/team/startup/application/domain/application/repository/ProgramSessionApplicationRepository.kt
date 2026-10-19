@@ -6,6 +6,8 @@ import org.springframework.stereotype.Repository
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.PreregisterCascadeProgram
+import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramAdmissionCapacity
 import team.startup.application.domain.application.presentation.dto.ProgramAdmissionSeats
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
@@ -210,6 +212,55 @@ class ProgramSessionApplicationRepository(
             }
         }
         attribution.remember(traineeId, definitions)
+    }
+
+    // #200: active program applications that no longer overlap any remaining CONFIRMED preregister session once
+    // `excludingPreregisterId` is cancelled. Overlap is partial and half-open, without the entry lead time.
+    fun preregisterCascade(
+        expoId: UUID,
+        participantId: Long,
+        excludingPreregisterId: Long,
+    ): List<PreregisterCascadeProgram> {
+        val remaining =
+            jdbc.query(
+                "SELECT st.definition FROM tb_preregister_application a LEFT JOIN tb_preregister_session_state st " +
+                    "ON st.expo_id = a.expo_id AND st.session_id = a.session_id " +
+                    "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status = 'CONFIRMED' AND a.id <> ?",
+                { rs, _ ->
+                    val definition =
+                        rs.getString(1)?.let { mapper.readValue(it, PreregisterSessionDefinition::class.java) }
+                            ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "사전등록 회차 정의를 확인할 수 없습니다.")
+                    definition.startedAt to definition.endedAt
+                },
+                expoId,
+                participantId,
+                excludingPreregisterId,
+            )
+        return jdbc
+            .query(
+                "SELECT a.id, a.status, COALESCE(s.pending_definition, s.definition, a.definition_snapshot) " +
+                    "FROM tb_program_session_application a LEFT JOIN tb_program_session_state s " +
+                    "ON s.expo_id = a.expo_id AND s.program_type = a.program_type AND s.program_id = a.program_id " +
+                    "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') ORDER BY a.created_at, a.id",
+                { rs, _ ->
+                    val definition = mapper.readValue(rs.getString(3), ProgramSessionDefinition::class.java)
+                    PreregisterCascadeProgram(
+                        rs.getObject(1, UUID::class.java),
+                        definition.programType,
+                        definition.id,
+                        rs.getString(2),
+                        definition.title,
+                        definition.startedAt,
+                        definition.endedAt,
+                    )
+                },
+                expoId,
+                participantId,
+            ).filter { program ->
+                val start = sessionTime(program.startedAt)
+                val end = sessionTime(program.endedAt)
+                remaining.none { (sessionStart, sessionEnd) -> start.isBefore(sessionEnd) && sessionStart.isBefore(end) }
+            }
     }
 
     private fun sessionTime(value: String?): Instant {

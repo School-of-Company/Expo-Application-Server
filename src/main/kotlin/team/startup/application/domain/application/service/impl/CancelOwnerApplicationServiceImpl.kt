@@ -74,6 +74,7 @@ class CancelOwnerApplicationServiceImpl(
                         party.representativeId,
                         permit,
                         requireNotNull(party.representativeId),
+                        programApplicationIds = command.programApplicationIds,
                     )
                 } else {
                     cancelProgram.execute(

@@ -22,9 +22,46 @@ data class CancelOwnerApplicationCommand(
     val sessionId: String,
     val type: OwnerApplicationType,
     val applicationId: String,
+    // #200: program applications the owner confirmed to cancel together; null keeps the pre-#200 contract.
+    val programApplicationIds: Set<UUID>? = null,
 ) {
     override fun toString() = "CancelOwnerApplicationCommand(expoId=$expoId, type=$type, applicationId=$applicationId)"
 }
+
+@Schema(description = "내 신청 취소 요청")
+data class CancelOwnerApplicationRequest(
+    @field:Size(max = 100)
+    @field:Schema(
+        description =
+            "사전등록 취소 확인 화면에서 본 함께 취소될 프로그램 신청 ID. 서버 계산과 다르면 409. 생략하면 확인 없이 서버 계산대로 취소합니다.",
+    )
+    val programApplicationIds: List<UUID>? = null,
+)
+
+@Schema(description = "사전등록 취소 시 함께 취소되는 프로그램 신청")
+data class PreregisterCascadeProgram(
+    @field:Schema(description = "프로그램 신청 ID") val applicationId: UUID,
+    @field:Schema(description = "프로그램 종류") val programType: ProgramSessionType,
+    @field:Schema(description = "프로그램 ID") val programId: Long,
+    @field:Schema(description = "신청 상태", example = "CONFIRMED") val status: String,
+    @field:Schema(description = "프로그램 이름") val title: String?,
+    @field:Schema(description = "시작 시각") val startedAt: String?,
+    @field:Schema(description = "종료 시각") val endedAt: String?,
+)
+
+data class GetOwnerPreregisterCancellationPreviewCommand(
+    val expoId: UUID,
+    val sessionId: String,
+    val applicationId: String,
+) {
+    override fun toString() = "GetOwnerPreregisterCancellationPreviewCommand(expoId=$expoId, applicationId=$applicationId)"
+}
+
+@Schema(description = "사전등록 취소 미리보기")
+data class OwnerPreregisterCancellationPreview(
+    @field:Schema(description = "이 회차를 취소하면 함께 취소되는 프로그램 신청. 남은 확정 회차와 시간이 겹치는 신청은 유지됩니다.")
+    val programs: List<PreregisterCascadeProgram>,
+)
 
 @Schema(description = "세션 소유자가 관리하는 참가자")
 data class ManagedOwnerParticipant(

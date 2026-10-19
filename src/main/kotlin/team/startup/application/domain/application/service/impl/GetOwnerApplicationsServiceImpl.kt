@@ -184,7 +184,7 @@ class GetOwnerApplicationsServiceImpl(
                     "SESSION_CHANGE_PENDING"
                 }
 
-                repository.activePrograms(command.expoId, application.participantId, traineeId) -> {
+                repository.legacyPrograms(command.expoId, application.participantId, traineeId) -> {
                     "ACTIVE_PROGRAMS"
                 }
 

@@ -138,22 +138,25 @@ class OwnerApplicationRepository(
         )
     }
 
-    fun activePrograms(
+    // Pre-session-model rows have no local program time, so they keep blocking preregister cancellation (#200).
+    fun legacyPrograms(
         expoId: UUID,
         participantId: Long,
         traineeId: Long?,
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
-                "SELECT EXISTS(SELECT 1 FROM tb_program_session_application WHERE expo_id = ? AND participant_id = ? " +
-                    "AND status IN ('CONFIRMED', 'WAITING')) OR " +
-                    "EXISTS(SELECT 1 FROM tb_standard_program_application WHERE participant_id = ?) OR " +
-                    "EXISTS(SELECT 1 FROM tb_training_program_application WHERE trainee_id = ?)",
+                "SELECT EXISTS(SELECT 1 FROM tb_standard_program_application p WHERE p.participant_id = ? AND NOT EXISTS(" +
+                    "SELECT 1 FROM tb_program_session_application a WHERE a.expo_id = ? AND a.program_type = 'STANDARD' " +
+                    "AND a.program_id = p.standard_program_id AND a.participant_id = p.participant_id AND a.status = 'CONFIRMED')) " +
+                    "OR EXISTS(SELECT 1 FROM tb_training_program_application t WHERE t.trainee_id = ? AND NOT EXISTS(" +
+                    "SELECT 1 FROM tb_program_session_application a WHERE a.expo_id = ? AND a.program_type = 'TRAINING' " +
+                    "AND a.program_id = t.training_program_id AND a.trainee_id = t.trainee_id AND a.status = 'CONFIRMED'))",
                 Boolean::class.java,
+                participantId,
                 expoId,
-                participantId,
-                participantId,
                 traineeId,
+                expoId,
             ),
         )
 }

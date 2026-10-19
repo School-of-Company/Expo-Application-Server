@@ -241,8 +241,8 @@ class OwnerCancellationRevisionServiceTests {
     }
 
     @Test
-    fun `local active program rejection aborts acquired fence without cancelling preregistration`() {
-        program(ProgramSessionType.STANDARD)
+    fun `local legacy program rejection aborts acquired fence without cancelling preregistration`() {
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (2, 50)")
         assertEquals(409, cancel("PREREGISTER", "2"))
         assertEquals(listOf("PUT", "DELETE"), guardRequests().map { it.method })
         assertEquals("CONFIRMED", state(2))

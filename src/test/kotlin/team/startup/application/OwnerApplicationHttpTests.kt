@@ -35,6 +35,7 @@ import team.startup.application.domain.application.service.AddOwnerPreregisterCo
 import team.startup.application.domain.application.service.AddOwnerPreregisterSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
+import team.startup.application.domain.application.service.GetOwnerPreregisterCancellationPreviewService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
@@ -63,6 +64,8 @@ class OwnerApplicationHttpTests {
 
     @MockitoBean private lateinit var addSession: AddOwnerPreregisterSessionService
 
+    @MockitoBean private lateinit var previewCancellation: GetOwnerPreregisterCancellationPreviewService
+
     @Test
     fun `cookie is required and internal token or query session cannot replace it`() {
         mvc.perform(get(PATH)).andExpect(status().isUnauthorized)
@@ -82,6 +85,7 @@ class OwnerApplicationHttpTests {
                 get(PATH),
                 post("$PATH/PREREGISTER/2/cancellation").with(csrf()),
                 get("$PATH/preregister-waitlist"),
+                get("$PATH/PREREGISTER/2/cancellation-preview"),
                 post("$PATH/preregister-waitlist/cancellation").with(csrf()),
                 post("$PATH/PREREGISTER/2/companions")
                     .with(csrf())
@@ -99,7 +103,7 @@ class OwnerApplicationHttpTests {
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
         }
-        verifyNoInteractions(query, cancel, waitlist, withdraw, addCompanions, addSession)
+        verifyNoInteractions(query, cancel, waitlist, withdraw, addCompanions, addSession, previewCancellation)
     }
 
     @Test

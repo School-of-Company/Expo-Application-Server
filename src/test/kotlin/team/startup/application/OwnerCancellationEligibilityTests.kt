@@ -121,7 +121,7 @@ class OwnerCancellationEligibilityTests {
 
     @Test
     fun `active programs are checked before showing cancellation`() {
-        `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(true)
+        `when`(repository.legacyPrograms(EXPO, 2, 502)).thenReturn(true)
         blocked("ACTIVE_PROGRAMS")
     }
 

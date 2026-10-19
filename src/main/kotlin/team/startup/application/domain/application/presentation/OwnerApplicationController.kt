@@ -24,9 +24,12 @@ import team.startup.application.domain.application.presentation.dto.AddOwnerPrer
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterSessionRequest
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
+import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationRequest
 import team.startup.application.domain.application.presentation.dto.GetOwnerApplicationsCommand
+import team.startup.application.domain.application.presentation.dto.GetOwnerPreregisterCancellationPreviewCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterCancellationPreview
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterCompanionsResult
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterSessionResult
 import team.startup.application.domain.application.presentation.dto.OwnerPreregisterWaitlist
@@ -35,6 +38,7 @@ import team.startup.application.domain.application.service.AddOwnerPreregisterCo
 import team.startup.application.domain.application.service.AddOwnerPreregisterSessionService
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
+import team.startup.application.domain.application.service.GetOwnerPreregisterCancellationPreviewService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
@@ -52,6 +56,7 @@ class OwnerApplicationController(
     private val withdrawWaitlist: WithdrawOwnerPreregisterWaitlistService,
     private val addCompanions: AddOwnerPreregisterCompanionsService,
     private val addSession: AddOwnerPreregisterSessionService,
+    private val previewCancellation: GetOwnerPreregisterCancellationPreviewService,
     @Value("\${application.owner.session-cookie-name:PARTICIPANT_SESSION}") private val sessionCookieName: String,
 ) {
     @GetMapping
@@ -99,8 +104,36 @@ class OwnerApplicationController(
         @PathVariable expoId: UUID,
         @PathVariable type: OwnerApplicationType,
         @PathVariable applicationId: String,
+        @Valid @RequestBody(required = false) body: CancelOwnerApplicationRequest?,
         request: HttpServletRequest,
-    ) = cancelApplication.execute(CancelOwnerApplicationCommand(expoId, session(request), type, applicationId))
+    ) = cancelApplication.execute(
+        CancelOwnerApplicationCommand(expoId, session(request), type, applicationId, body?.programApplicationIds?.toSet()),
+    )
+
+    @GetMapping("/PREREGISTER/{applicationId}/cancellation-preview")
+    @Operation(
+        summary = "내 사전등록 취소 미리보기",
+        description =
+            "참가자 세션이 필요합니다. 이 회차를 취소하면 함께 취소되는 프로그램 신청을 돌려줍니다. " +
+                "남은 확정 사전등록 회차 어디와도 시간이 겹치지 않는 확정·대기 프로그램 신청이 대상입니다. " +
+                "취소 요청 programApplicationIds에 이 목록의 applicationId를 보내면 그 사이 바뀐 경우 409입니다.",
+        responses = [
+            ApiResponse(responseCode = "200", description = "함께 취소될 프로그램 신청 목록"),
+            ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
+            ApiResponse(responseCode = "404", description = "일행의 사전등록 신청이 아님"),
+            ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
+            ApiResponse(responseCode = "503", description = "User 연동 불가 또는 회차 정의 확인 불가"),
+        ],
+    )
+    fun cancellationPreview(
+        @PathVariable expoId: UUID,
+        @PathVariable applicationId: String,
+        request: HttpServletRequest,
+    ): ResponseEntity<OwnerPreregisterCancellationPreview> =
+        ResponseEntity
+            .ok()
+            .header("Cache-Control", "no-store")
+            .body(previewCancellation.execute(GetOwnerPreregisterCancellationPreviewCommand(expoId, session(request), applicationId)))
 
     @PostMapping("/PREREGISTER/{applicationId}/companions")
     @Operation(

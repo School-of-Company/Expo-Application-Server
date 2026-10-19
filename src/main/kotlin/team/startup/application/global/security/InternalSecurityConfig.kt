@@ -66,6 +66,11 @@ class InternalSecurityConfig(
                     .permitAll()
                     .requestMatchers(HttpMethod.GET, "/application/expos/{expoId}/my-applications/preregister-waitlists")
                     .permitAll()
+                    // #200: read-only preview; the participant session cookie authenticates.
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/application/expos/{expoId}/my-applications/PREREGISTER/{applicationId}/cancellation-preview",
+                    ).permitAll()
                     // #169: the participant session cookie authenticates and the POST stays CSRF protected.
                     .requestMatchers(HttpMethod.POST, "/application/expos/{expoId}/my-applications/PREREGISTER/{applicationId}/companions")
                     .permitAll()

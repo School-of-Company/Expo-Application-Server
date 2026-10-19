@@ -1,0 +1,8 @@
+package team.startup.application.domain.application.service
+
+import team.startup.application.domain.application.presentation.dto.GetOwnerPreregisterCancellationPreviewCommand
+import team.startup.application.domain.application.presentation.dto.OwnerPreregisterCancellationPreview
+
+interface GetOwnerPreregisterCancellationPreviewService {
+    fun execute(command: GetOwnerPreregisterCancellationPreviewCommand): OwnerPreregisterCancellationPreview
+}
