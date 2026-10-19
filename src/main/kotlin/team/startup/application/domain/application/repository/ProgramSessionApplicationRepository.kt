@@ -547,6 +547,26 @@ class ProgramSessionApplicationRepository(
         )
     }
 
+    // Expo purge (#211). Receipt sequences stay so receipt numbers are never reused.
+    fun purge(expoId: UUID) {
+        val applications = "SELECT id FROM tb_program_session_application WHERE expo_id = ?"
+        jdbc.update("DELETE FROM tb_promotion_offer WHERE expo_id = ?", expoId)
+        jdbc.update("DELETE FROM tb_program_guardian_link WHERE student_application_id IN ($applications)", expoId)
+        jdbc.update("DELETE FROM tb_program_guardian_member WHERE application_id IN ($applications)", expoId)
+        listOf("tb_program_session_receipt", "tb_program_session_history", "tb_program_session_event").forEach {
+            jdbc.update("DELETE FROM $it WHERE application_id IN ($applications)", expoId)
+        }
+        listOf(
+            "tb_program_guardian_batch",
+            "tb_program_session_application",
+            "tb_program_session_state",
+            "tb_program_change_receipt",
+            "tb_report_application_snapshot",
+        ).forEach {
+            jdbc.update("DELETE FROM $it WHERE expo_id = ?", expoId)
+        }
+    }
+
     fun removeTrainingPrograms(
         traineeId: Long,
         retainedIds: Set<Long>,
