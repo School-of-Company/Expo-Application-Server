@@ -73,6 +73,7 @@ class CancelPreregisterSessionServiceImpl(
                                 representativeId,
                                 permit,
                                 actorParticipantId = null,
+                                adminId = command.adminId,
                             )
                             receipt.copy(status = "CANCELLED")
                         }

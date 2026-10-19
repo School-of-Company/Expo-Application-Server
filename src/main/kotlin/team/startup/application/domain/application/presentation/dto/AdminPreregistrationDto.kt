@@ -60,6 +60,8 @@ data class AdminPreregistrationRow(
                 "대기 철회는 예약 requestId와 신청 당시 이름",
     )
     val cancellationActorUser: ApplicationUserActor? = null,
+    @field:Schema(description = "ADMIN 취소·대기 철회의 관리자 ID(#182). 그 외와 과거 미기록은 null")
+    val cancellationActorId: Long? = null,
 )
 
 data class AdminPreregistrationPage(
@@ -98,6 +100,28 @@ data class AdminPreregistrationTargetsRequest(
                 AdminPreregistrationScope.FILTERED -> keys == null && filter != null && filter.page == 0 && filter.size == 20
             }
 }
+
+data class AdminPreregistrationCancellationRequest(
+    @field:Size(min = 1, max = 5)
+    val keys: List<
+        @Size(min = 1, max = 160)
+        String,
+    >,
+) : StrictPreregistrationRequest() {
+    @get:AssertTrue(message = "keys must be unique")
+    val isKeysUnique: Boolean get() = keys.distinct().size == keys.size
+}
+
+data class CancelAdminPreregistrationCommand(
+    val expoId: UUID,
+    val keys: List<String>,
+    val authorization: String?,
+)
+
+data class AdminPreregistrationCancellationResult(
+    val keys: List<String>,
+    val status: String = "CANCELLED",
+)
 
 data class AdminPreregistrationTargetsCommand(
     val expoId: UUID,

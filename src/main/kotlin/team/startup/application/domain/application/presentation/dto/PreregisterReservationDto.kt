@@ -8,6 +8,13 @@ data class PreregisterReservationKey(
     val requestId: String,
 )
 
+data class WithdrawPreregisterReservationCommand(
+    val expoId: UUID,
+    val requestId: String,
+    // Verified admin executing the withdrawal (#182); null keeps the internal UNKNOWN record.
+    val adminId: Long? = null,
+)
+
 @Schema(description = "민감한 폼·전화번호를 제외한 예약 복구 상태")
 data class PreregisterReservationStatus(
     val requestId: String,

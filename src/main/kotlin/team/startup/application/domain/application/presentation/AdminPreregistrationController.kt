@@ -11,10 +11,13 @@ import org.springframework.web.bind.annotation.ModelAttribute
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.AdminPreregistrationCancellationRequest
+import team.startup.application.domain.application.presentation.dto.AdminPreregistrationCancellationResult
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationDetailCommand
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationPage
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationQuery
@@ -24,7 +27,9 @@ import team.startup.application.domain.application.presentation.dto.AdminPreregi
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationTargetsCommand
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationTargetsRequest
 import team.startup.application.domain.application.presentation.dto.AuthorizeAdminApplicationCommand
+import team.startup.application.domain.application.presentation.dto.CancelAdminPreregistrationCommand
 import team.startup.application.domain.application.service.AuthorizeAdminApplicationService
+import team.startup.application.domain.application.service.CancelAdminPreregistrationService
 import team.startup.application.domain.application.service.GetAdminPreregistrationDetailService
 import team.startup.application.domain.application.service.GetAdminPreregistrationsService
 import team.startup.application.domain.application.service.SelectAdminPreregistrationTargetsService
@@ -37,6 +42,7 @@ class AdminPreregistrationController(
     private val list: GetAdminPreregistrationsService,
     private val detail: GetAdminPreregistrationDetailService,
     private val targets: SelectAdminPreregistrationTargetsService,
+    private val cancellation: CancelAdminPreregistrationService,
 ) {
     @Operation(
         summary = "사전등록 목록·검색",
@@ -81,6 +87,21 @@ class AdminPreregistrationController(
         authorize(expoId, request, emptySet())
         return response(targets.execute(AdminPreregistrationTargetsCommand(expoId, body)))
     }
+
+    @Operation(
+        summary = "관리자 사전등록 취소·대기 철회",
+        description =
+            "APPLICATION_CANCEL 필요. 같은 회차·대표자 한 일행의 APPLICATION key(최대 5건, 대표자는 동행자와 함께) " +
+                "또는 대기 RESERVATION key 하나를 받습니다. 입장·취소 마감·활성 프로그램 신청·남은 동행자 보호와 대기 승급은 " +
+                "기존 규칙을 따르며 실행자는 ADMIN과 관리자 ID로 기록합니다. 일행 혼합은 400, 없는·다른 행사 key는 404입니다.",
+    )
+    @PostMapping("/cancellation")
+    fun cancel(
+        @PathVariable expoId: UUID,
+        @Valid @RequestBody body: AdminPreregistrationCancellationRequest,
+        @RequestHeader("Authorization", required = false) authorization: String?,
+    ): ResponseEntity<AdminPreregistrationCancellationResult> =
+        response(cancellation.execute(CancelAdminPreregistrationCommand(expoId, body.keys, authorization)))
 
     private fun authorize(
         expoId: UUID,

@@ -11,7 +11,7 @@ import team.startup.application.domain.application.service.OwnerCancellationGuar
 import java.time.Clock
 import java.util.UUID
 
-/** Protection rules shared by owner and internal preregister cancellation. Callers hold the Expo ledger lock in a transaction. */
+/** Protection rules shared by owner, admin and internal preregister cancellation. Callers hold the Expo ledger lock in a transaction. */
 @Component
 class PreregisterCancellation(
     private val owners: OwnerApplicationRepository,
@@ -40,7 +40,15 @@ class PreregisterCancellation(
         permit: OwnerCancellationGuard.Permit,
         // The authenticated representative for owner cancellation; null (UNKNOWN) for unauthenticated internal callers.
         actorParticipantId: Long?,
+        // The verified admin for admin cancellation (#182); never passed together with actorParticipantId.
+        adminId: Long? = null,
     ) {
+        val actorType =
+            when {
+                adminId != null -> ApplicationActorType.ADMIN
+                actorParticipantId != null -> ApplicationActorType.USER
+                else -> ApplicationActorType.UNKNOWN
+            }
         if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
         ledger.ensureAvailable(expoId, sessionId)
         if (owners.activePrograms(expoId, participantId, permit.linkedTraineeId)) {
@@ -49,19 +57,10 @@ class PreregisterCancellation(
         if (participantId == representativeId && owners.activeCompanions(expoId, participantId)) {
             conflict("동행자의 사전등록을 먼저 취소해야 합니다.")
         }
-        preregister.status(
-            applicationId,
-            "CANCELLED",
-            if (actorParticipantId == null) ApplicationActorType.UNKNOWN else ApplicationActorType.USER,
-            actorParticipantId,
-        )
+        preregister.status(applicationId, "CANCELLED", actorType, actorParticipantId, adminId)
         // 이 대표자에게 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.
         if (participantId == representativeId) {
-            reservations.withdrawCompanionWaits(
-                expoId,
-                participantId,
-                if (actorParticipantId == null) ApplicationActorType.UNKNOWN else ApplicationActorType.USER,
-            )
+            reservations.withdrawCompanionWaits(expoId, participantId, actorType, adminId)
         }
         val outboxId = attendance.cancelled(expoId, participantId)
         permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L))
