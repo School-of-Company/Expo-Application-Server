@@ -730,6 +730,192 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `사전등록 이력은 전이와 대기 철회를 시각 역순으로 주고 과거 미기록은 추정하지 않는다`() {
+        jdbc.execute(
+            "TRUNCATE tb_preregister_transition, tb_preregister_application, tb_preregister_reservation, tb_preregister_session_state CASCADE",
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}'), (?, 2, '{}')",
+            expoId,
+            expoId,
+        )
+        val otherExpo = UUID.randomUUID()
+        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", otherExpo)
+
+        fun application(
+            expo: UUID,
+            session: Int,
+            participant: Long,
+            status: String,
+        ) = requireNotNull(
+            jdbc.queryForObject(
+                "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                    "VALUES (?, ?, 1, ?, ?) RETURNING id",
+                Long::class.java,
+                expo,
+                session,
+                participant,
+                status,
+            ),
+        )
+
+        fun transition(
+            application: Long,
+            expo: UUID,
+            session: Int,
+            participant: Long,
+            status: String,
+            time: String?,
+            actor: String = "UNKNOWN",
+            actorParticipant: Long? = null,
+            actorId: Long? = null,
+        ) = jdbc.update(
+            "INSERT INTO tb_preregister_transition " +
+                "(application_id, expo_id, session_id, participant_id, status, created_at, actor_type, actor_participant_id, actor_id) " +
+                "VALUES (?, ?, ?, ?, ?, CAST(? AS timestamptz), ?, ?, ?)",
+            application,
+            expo,
+            session,
+            participant,
+            status,
+            time,
+            actor,
+            actorParticipant,
+            actorId,
+        )
+        val one = application(expoId, 1, 1, "CANCELLED")
+        transition(one, expoId, 1, 1, "CONFIRMED", "2026-10-12T00:00:00Z", "USER", 1)
+        transition(one, expoId, 1, 1, "CANCELLED", "2026-10-12T00:05:00Z", "USER", 1)
+        val two = application(expoId, 2, 2, "CANCELLED")
+        transition(two, expoId, 2, 2, "CONFIRMED", "2026-10-12T00:01:00Z", "SYSTEM")
+        transition(two, expoId, 2, 2, "CANCELLED", "2026-10-12T00:06:00Z", "ADMIN", actorId = 99)
+        // 시각과 실행자가 기록되기 전의 과거 취소 행
+        val three = application(expoId, 1, 3, "CANCELLED")
+        transition(three, expoId, 1, 3, "CANCELLED", null)
+        val foreign = application(otherExpo, 1, 4, "CANCELLED")
+        transition(foreign, otherExpo, 1, 4, "CANCELLED", "2026-10-12T00:07:00Z")
+        val snapshot = """{"name":"Applied name","phoneNumber":"010-3333-4444","informationJson":"{}","questions":[]}"""
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq, withdrawn_at, " +
+                "withdrawn_actor_type, withdrawn_actor_id) " +
+                "VALUES (?, 'owner', 1, '{}', ?, 2, 'REJECTED', 1, '2026-10-12T00:03:00Z', 'USER', NULL), " +
+                "(?, 'legacy', 1, '{}', ?, 1, 'REJECTED', 2, '2026-10-12T00:04:00Z', NULL, NULL), " +
+                "(?, 'wait', 1, '{}', ?, 1, 'WAITING', 3, NULL, NULL, NULL)",
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+            expoId,
+            snapshot,
+        )
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET user_request = replace(user_request, 'Applied name', 'missing person') WHERE request_id = 'legacy'",
+        )
+        participantIds = listOf(1L, 2L, 3L)
+        val path = "/application/admin/expos/$expoId/preregistrations/activities"
+
+        fun query(parameters: String = "") =
+            mvc.perform(get("$path$parameters").header("Authorization", "Bearer original-admin-jwt")).andReturn().response
+
+        assertEquals(
+            401,
+            mvc
+                .perform(get(path))
+                .andReturn()
+                .response.status,
+        )
+        expoStatus = 403
+        assertEquals(403, query().status)
+        expoStatus = 200
+        val response = query()
+        assertEquals(200, response.status, response.contentAsString)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        val body = mapper.readTree(response.contentAsString)
+        // 다른 행사 전이와 대기 중(철회 전) 예약은 들어오지 않는다.
+        assertEquals(7, body["totalElements"].asInt())
+        assertEquals(
+            listOf(
+                "TRANSITION:" to "CANCELLED",
+                "TRANSITION:" to "CANCELLED",
+                "RESERVATION:" to "WAITING_WITHDRAWN",
+                "RESERVATION:" to "WAITING_WITHDRAWN",
+                "TRANSITION:" to "CONFIRMED",
+                "TRANSITION:" to "CONFIRMED",
+                "TRANSITION:" to "CANCELLED",
+            ),
+            body["items"].toList().map { it["key"].asString().substringBefore(':') + ":" to it["action"].asString() },
+        )
+        val items = body["items"]
+        assertEquals("ADMIN", items[0]["actorType"].asString())
+        assertEquals(99, items[0]["actorId"].asInt())
+        assertEquals("CONFIRMED", items[0]["previousStatus"].asString())
+        assertEquals("Person 2", items[0]["participant"]["name"].asString())
+        assertEquals("APPLICATION:$expoId:$two", items[0]["ledgerKey"].asString())
+        assertEquals("USER", items[1]["actorType"].asString())
+        assertEquals(1, items[1]["actorUser"]["participantId"].asInt())
+        assertEquals("Now 1", items[1]["actorUser"]["name"].asString())
+        val legacyWithdrawal = items[2]
+        assertEquals("legacy", legacyWithdrawal["reservationRequestId"].asString())
+        assertEquals("UNKNOWN", legacyWithdrawal["actorType"].asString())
+        assertTrue(legacyWithdrawal["actorUser"].isNull && legacyWithdrawal["participantId"].isNull)
+        assertEquals("WAITING", legacyWithdrawal["previousStatus"].asString())
+        val ownerWithdrawal = items[3]
+        assertEquals("USER", ownerWithdrawal["actorType"].asString())
+        assertEquals("owner", ownerWithdrawal["actorUser"]["reservationRequestId"].asString())
+        assertEquals("REGISTRATION_SNAPSHOT", ownerWithdrawal["actorUser"]["nameSource"].asString())
+        assertEquals("Applied name", ownerWithdrawal["reservation"]["name"].asString())
+        assertEquals("RESERVATION:$expoId:owner", ownerWithdrawal["ledgerKey"].asString())
+        assertTrue(items[4]["previousStatus"].isNull && items[5]["previousStatus"].isNull)
+        val historic = items[6]
+        assertEquals("APPLICATION:$expoId:$three", historic["ledgerKey"].asString())
+        assertTrue(historic["createdAt"].isNull)
+        assertEquals("UNKNOWN", historic["actorType"].asString())
+        assertTrue(historic["actorUser"].isNull && historic["actorId"].isNull && historic["previousStatus"].isNull)
+
+        fun total(parameters: String) = mapper.readTree(query(parameters).contentAsString)["totalElements"].asInt()
+        assertEquals(2, total("?action=CONFIRMED"))
+        assertEquals(3, total("?action=CANCELLED"))
+        assertEquals(2, total("?action=WAITING_WITHDRAWN"))
+        assertEquals(5, total("?sessionId=1"))
+        assertEquals(2, total("?sessionId=2"))
+        assertEquals(4, total("?from=2026-10-12T00:03:00Z&until=2026-10-12T00:07:00Z"))
+        // 기간을 주면 시각 미기록 행은 빠진다.
+        assertEquals(6, total("?from=2026-10-12T00:00:00Z"))
+        // User 검색은 chosen이면 참가자 2만, missing이면 없음이고 대기 철회는 제출 당시 이름·번호로 찾는다.
+        assertEquals(2, total("?q=chosen"))
+        assertEquals(1, total("?q=missing"))
+        // 스텁은 그 밖의 q에 모든 참가자를 돌려주므로 전이 5건만, 예약은 이름·번호가 맞지 않아 빠진다.
+        assertEquals(5, total("?q=nobody"))
+        val paged = mapper.readTree(query("?size=3&page=2").contentAsString)
+        assertEquals(7, paged["totalElements"].asInt())
+        assertEquals(1, paged["items"].size())
+        assertEquals(0, mapper.readTree(query("?page=10").contentAsString)["items"].size())
+        for (invalid in listOf(
+            "?size=101",
+            "?size=0",
+            "?page=-1",
+            "?action=APPLIED",
+            "?sessionId=0",
+            "?role=ADMIN",
+            "?action=",
+            "?size=1&size=2",
+            "?from=2026-10-12T00:07:00Z&until=2026-10-12T00:00:00Z",
+        )) {
+            assertEquals(400, query(invalid).status, invalid)
+        }
+        assertEquals(
+            400,
+            mvc
+                .perform(get(path).param("q", " ").header("Authorization", "Bearer original-admin-jwt"))
+                .andReturn()
+                .response.status,
+        )
+        userStatus = 503
+        assertEquals(503, query("?q=chosen").status)
+    }
+
+    @Test
     fun `사전등록 집계는 고유 참가자와 예약 인원을 분리하고 내부 경로도 같은 집계를 낸다`() {
         jdbc.execute(
             "TRUNCATE tb_preregister_transition, tb_preregister_application, tb_preregister_reservation, tb_preregister_session_state CASCADE",

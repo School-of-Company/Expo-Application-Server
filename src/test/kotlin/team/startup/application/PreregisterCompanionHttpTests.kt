@@ -306,6 +306,55 @@ class PreregisterCompanionHttpTests {
     }
 
     @Test
+    fun `adding after a companion is cancelled sends the cancelled companion id to User and never the representative`() {
+        capacity.set(4)
+        assertEquals(201, register(PHONE, "first").status)
+        // 첫 등록과 취소가 없는 추가에는 필드가 없어 기존 요청과 같다.
+        assertFalse(userRequests.first().has("releasedParticipantIds"))
+        val id = representativeItem()["applicationId"].asString()
+
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 43")
+        assertEquals(201, add(id, companion("third"), key = "after-cancel").status)
+        assertEquals(mapper.readTree("[43]"), userRequests.last()["releasedParticipantIds"])
+        // 같은 키 재시도는 User를 다시 부르지 않는다.
+        val sent = userRequests.size
+        assertEquals(201, add(id, companion("third"), key = "after-cancel").status)
+        assertEquals(sent, userRequests.size)
+    }
+
+    @Test
+    fun `without a cancelled companion the User request has no releasedParticipantIds field`() {
+        capacity.set(4)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals(201, add(id, companion("second")).status)
+        assertTrue(userRequests.none { it.has("releasedParticipantIds") })
+    }
+
+    @Test
+    fun `a waiting addition takes the cancelled companions as of its first delivery and a waiting one is not released`() {
+        capacity.set(2)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals(202, add(id, companion("second"), key = "wait").status)
+        // 대기 중인 추가는 취소가 아니라 보내지 않고, 대기 중에 생긴 취소는 승급 뒤 첫 전달에 반영된다.
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 43")
+        capacity.set(3)
+        storedDefinition("capacity", "3")
+        recovery.promote()
+        waitlist.flush()
+        recovery.recover()
+        assertEquals(mapper.readTree("[43]"), userRequests.last()["releasedParticipantIds"])
+        assertEquals(
+            "[43]",
+            jdbc.queryForObject(
+                "SELECT user_request::jsonb -> 'releasedParticipantIds' FROM tb_preregister_reservation WHERE request_id = 'wait'",
+                String::class.java,
+            ),
+        )
+    }
+
+    @Test
     fun `User rejection releases held seats and an idempotent retry does not save twice`() {
         capacity.set(4)
         assertEquals(201, register(PHONE, null).status)

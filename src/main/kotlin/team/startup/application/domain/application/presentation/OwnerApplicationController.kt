@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.web.csrf.CsrfToken
+import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -16,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
-import org.springframework.web.server.ResponseStatusException
+import org.springframework.web.bind.annotation.RestControllerAdvice
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsCommand
 import team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsRequest
 import team.startup.application.domain.application.presentation.dto.CancelOwnerApplicationCommand
@@ -31,6 +32,7 @@ import team.startup.application.domain.application.service.CancelOwnerApplicatio
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import java.util.UUID
 
 @RestController
@@ -190,5 +192,13 @@ class OwnerApplicationController(
             ?.singleOrNull()
             ?.value
             ?.takeIf { it.isNotBlank() }
-            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
+            ?: throw ParticipantSessionException("SESSION_REQUIRED")
+}
+
+// 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를 싣는다. 다른 상태와 응답은 건드리지 않는다(#188).
+@RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
+class OwnerApplicationSessionExceptionHandler {
+    @ExceptionHandler(ParticipantSessionException::class)
+    fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf("status" to 401, "code" to ex.code))
 }

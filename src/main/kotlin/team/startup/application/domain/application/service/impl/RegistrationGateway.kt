@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -72,6 +73,12 @@ data class ParticipantRegistration(
     val formId: String?,
     val questions: List<RegistrationQuestion>?,
     val region: String? = null,
+    /**
+     * 이 대표자의 동행자 중 이 서비스 원장에서 신청이 취소된 참가자 ID(#190). User가 누적 인원 한도에서 뺀다.
+     * 멱등 fingerprint가 본문으로 만들어지므로 없거나 비면 싣지 않아 이 필드가 생기기 전 요청과 같다.
+     */
+    @get:JsonInclude(JsonInclude.Include.NON_EMPTY)
+    val releasedParticipantIds: List<Long>? = null,
 )
 
 data class ManagedParticipantSelection(
@@ -296,7 +303,7 @@ class RegistrationGateway(
         expoId: UUID,
         sessionId: String,
     ): OwnerApplicationParty {
-        if (sessionId.isBlank()) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
+        if (sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
         val phoneNumber = participantSessionPhone(expoId.toString(), sessionId)
         val response =
             decode(

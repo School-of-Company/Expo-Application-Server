@@ -21,6 +21,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.OwnerApplicationController
@@ -35,6 +36,7 @@ import team.startup.application.domain.application.service.CancelOwnerApplicatio
 import team.startup.application.domain.application.service.GetOwnerApplicationsService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.global.security.InternalSecurityConfig
 import team.startup.application.global.security.InternalTokenVerifier
 import java.util.UUID
@@ -65,6 +67,62 @@ class OwnerApplicationHttpTests {
             .perform(get(PATH).cookie(Cookie("PARTICIPANT_SESSION", "owner"), Cookie("PARTICIPANT_SESSION", "other")))
             .andExpect(status().isUnauthorized)
         verifyNoInteractions(query, cancel)
+    }
+
+    @Test
+    fun `missing cookie answers SESSION_REQUIRED code on every owner path`() {
+        val paths =
+            listOf(
+                get(PATH),
+                post("$PATH/PREREGISTER/2/cancellation").with(csrf()),
+                get("$PATH/preregister-waitlist"),
+                post("$PATH/preregister-waitlist/cancellation").with(csrf()),
+                post("$PATH/PREREGISTER/2/companions")
+                    .with(csrf())
+                    .contentType("application/json")
+                    .content("""{"companions":[{"name":"a","occupation":"STUDENT","region":"SEOUL"}]}"""),
+            )
+        paths.forEach {
+            mvc
+                .perform(it)
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
+        }
+        verifyNoInteractions(query, cancel, waitlist, withdraw, addCompanions)
+    }
+
+    @Test
+    fun `session code from the gateway is passed through on query cancel waitlist and withdraw`() {
+        for (code in listOf("SESSION_EXPIRED", "SESSION_REQUIRED")) {
+            val session = Cookie("PARTICIPANT_SESSION", code)
+            `when`(query.execute(GetOwnerApplicationsCommand(EXPO, code))).thenThrow(ParticipantSessionException(code))
+            doThrow(ParticipantSessionException(code)).`when`(cancel).execute(COMMAND.copy(sessionId = code))
+            `when`(waitlist.execute(OwnerPreregisterWaitlistCommand(EXPO, code))).thenThrow(ParticipantSessionException(code))
+            doThrow(ParticipantSessionException(code)).`when`(withdraw).execute(OwnerPreregisterWaitlistCommand(EXPO, code))
+            listOf(
+                get(PATH).cookie(session),
+                post("$PATH/PREREGISTER/2/cancellation").with(csrf()).cookie(session),
+                get("$PATH/preregister-waitlist").cookie(session),
+                post("$PATH/preregister-waitlist/cancellation").with(csrf()).cookie(session),
+            ).forEach {
+                mvc
+                    .perform(it)
+                    .andExpect(status().isUnauthorized)
+                    .andExpect(jsonPath("$.status").value(401))
+                    .andExpect(jsonPath("$.code").value(code))
+            }
+        }
+    }
+
+    @Test
+    fun `non session failures keep their status without a session code`() {
+        `when`(query.execute(GetOwnerApplicationsCommand(EXPO, "bad")))
+            .thenThrow(ResponseStatusException(HttpStatus.BAD_GATEWAY))
+        mvc
+            .perform(get(PATH).cookie(Cookie("PARTICIPANT_SESSION", "bad")))
+            .andExpect(status().isBadGateway)
+            .andExpect(jsonPath("$.code").doesNotExist())
     }
 
     @Test
