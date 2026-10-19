@@ -100,7 +100,7 @@ APPLICATION_CANCEL, Attendance 관리자 acquire/abort, 마감·입장·스캔 �
 
 - `APPLICATION` key: 같은 회차·같은 대표자 소속 한 일행만, 최대 5건. 대표자와 동행자를 함께 보낼 수 있다.
   기존 `CancelPreregisterSessionService`를 그대로 쓰므로 Attendance 관리자 acquire/abort, 입장·취소 마감·활성 프로그램 신청·
-  남은 동행자 보호, 동행자 먼저·대표자 나중 순서, 대기 승급이 같다. 대표자만 보내고 확정 동행자가 남으면 409다.
+  동행자 먼저·대표자 나중 순서, 대기 승급이 같다. #198부터 대표자만 보내도 취소되며 동행자 신청은 남는다.
 - `RESERVATION` key: WAITING 일행 하나만 철회한다. PENDING(복구 중)은 409다.
 - 두 종류 혼합, 여러 일행, 예약 둘 이상은 400이다. 없는·다른 행사 key가 하나라도 있으면 404이며 다른 행으로 치환하지 않는다.
 - 이미 취소·철회된 대상은 200으로 끝나고 새 전이를 만들지 않는다. 응답은 `{"keys":[...],"status":"CANCELLED"}`(no-store)다.
