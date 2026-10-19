@@ -25,6 +25,8 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.presentation.dto.AdminPreregistrationQuery
+import team.startup.application.domain.application.repository.AdminPreregistrationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.impl.PreregisterRecoveryScheduler
 import team.startup.application.domain.application.service.impl.PreregisterWaitlist
@@ -67,6 +69,8 @@ class PreregisterWaitlistHttpTests {
 
     @Autowired private lateinit var context: org.springframework.context.ApplicationContext
 
+    @Autowired private lateinit var ledger: AdminPreregistrationRepository
+
     @MockitoBean private lateinit var clock: Clock
 
     private val now = AtomicReference<Instant>()
@@ -85,6 +89,7 @@ class PreregisterWaitlistHttpTests {
         revision.set(1)
         startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
         verifiedSessionPhone = "01000000002"
+        cancelAccess = 200
         now.set(Instant.now().truncatedTo(ChronoUnit.SECONDS))
         `when`(clock.instant()).thenAnswer { now.get() }
         `when`(clock.zone).thenReturn(ZoneOffset.UTC)
@@ -157,6 +162,20 @@ class PreregisterWaitlistHttpTests {
         internal(post("/internal/expos/$EXPO/preregister-reservations/$key/withdrawal")).also {
             waitlist.flush()
         }
+
+    private fun adminCancel(
+        vararg keys: String,
+        authorization: String? = "Bearer admin-jwt",
+    ): Int =
+        mvc
+            .perform(
+                post("/application/admin/expos/$EXPO/preregistrations/cancellation")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(mapper.writeValueAsString(mapOf("keys" to keys.toList())))
+                    .apply { authorization?.let { header("Authorization", it) } },
+            ).andReturn()
+            .response.status
+            .also { waitlist.flush() }
 
     private fun sweep() {
         recovery.promote()
@@ -455,6 +474,42 @@ class PreregisterWaitlistHttpTests {
     }
 
     @Test
+    fun `admin cancels one confirmed party or withdraws one waiting party with the verified admin ID`() {
+        capacity.set(2)
+        assertEquals(201, submit("a", 2, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        waiting(submit("c", 1, "01000000003"), 2)
+        val representative = "APPLICATION:$EXPO:1"
+        val companion = "APPLICATION:$EXPO:2"
+        assertEquals(401, adminCancel(representative, authorization = null))
+        cancelAccess = 403
+        assertEquals(403, adminCancel(representative, companion))
+        cancelAccess = 200
+        assertEquals(400, adminCancel(*Array(6) { "APPLICATION:$EXPO:${it + 1}" }))
+        assertEquals(404, adminCancel("APPLICATION:${UUID.randomUUID()}:1"))
+        assertEquals(400, adminCancel(representative, "RESERVATION:$EXPO:c"))
+        assertEquals(400, adminCancel("RESERVATION:$EXPO:b", "RESERVATION:$EXPO:c"))
+        // The representative cannot leave a confirmed companion behind.
+        assertEquals(409, adminCancel(representative))
+        assertEquals(200, adminCancel(representative, companion))
+        val transitions = "SELECT actor_type || ':' || actor_id FROM tb_preregister_transition WHERE status = 'CANCELLED'"
+        assertEquals(listOf("ADMIN:7", "ADMIN:7"), jdbc.queryForList(transitions, String::class.java))
+        assertEquals("RESERVED", state("b"))
+        assertEquals(200, adminCancel(representative, companion))
+        assertEquals(2, jdbc.queryForList(transitions, String::class.java).size)
+        assertEquals(409, adminCancel("RESERVATION:$EXPO:b"))
+        assertEquals(200, adminCancel("RESERVATION:$EXPO:c"))
+        assertEquals(200, adminCancel("RESERVATION:$EXPO:c"))
+        assertEquals("ADMIN", withdrawnActor("c"))
+        val rows =
+            ledger
+                .query(EXPO, AdminPreregistrationQuery(), null, 10, keys = listOf(representative, "RESERVATION:$EXPO:c"))
+                .first
+                .map { "${it.key}:${it.status}:${it.cancellationActorType}:${it.cancellationActorId}" }
+        assertEquals(listOf("$representative:CANCELLED:ADMIN:7", "RESERVATION:$EXPO:c:CANCELLED:ADMIN:7"), rows)
+    }
+
+    @Test
     fun `concurrent cancellations promote each waiting party once without exceeding capacity`() {
         capacity.set(2)
         assertEquals(201, submit("a", 1, "01000000001").status)
@@ -522,6 +577,8 @@ class PreregisterWaitlistHttpTests {
         @Volatile private var closed = false
 
         @Volatile private var verifiedSessionPhone = "01000000002"
+
+        @Volatile private var cancelAccess = 200
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val json =
             tools.jackson.module.kotlin
@@ -538,6 +595,12 @@ class PreregisterWaitlistHttpTests {
                     val path = exchange.requestURI.path
                     val (status, body) =
                         when {
+                            path.endsWith("/admin-application-cancel-access") -> {
+                                cancelAccess to
+                                    """{"expoId":"$EXPO","adminId":7,"permission":"APPLICATION_CANCEL",""" +
+                                    """"policyVersion":"EXPO_ADMIN_APPLICATION_CANCEL_V1","scope":"EXPO_ADMIN"}"""
+                            }
+
                             path == "/internal/participant-sessions/resolve" -> {
                                 200 to """{"expoId":"$EXPO","phoneNumber":"$verifiedSessionPhone","expiresAt":"2100-01-01T00:00:00"}"""
                             }

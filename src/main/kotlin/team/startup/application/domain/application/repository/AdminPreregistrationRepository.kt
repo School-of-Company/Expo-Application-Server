@@ -59,9 +59,9 @@ class AdminPreregistrationRepository(
                     NULL::jsonb AS reservation, c.created_at AS cancelled_at,
                     CASE WHEN a.status = 'CANCELLED' THEN coalesce(c.actor_type, 'UNKNOWN') END AS cancellation_actor_type,
                     c.actor_participant_id AS cancellation_actor_participant_id, NULL::text AS cancellation_actor_reservation,
-                    NULL::text AS cancellation_actor_name
+                    NULL::text AS cancellation_actor_name, c.actor_id AS cancellation_actor_id
                 FROM tb_preregister_application a
-                LEFT JOIN LATERAL (SELECT t.created_at, t.actor_type, t.actor_participant_id FROM tb_preregister_transition t
+                LEFT JOIN LATERAL (SELECT t.created_at, t.actor_type, t.actor_participant_id, t.actor_id FROM tb_preregister_transition t
                     WHERE t.application_id = a.id AND t.status = 'CANCELLED' ORDER BY t.id DESC LIMIT 1) c ON a.status = 'CANCELLED'
                 WHERE a.expo_id = :expo
                 UNION ALL
@@ -73,7 +73,7 @@ class AdminPreregistrationRepository(
                         'questions', user_request::jsonb -> 'questions'),
                     withdrawn_at, CASE WHEN withdrawn_at IS NOT NULL THEN coalesce(withdrawn_actor_type, 'UNKNOWN') END, NULL::bigint,
                     CASE WHEN withdrawn_actor_type = 'USER' THEN request_id END,
-                    CASE WHEN withdrawn_actor_type = 'USER' THEN user_request::jsonb ->> 'name' END
+                    CASE WHEN withdrawn_actor_type = 'USER' THEN user_request::jsonb ->> 'name' END, withdrawn_actor_id
                 FROM tb_preregister_reservation
                 WHERE expo_id = :expo AND (state IN ('WAITING', 'RESERVED') OR withdrawn_at IS NOT NULL)
             )
@@ -97,6 +97,7 @@ class AdminPreregistrationRepository(
                     cancelledAt = rs.getTimestamp("cancelled_at")?.toInstant(),
                     cancellationActorType = rs.getString("cancellation_actor_type")?.let(ApplicationActorType::valueOf),
                     cancellationActorUser = cancellationActor(rs),
+                    cancellationActorId = rs.getObject("cancellation_actor_id", Long::class.javaObjectType),
                 )
             }
         return rows to total

@@ -15,6 +15,7 @@
 | GET `/detail` | `key` 필수 | 목록의 행 전체 상세, 행사/탭에 없으면 404 |
 | POST `/targets` | 아래 SELECTED/FILTERED JSON | 동일 목록 조건의 현재 대상 해석, 최대 5000행 |
 | GET `/summary` | 기존 계약 그대로 | 전체 행사·회차별 고유 확정/취소, 대기 인원 및 복구 예약 집계 |
+| POST `/cancellation` | `{"keys":[...]}` | 관리자 취소·대기 철회(#182). 아래 "관리자 취소" 참조 |
 
 `status`는 CONFIRMED, WAITING, CANCELLED, PENDING의 쉼표 목록이다.
 JSON 필터는 단일 상태 문자열 또는 배열을 받는다. `sessionId`는 양수다.
@@ -89,7 +90,22 @@ Notification 그룹 발송도 기존 AdminGroupMessageTargetResolver의 프로�
 APPLICATION_CANCEL, Attendance 관리자 acquire/abort, 마감·입장·스캔 보호를 재사용한다.
 하지만 이 경로는 **프로그램 UUID 전용**이다. 사전등록 applicationId/key와 연결된다고 가장하지 않는다.
 기존 소유자 사전등록/대기 취소는 사용자 세션 경로이며 관리자 JWT로 우회 호출하지 않는다.
-사전등록 관리자 취소는 아래 계약 확장 전 비활성으로 표시한다.
+사전등록 관리자 취소는 #182의 `/cancellation`이 맡는다.
+
+## 관리자 취소 (#182)
+
+`POST /application/admin/expos/{expoId}/preregistrations/cancellation`은 목록 key를 그대로 받는다.
+`/targets`와 달리 Expo `APPLICATION_CANCEL`(프로그램 관리자 취소와 같은 권한)을 검증한다.
+
+- `APPLICATION` key: 같은 회차·같은 대표자 소속 한 일행만, 최대 5건. 대표자와 동행자를 함께 보낼 수 있다.
+  기존 `CancelPreregisterSessionService`를 그대로 쓰므로 Attendance 관리자 acquire/abort, 입장·취소 마감·활성 프로그램 신청·
+  남은 동행자 보호, 동행자 먼저·대표자 나중 순서, 대기 승급이 같다. 대표자만 보내고 확정 동행자가 남으면 409다.
+- `RESERVATION` key: WAITING 일행 하나만 철회한다. PENDING(복구 중)은 409다.
+- 두 종류 혼합, 여러 일행, 예약 둘 이상은 400이다. 없는·다른 행사 key가 하나라도 있으면 404이며 다른 행으로 치환하지 않는다.
+- 이미 취소·철회된 대상은 200으로 끝나고 새 전이를 만들지 않는다. 응답은 `{"keys":[...],"status":"CANCELLED"}`(no-store)다.
+- 실행자는 `ADMIN`과 관리자 ID(V32 `tb_preregister_transition.actor_id`, `tb_preregister_reservation.withdrawn_actor_id`)로 기록하고
+  목록·상세·대상 행의 `cancellationActorId`로 내려준다. 그 외 주체와 과거 행은 null이다.
+- 확인 팝업과 동행자 함께 취소 선택은 Client 몫이다(Expo-Client#664).
 
 ## 의존 이슈 초안 (아직 GitHub에 생성하지 않음)
 
@@ -109,11 +125,7 @@ APPLICATION_CANCEL, Attendance 관리자 acquire/abort, 마감·입장·스캔 �
 - WAITING/PENDING/대기철회는 미지원으로 명시한다. 대기 SMS를 이번 이슈로 도입하지 않는다.
 - 검색 q와 별도 User 내부 토큰 경계(기존 FILTERED q 금지)를 해소할 서비스 간 계약이 필요하다.
 
-### Application/Expo/Attendance: 사전등록 관리자 취소 대상·보호 계약
-
-- 참가자 단건/대표자 일행 취소 범위, 대기 예약 철회, PENDING 조정 금지 여부를 명시한다.
-- 공개 APPLICATION_CANCEL 및 기존 durable acquire/abort 복구 흐름을 확장한다.
-- 기존 프로그램 취소 UUID 자리에 사전등록 ID를 넣거나 사용자 세션을 위조하지 않는다.
+사전등록 관리자 취소 초안은 #182로 구현했다(위 "관리자 취소").
 
 ## #124 후속 통합
 

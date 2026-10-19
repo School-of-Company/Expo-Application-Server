@@ -411,9 +411,10 @@ class PreregisterSessionRepository(
         status: String,
         actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
         actorParticipantId: Long? = null,
+        actorId: Long? = null,
     ) {
         jdbc.update("UPDATE tb_preregister_application SET status = ? WHERE id = ?", status, id)
-        transition(id, actorType, actorParticipantId)
+        transition(id, actorType, actorParticipantId, actorId)
     }
 
     // Registration confirmations keep the column default UNKNOWN; cancellations and owner companion additions (#169)
@@ -422,13 +423,15 @@ class PreregisterSessionRepository(
         id: Long,
         actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
         actorParticipantId: Long? = null,
+        actorId: Long? = null,
     ) {
         jdbc.update(
             "INSERT INTO tb_preregister_transition " +
-                "(application_id, expo_id, session_id, participant_id, status, actor_type, actor_participant_id) " +
-                "SELECT id, expo_id, session_id, participant_id, status, ?, ? FROM tb_preregister_application WHERE id = ?",
+                "(application_id, expo_id, session_id, participant_id, status, actor_type, actor_participant_id, actor_id) " +
+                "SELECT id, expo_id, session_id, participant_id, status, ?, ?, ? FROM tb_preregister_application WHERE id = ?",
             actorType.name,
             actorParticipantId,
+            actorId,
             id,
         )
     }
