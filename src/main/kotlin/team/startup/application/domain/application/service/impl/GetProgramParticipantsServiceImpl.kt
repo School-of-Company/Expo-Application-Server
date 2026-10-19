@@ -45,11 +45,29 @@ class GetProgramParticipantsServiceImpl(
                 ProgramParticipantsResponse(
                     party.representativeId != null,
                     party.participants.map { participant ->
+                        val preregister =
+                            when {
+                                command.onsite && participant.fieldRegistered -> {
+                                    null
+                                }
+
+                                // 신청 경로와 같은 회차 시간 겹침 기준(#197). 정책 없는 프로그램은 신청할 수 없어 확정 여부만 본다.
+                                policy != null -> {
+                                    ledger.preregisterIneligibility(definition, participant.participantId, lock = false)
+                                }
+
+                                !repository.confirmed(command.owner.expoId, participant.participantId) -> {
+                                    ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
+                                }
+
+                                else -> {
+                                    null
+                                }
+                            }
                         val reason =
                             when {
-                                !repository.confirmed(command.owner.expoId, participant.participantId) &&
-                                    !(command.onsite && participant.fieldRegistered) -> {
-                                    ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
+                                preregister != null -> {
+                                    preregister
                                 }
 
                                 participant.occupation == null || participant.occupation !in allowed -> {
