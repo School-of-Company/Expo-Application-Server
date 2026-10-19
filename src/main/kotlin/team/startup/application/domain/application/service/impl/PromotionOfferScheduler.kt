@@ -8,7 +8,6 @@ import org.apache.kafka.common.serialization.StringSerializer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
-import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -51,15 +50,6 @@ class PromotionOfferKafkaConfig {
             ),
         )
     }
-}
-
-// With a single TaskScheduler bean Spring would run every @Scheduled task on the offer pool; keep the default pool
-// separate unless the promotion publisher config already declares it.
-@Configuration
-@ConditionalOnExpression("\${application.promotion-offers.enabled:false} and !\${application.promotions.enabled:false}")
-class PromotionOfferDefaultSchedulerConfig {
-    @Bean
-    fun taskScheduler(): ThreadPoolTaskScheduler = ThreadPoolTaskScheduler().apply { setThreadNamePrefix("application-scheduler-") }
 }
 
 // Outbox publisher and sweeper for #144 offers. Kafka sends and remote promotion run outside database transactions;
