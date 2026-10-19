@@ -63,10 +63,10 @@ class ProgramSessionAdmission(
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "보호자 자격 공급자가 준비되지 않았습니다.")
         }
         guardianProvider?.validateSingle(command, definition, occupation)
-        if (!ledger.confirmedPreregister(command) &&
-            !(command.onsite && managed.fieldRegistered)
-        ) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED.name)
+        if (!(command.onsite && managed.fieldRegistered)) {
+            ledger.preregisterIneligibility(definition, command.participantId)?.let {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, it.name)
+            }
         }
         if (occupation == null || occupation !in policy.allowedOccupations) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED.name)

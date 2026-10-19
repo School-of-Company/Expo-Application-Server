@@ -83,13 +83,10 @@ class StudentGuardianBatchAdmission(
         }
         val channel = channels.values.first()
         val batchId = UUID.randomUUID()
-        if (ids.any {
-                !batches.confirmedPreregister(command.key, it) &&
-                    !(command.onsite && party.participants.single { member -> member.participantId == it }.fieldRegistered)
-            }
-        ) {
-            throw ResponseStatusException(HttpStatus.FORBIDDEN)
-        }
+        ids
+            .filterNot { id -> command.onsite && party.participants.single { it.participantId == id }.fieldRegistered }
+            .firstNotNullOfOrNull { ledger.preregisterIneligibility(definition, it) }
+            ?.let { throw ResponseStatusException(HttpStatus.FORBIDDEN, it.name) }
         val existing = guardians.mapNotNull { id -> batches.active(command.key, id)?.let { id to it } }.toMap()
         if (existing.values.any { it.status != "CONFIRMED" || batches.students(it.id).isEmpty() }) {
             conflict("연결 학생과 확정된 보호자만 재사용할 수 있습니다.")

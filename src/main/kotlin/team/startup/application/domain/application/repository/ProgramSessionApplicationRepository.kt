@@ -9,6 +9,7 @@ import team.startup.application.domain.application.presentation.dto.ApplyProgram
 import team.startup.application.domain.application.presentation.dto.ProgramAdmissionCapacity
 import team.startup.application.domain.application.presentation.dto.ProgramAdmissionSeats
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
@@ -266,14 +267,32 @@ class ProgramSessionApplicationRepository(
             ) + if (command.onsite) mapOf("admissionRoute" to "ONSITE") else emptyMap(),
         )
 
-    fun confirmedPreregister(command: ApplyProgramSessionCommand): Boolean =
-        jdbc
-            .query(
-                "SELECT id FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CONFIRMED' FOR SHARE",
-                { rs, _ -> rs.getLong(1) },
-                UUID.fromString(command.expoId),
-                command.participantId,
-            ).isNotEmpty()
+    // #197: 참가자의 확정 사전등록 회차 중 [startedAt, endedAt)가 프로그램 시간과 일부라도 겹치는 회차가 있어야 신청할 수 있다.
+    // 회차 시간은 저장된 회차 정의에서 읽고 Expo는 부르지 않는다. 입장 허용 시간(leadMinutes)은 판정에 넣지 않는다.
+    // 신청 경로는 확정 행을 FOR SHARE로 잡고, 읽기 전용 조회(일행 화면)는 잠그지 않는다. null이면 자격이 있다.
+    fun preregisterIneligibility(
+        definition: ProgramSessionDefinition,
+        participantId: Long,
+        lock: Boolean = true,
+    ): ProgramIneligibleReason? {
+        val sessions =
+            jdbc.query(
+                "SELECT s.definition::jsonb ->> 'startedAt', s.definition::jsonb ->> 'endedAt' FROM tb_preregister_application a " +
+                    "JOIN tb_preregister_session_state s ON s.expo_id = a.expo_id AND s.session_id = a.session_id " +
+                    "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status = 'CONFIRMED'" + if (lock) " FOR SHARE OF a" else "",
+                { rs, _ -> rs.getString(1) to rs.getString(2) },
+                UUID.fromString(definition.expoId),
+                participantId,
+            )
+        if (sessions.isEmpty()) return ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
+        val start = sessionTime(definition.startedAt)
+        val end = sessionTime(definition.endedAt)
+        val overlaps =
+            sessions.any { (startedAt, endedAt) ->
+                start.isBefore(sessionTime(endedAt)) && sessionTime(startedAt).isBefore(end)
+            }
+        return if (overlaps) null else ProgramIneligibleReason.SESSION_TIME_MISMATCH
+    }
 
     fun activeInGroup(
         command: ApplyProgramSessionCommand,

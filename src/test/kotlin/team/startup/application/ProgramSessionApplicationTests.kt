@@ -137,7 +137,10 @@ class ProgramSessionApplicationTests {
                 "tb_training_operation_receipt, tb_deleted_standard_program, tb_deleted_training_program, " +
                 "tb_preregister_application, tb_preregister_session_state RESTART IDENTITY",
         )
-        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", UUID.fromString(EXPO))
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}')",
+            UUID.fromString(EXPO),
+        )
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
                 "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED')",
@@ -1275,6 +1278,60 @@ class ProgramSessionApplicationTests {
         assertEquals(403, assertThrows(ResponseStatusException::class.java) { service.execute(command()) }.statusCode.value())
         assertEquals(0, linkCalls.get())
         assertEquals(0L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `program eligibility requires a confirmed preregister session overlapping the program time`() {
+        // 회차 A 10-12, B 13-15 KST. 프로그램 시간은 KST 로컬, 회차 시간은 저장된 정의의 UTC Instant다(#197).
+        val sessions =
+            mapOf(
+                1L to ("2030-01-01T01:00:00Z" to "2030-01-01T03:00:00Z"),
+                2L to ("2030-01-01T04:00:00Z" to "2030-01-01T06:00:00Z"),
+            )
+
+        fun attempt(
+            session: Long,
+            from: String,
+            to: String,
+        ): String? {
+            reset()
+            jdbc.execute("TRUNCATE tb_preregister_application, tb_preregister_session_state RESTART IDENTITY")
+            sessions.forEach { (id, window) ->
+                jdbc.update(
+                    "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, ?, ?)",
+                    UUID.fromString(EXPO),
+                    id,
+                    """{"startedAt":"${window.first}","endedAt":"${window.second}"}""",
+                )
+            }
+            jdbc.update(
+                "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                    "VALUES (?, ?, 1, 1, 'CONFIRMED')",
+                UUID.fromString(EXPO),
+                session,
+            )
+            windows = mapOf(("STANDARD" to 1L) to ("2030-01-01T$from:00" to "2030-01-01T$to:00"))
+            return try {
+                service.execute(command())
+                null
+            } catch (ex: ResponseStatusException) {
+                assertEquals(403, ex.statusCode.value())
+                assertEquals(0L, count("tb_program_session_application"))
+                ex.reason
+            }
+        }
+        assertEquals(null, attempt(1, "10:30", "11:30"))
+        assertEquals(null, attempt(1, "11:30", "12:30"))
+        assertEquals(null, attempt(2, "12:30", "13:30"))
+        assertEquals("SESSION_TIME_MISMATCH", attempt(1, "12:10", "12:50"))
+        assertEquals("SESSION_TIME_MISMATCH", attempt(2, "12:10", "12:50"))
+        assertEquals("SESSION_TIME_MISMATCH", attempt(1, "12:00", "13:00"))
+        assertEquals("SESSION_TIME_MISMATCH", attempt(2, "10:30", "11:30"))
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED'")
+        assertEquals(
+            "PREREGISTRATION_NOT_CONFIRMED",
+            assertThrows(ResponseStatusException::class.java) { service.execute(command()) }.reason,
+        )
     }
 
     @Test

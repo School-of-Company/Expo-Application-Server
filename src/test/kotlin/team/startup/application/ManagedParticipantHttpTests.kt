@@ -45,7 +45,10 @@ class ManagedParticipantHttpTests {
     fun setup() {
         jdbc.execute("TRUNCATE tb_standard_program_application, tb_training_program_application, tb_program_session_application CASCADE")
         jdbc.execute("TRUNCATE tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE")
-        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", expo)
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}')",
+            expo,
+        )
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
                 "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CANCELLED')",
@@ -153,6 +156,22 @@ class ManagedParticipantHttpTests {
             .perform(get("/internal/program-applications/training/1/trainees/501").header("X-Internal-Token", "test-token"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.applied").value(true))
+    }
+
+    @Test
+    fun `managed list marks confirmed participants outside the program session time`() {
+        // 프로그램 1은 09-10 KST, 회차는 13-15 KST라 겹치지 않는다(#197).
+        jdbc.update(
+            "UPDATE tb_preregister_session_state SET definition = ? WHERE expo_id = ?",
+            """{"startedAt":"2030-01-01T04:00:00Z","endedAt":"2030-01-01T06:00:00Z"}""",
+            expo,
+        )
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.participants[0].eligible").value(false))
+            .andExpect(jsonPath("$.participants[0].ineligibleReason").value("SESSION_TIME_MISMATCH"))
+            .andExpect(jsonPath("$.participants[2].ineligibleReason").value("PREREGISTRATION_NOT_CONFIRMED"))
     }
 
     @Test
