@@ -92,7 +92,7 @@ class AdminPreregistrationController(
         summary = "관리자 사전등록 취소·대기 철회",
         description =
             "APPLICATION_CANCEL 필요. 같은 회차·대표자 한 일행의 APPLICATION key(최대 5건, 대표자는 동행자와 함께) " +
-                "또는 대기 RESERVATION key 하나를 받습니다. 입장·취소 마감·활성 프로그램 신청·남은 동행자 보호와 대기 승급은 " +
+                "또는 대기 RESERVATION key 하나를 받습니다. 입장·취소 마감·활성 프로그램 신청 보호와 대기 승급은 " +
                 "기존 규칙을 따르며 실행자는 ADMIN과 관리자 ID로 기록합니다. 일행 혼합은 400, 없는·다른 행사 key는 404입니다.",
     )
     @PostMapping("/cancellation")
