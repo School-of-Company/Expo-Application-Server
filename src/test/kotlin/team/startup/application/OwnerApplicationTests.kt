@@ -271,7 +271,7 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `representative cancels last after every companion across sessions and repeat is idempotent`() {
+    fun `representative cancels its own session while companions keep theirs and repeat is idempotent`() {
         transactions.executeWithoutResult {
             preregister.saveDefinition(session.copy(id = 2))
             preregister.insert(EXPO, 2, 1, 4, "CONFIRMED")
@@ -279,19 +279,20 @@ class OwnerApplicationTests {
         partyBody = """{"registered":true,"participants":[$REPRESENTATIVE,""" +
             """{"participantId":2,"name":"Companion","occupation":null,"representative":false},""" +
             """{"participantId":4,"name":"Other session","occupation":null,"representative":false}]}"""
-        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("1")) }
+        // #198: the representative no longer waits for companions; each companion keeps its own session.
+        cancel.execute(cancelCommand("1"))
+        cancel.execute(cancelCommand("1"))
+        assertEquals("CONFIRMED", state(2))
+        assertEquals("CONFIRMED", state(4))
         cancel.execute(cancelCommand("2"))
-        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("1")) }
         cancel.execute(cancelCommand("4"))
-        cancel.execute(cancelCommand("1"))
-        cancel.execute(cancelCommand("1"))
         assertEquals(3L, count("tb_session_attendance_outbox"))
         assertEquals(7L, count("tb_preregister_transition"))
         assertEquals(
             listOf("1:USER:1:true", "2:USER:1:true", "4:USER:1:true"),
             cancelledTransitions(),
         )
-        assertEquals(5, closedPermits.get())
+        assertEquals(3, closedPermits.get())
         val applications = query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications
         assertTrue(applications.all { !it.applied && !it.cancellable })
         assertEquals(listOf("CONFIRMED", "CANCELLED"), applications.first().history.map { it.status })
@@ -346,7 +347,6 @@ class OwnerApplicationTests {
         assertEquals(409, internalCancel("""{"representativeId":1,"applicationIds":[2]}"""))
         assertEquals(409, internalCancel("""{"applicationIds":[1]}"""))
         jdbc.execute("TRUNCATE tb_program_session_application, tb_standard_program_application CASCADE")
-        assertEquals(409, internalCancel("""{"applicationIds":[1]}"""))
         deadline = NOW
         assertEquals(409, internalCancel("""{"applicationIds":[2]}"""))
         deadline = END
@@ -558,10 +558,11 @@ class OwnerApplicationTests {
         assertEquals(2L, count("tb_session_attendance_outbox"))
         val sessions =
             jdbc.query(
-                "SELECT session_id FROM tb_session_attendance_outbox WHERE participant_id = 2 ORDER BY id",
-                { rs, _ -> rs.getObject(1) },
+                "SELECT session_id, cancelled FROM tb_session_attendance_outbox WHERE participant_id = 2 ORDER BY id",
+                { rs, _ -> rs.getLong(1) to rs.getBoolean(2) },
             )
-        assertEquals(listOf(null, 1L), sessions)
+        // #198: the cancellation DELETE names its session; the participant may hold others.
+        assertEquals(listOf(1L to true, 1L to false), sessions)
         failure(HttpStatus.CONFLICT) {
             applyPreregister.execute(command.copy(requestId = "over-capacity", participantIds = listOf(4, 5, 6)))
         }

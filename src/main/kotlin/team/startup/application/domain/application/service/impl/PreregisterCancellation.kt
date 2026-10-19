@@ -54,15 +54,13 @@ class PreregisterCancellation(
         if (owners.activePrograms(expoId, participantId, permit.linkedTraineeId)) {
             conflict("활성 프로그램 신청을 먼저 취소해야 합니다.")
         }
-        if (participantId == representativeId && owners.activeCompanions(expoId, participantId)) {
-            conflict("동행자의 사전등록을 먼저 취소해야 합니다.")
-        }
         preregister.status(applicationId, "CANCELLED", actorType, actorParticipantId, adminId)
-        // 이 대표자에게 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.
+        // 이 회차의 대표자 신청에 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.
+        // #198: 대표자 취소는 회차별이고 남은 동행자를 막지 않는다. 동행자는 대표자 없이도 그 회차에 참석할 수 있다.
         if (participantId == representativeId) {
-            reservations.withdrawCompanionWaits(expoId, participantId, actorType, adminId)
+            reservations.withdrawCompanionWaits(expoId, sessionId, participantId, actorType, adminId)
         }
-        val outboxId = attendance.cancelled(expoId, participantId)
+        val outboxId = attendance.cancelled(expoId, participantId, sessionId)
         permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L))
     }
 }

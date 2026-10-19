@@ -27,7 +27,7 @@ class SessionAttendanceDispatcher(
         val delivery = if (repository.lockExpoForDelivery(message.expoId)) message.copy(sessionId = null) else message
         try {
             gateway.send(delivery)
-            if (delivery.sessionId != null && repository.lockExpoForDelivery(message.expoId)) {
+            if (!delivery.delete && repository.lockExpoForDelivery(message.expoId)) {
                 gateway.send(message.copy(sessionId = null))
             }
         } catch (ex: InterruptedException) {

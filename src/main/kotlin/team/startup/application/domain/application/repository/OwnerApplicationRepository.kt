@@ -156,19 +156,4 @@ class OwnerApplicationRepository(
                 traineeId,
             ),
         )
-
-    fun activeCompanions(
-        expoId: UUID,
-        representativeId: Long,
-    ): Boolean =
-        requireNotNull(
-            jdbc.queryForObject(
-                "SELECT EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND representative_id = ? " +
-                    "AND participant_id <> ? AND status = 'CONFIRMED')",
-                Boolean::class.java,
-                expoId,
-                representativeId,
-                representativeId,
-            ),
-        )
 }

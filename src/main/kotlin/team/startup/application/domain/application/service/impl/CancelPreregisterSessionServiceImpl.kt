@@ -45,7 +45,7 @@ class CancelPreregisterSessionServiceImpl(
         var failure: Throwable? = null
         val cancelled =
             try {
-                // Representatives go last so the companion rule sees companions cancelled earlier in the same transaction.
+                // Representatives go last, after the companions of the same request.
                 val ordered = targets.sortedWith(compareBy({ it.first.participantId == it.second }, { it.first.participantId }))
                 ordered.forEach { (receipt, _) ->
                     val delivery =

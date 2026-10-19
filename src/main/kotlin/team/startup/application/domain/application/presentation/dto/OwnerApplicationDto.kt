@@ -3,6 +3,7 @@ package team.startup.application.domain.application.presentation.dto
 import com.fasterxml.jackson.annotation.JsonIgnore
 import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.constraints.NotNull
+import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
 import java.util.UUID
@@ -107,6 +108,38 @@ data class OwnerPreregisterCompanionsResult(
         example = "CONFIRMED",
     )
     val status: String = "CONFIRMED",
+    @field:Schema(description = "WAITING일 때 회차 대기 순번(1부터). 그 외 null", example = "2")
+    val position: Int? = null,
+)
+
+data class AddOwnerPreregisterSessionRequest(
+    @field:NotNull
+    @field:Positive
+    @field:Schema(description = "추가할 사전등록 회차 ID", example = "12")
+    val sessionId: Long?,
+    @field:NotNull
+    @field:Size(min = 1, max = 5)
+    @field:Schema(description = "이 회차에 갈 일행 참가자 ID 1~5명. 대표자는 빠져도 되지만 학생만으로는 안 된다", example = "[101, 102]")
+    val participantIds: List<Long>?,
+)
+
+data class AddOwnerPreregisterSessionCommand(
+    val expoId: UUID,
+    val sessionId: String,
+    val preregisterSessionId: Long,
+    val participantIds: List<Long>,
+    val idempotencyKey: String?,
+) {
+    override fun toString() =
+        "AddOwnerPreregisterSessionCommand(expoId=$expoId, preregisterSessionId=$preregisterSessionId, participantIds=$participantIds)"
+}
+
+@Schema(description = "다른 회차 추가 결과")
+data class OwnerPreregisterSessionResult(
+    @field:Schema(description = "추가한 회차 ID", example = "12") val sessionId: Long,
+    @field:Schema(description = "확정된 참석자 ID. QR은 그대로다. 대기·처리 중이면 빈 목록") val participantIds: List<Long>,
+    @field:Schema(description = "CONFIRMED(확정), WAITING(회차 대기열에 섬, #144 규칙으로 승급), PROCESSING(승급 뒤 확정 중)", example = "CONFIRMED")
+    val status: String,
     @field:Schema(description = "WAITING일 때 회차 대기 순번(1부터). 그 외 null", example = "2")
     val position: Int? = null,
 )

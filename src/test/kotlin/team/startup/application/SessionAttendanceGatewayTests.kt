@@ -27,12 +27,14 @@ class SessionAttendanceGatewayTests {
             gateway.send(message)
             gateway.send(message.copy(sessionId = null))
             SessionAttendanceGateway("http://127.0.0.1:${server.address.port}", "token").send(message.copy(sessionId = null))
+            gateway.send(message.copy(cancelled = true))
             val path = "/internal/expos/${message.expoId}/participants/42/preregister-session"
             assertEquals(
                 listOf(
                     Triple("PUT", path, "{\"sessionId\":1,\"revision\":2}"),
                     Triple("DELETE", "$path?revision=3", ""),
                     Triple("DELETE", "$path?revision=3", ""),
+                    Triple("DELETE", "$path?revision=3&sessionId=1", ""),
                 ),
                 requests,
             )

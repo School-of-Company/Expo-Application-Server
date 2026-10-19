@@ -120,13 +120,9 @@ class OwnerCancellationEligibilityTests {
     }
 
     @Test
-    fun `active programs and representative companions are checked before showing cancellation`() {
+    fun `active programs are checked before showing cancellation`() {
         `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(true)
         blocked("ACTIVE_PROGRAMS")
-        val representative = APPLICATION.copy(participantId = 1)
-        configure(representative)
-        `when`(repository.activeCompanions(EXPO, 1)).thenReturn(true)
-        blocked("ACTIVE_COMPANIONS")
     }
 
     @Test

@@ -89,6 +89,8 @@ data class AdoptPreregisterWaitingCapacityCommand(
 data class OwnerPreregisterWaitlistCommand(
     val expoId: UUID,
     val participantSession: String,
+    // #198: a party may wait for several sessions. Null keeps the latest one.
+    val sessionId: Long? = null,
 )
 
 @Schema(description = "참가자 세션의 검증 번호로 찾은 대기 일행. User 저장 전이므로 QR이 없습니다.")
