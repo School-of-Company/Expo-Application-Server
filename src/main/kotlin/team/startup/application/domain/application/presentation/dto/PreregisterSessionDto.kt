@@ -113,6 +113,8 @@ data class CancelPreregisterSessionCommand(
     val sessionId: Long,
     val representativeId: Long?,
     val applicationIds: List<Long>,
+    // Verified admin executing the cancellation (#182); null keeps the internal UNKNOWN record.
+    val adminId: Long? = null,
 )
 
 data class PreregisterSessionKey(

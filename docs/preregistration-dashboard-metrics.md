@@ -18,6 +18,7 @@
 - User 확정 전 예약(RESERVED)은 직업별 집계에 넣지 않고 `pendingApplicants`에만 남는다.
 - User가 확정 ID를 누락하거나 응답 계약을 어기면 미상으로 채우지 않고 요약 전체가 502/503이다.
 - "교원·예비교사"는 클라이언트가 합산한다. SCHOOL_STAFF 포함 여부는 미정이다.
+- 같은 집계를 `GET /internal/expos/{expoId}/preregistrations/summary`(X-Internal-Token)로도 낸다(#184, Notification 등록 인원 리포트용). 관리자 권한 검사만 빠지고 응답·삭제 행사 409·User 장애 502/503은 같으며, 원장에 없는 행사는 0명으로 200이다.
 
 ## 신청화면 PV·UV
 

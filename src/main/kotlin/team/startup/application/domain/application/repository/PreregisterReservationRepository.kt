@@ -279,11 +279,14 @@ class PreregisterReservationRepository(
         expoId: UUID,
         representativeId: Long,
         actorType: ApplicationActorType,
+        actorId: Long? = null,
     ): Int =
         jdbc.update(
             "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
-                "withdrawn_actor_type = ? WHERE expo_id = ? AND companion_representative_id = ? AND state = 'WAITING'",
+                "withdrawn_actor_type = ?, withdrawn_actor_id = ? " +
+                "WHERE expo_id = ? AND companion_representative_id = ? AND state = 'WAITING'",
             actorType.name,
+            actorId,
             expoId,
             representativeId,
         )
@@ -292,11 +295,14 @@ class PreregisterReservationRepository(
     fun withdraw(
         reservation: PreregisterReservation,
         actorType: ApplicationActorType,
+        // The admin ID for ADMIN withdrawals (#182); null otherwise.
+        actorId: Long? = null,
     ): Boolean =
         jdbc.update(
             "UPDATE tb_preregister_reservation SET state = 'REJECTED', error_status = 409, withdrawn_at = CURRENT_TIMESTAMP, " +
-                "withdrawn_actor_type = ? WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
+                "withdrawn_actor_type = ?, withdrawn_actor_id = ? WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
             actorType.name,
+            actorId,
             reservation.expoId,
             reservation.requestId,
         ) == 1

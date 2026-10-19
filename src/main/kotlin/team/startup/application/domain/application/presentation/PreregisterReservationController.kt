@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import team.startup.application.domain.application.presentation.dto.PreregisterReservationKey
+import team.startup.application.domain.application.presentation.dto.WithdrawPreregisterReservationCommand
 import team.startup.application.domain.application.service.GetPreregisterReservationService
 import team.startup.application.domain.application.service.RetryPreregisterReservationService
 import team.startup.application.domain.application.service.WithdrawPreregisterReservationService
@@ -75,5 +76,5 @@ class PreregisterReservationController(
     fun withdraw(
         @PathVariable expoId: UUID,
         @PathVariable requestId: String,
-    ) = withdraw.execute(PreregisterReservationKey(expoId, requestId))
+    ) = withdraw.execute(WithdrawPreregisterReservationCommand(expoId, requestId))
 }
