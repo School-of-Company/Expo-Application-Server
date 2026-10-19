@@ -100,6 +100,7 @@ class PreregisterRegistrationHttpTests {
         detailsStatus.set(200)
         targetCapacities.set(null)
         managedParticipants.clear()
+        occupationOpenAt.set(null)
     }
 
     private fun target(
@@ -212,7 +213,17 @@ class PreregisterRegistrationHttpTests {
         cookie: String? = null,
         occupations: List<String> = List(people - 1) { "GENERAL" },
         representative: String? = null,
-    ): Int {
+    ): Int = submitResponse(key, people, phone, session, cookie, occupations, representative).status
+
+    private fun submitResponse(
+        key: String? = "request",
+        people: Int = 1,
+        phone: String = "01012345678",
+        session: Long = 1,
+        cookie: String? = null,
+        occupations: List<String> = List(people - 1) { "GENERAL" },
+        representative: String? = null,
+    ): org.springframework.mock.web.MockHttpServletResponse {
         val companions =
             occupations.mapIndexed { index, occupation ->
                 mapOf("name" to "person${index + 2}", "occupation" to occupation, "region" to "OTHER") +
@@ -235,10 +246,7 @@ class PreregisterRegistrationHttpTests {
         val request = post("/application/pre-standard/$EXPO").contentType(MediaType.APPLICATION_JSON).content(body)
         if (key != null) request.header("Idempotency-Key", key)
         if (cookie != null) request.cookie(Cookie("PARTICIPANT_SESSION", cookie))
-        return mvc
-            .perform(request)
-            .andReturn()
-            .response.status
+        return mvc.perform(request).andReturn().response
     }
 
     private fun capacity(): JsonNode {
@@ -419,6 +427,32 @@ class PreregisterRegistrationHttpTests {
         assertEquals(0, count("tb_preregister_application"))
         assertEquals(0, count("tb_preregister_count_outbox"))
         assertEquals(0, count("tb_session_attendance_outbox"))
+    }
+
+    @Test
+    fun `before occupationOpenAt only teacher parties register and everyone may from it`() {
+        target(5, 5)
+        occupationOpenAt.set(OffsetDateTime.now().plusHours(1).toString())
+        assertEquals(
+            201,
+            submit("teachers", people = 2, phone = "01000000002", occupations = listOf("PRE_SERVICE_TEACHER"), representative = "TEACHER"),
+        )
+        val child =
+            submitResponse(
+                "child",
+                people = 2,
+                phone = "01000000003",
+                occupations = listOf("ELEMENTARY_STUDENT"),
+                representative = "TEACHER",
+            )
+        assertEquals(400, child.status)
+        assertEquals("OCCUPATION_NOT_OPEN", mapper.readTree(child.contentAsString)["code"].asString())
+        assertEquals(400, submit("general", phone = "01000000004", representative = "GENERAL"))
+        assertEquals(1, userRequests.size)
+
+        occupationOpenAt.set(OffsetDateTime.now().minusMinutes(1).toString())
+        responseBody.set("""{"participantId":50,"phoneNumber":"01000000005","participantIds":[50],"groupParticipantIds":[50]}""")
+        assertEquals(201, submit("open", phone = "01000000005", representative = "GENERAL"))
     }
 
     @Test
@@ -1052,6 +1086,11 @@ class PreregisterRegistrationHttpTests {
         private val expoDayOffset = AtomicInteger(0)
         private val formDayOffset = AtomicInteger(0)
 
+        // #209 교원·예비교사 외 유형 오픈 시각. null이면 폼 응답에 싣지 않는다.
+        private val occupationOpenAt =
+            java.util.concurrent.atomic
+                .AtomicReference<String?>()
+
         @Volatile private var phoneVerificationRequired = false
 
         @Volatile private var verifiedSessionPhone = "01012345678"
@@ -1195,12 +1234,13 @@ class PreregisterRegistrationHttpTests {
                                             """"dynamicFormType":"OCCUPATION"},{"id":3,"title":"school","formType":"TEXT",""" +
                                             """"jsonData":{},"otherJson":null,"dynamicFormType":"SCHOOL"}"""
                                     }
+                                val open = occupationOpenAt.get()?.let { ""","occupationOpenAt":"$it"""" } ?: ""
                                 200 to
                                     """{"id":"$EXPO","startDate":"${now.minusDays(
                                         1,
                                     )}","endDate":"${now.plusDays(
                                         1,
-                                    )}","dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":4},"dynamicFormType":"DEFAULT"}$occupation]}"""
+                                    )}","dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},"otherJson":{"maxSelection":4},"dynamicFormType":"DEFAULT"}$occupation]$open}"""
                             }
 
                             else -> {

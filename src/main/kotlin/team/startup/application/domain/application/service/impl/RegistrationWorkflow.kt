@@ -6,6 +6,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.service.RegistrationCommand
 import tools.jackson.databind.ObjectMapper
+import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -124,6 +125,7 @@ class RegistrationWorkflow(
         }
         var companionCount = 0
         val companionKeys = mutableSetOf<List<String?>>()
+        val companionOccupations = mutableListOf<String?>()
         form?.dynamicForm?.filter { it.formType == "COMPANION" }?.forEach { field ->
             val companions = answers.get(field.title) ?: return@forEach
             val maxCount = CompanionAnswers.limit(field)
@@ -134,7 +136,11 @@ class RegistrationWorkflow(
             companions.forEach {
                 CompanionAnswers.validate(it)
                 companionKeys.add(CompanionAnswers.key(it))
+                companionOccupations.add(it.path("occupation").asString())
             }
+        }
+        if (sessionRegistration) {
+            PreregisterSeatCategory.requireOpen(form?.occupationOpenAt, Instant.now(), listOf(occupation) + companionOccupations)
         }
         val requestId = command.idempotencyKey ?: UUID.randomUUID().toString()
         val questions =

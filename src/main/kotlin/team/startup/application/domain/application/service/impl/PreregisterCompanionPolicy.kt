@@ -22,6 +22,7 @@ data class CompanionObservation(
     val registrationOpen: Boolean,
     /** 현재 사전등록 폼 ID. 다른 회차 추가(#199)는 신청 때 폼과 같을 때만 답변을 다시 쓴다. */
     val formId: String? = null,
+    val occupationOpenAt: OffsetDateTime? = null,
 )
 
 /** 동행자 추가 가능 여부. 막히면 [blockedReason]과 추가 API가 돌려줄 상태·메시지를 함께 둔다. */
@@ -86,7 +87,7 @@ class PreregisterCompanionPolicy(
                     throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "폼 날짜 응답이 올바르지 않습니다.", ex)
                 }
             } ?: false
-        return CompanionObservation(definition, limit, open, form?.id)
+        return CompanionObservation(definition, limit, open, form?.id, form?.occupationOpenAt)
     }
 
     fun evaluate(

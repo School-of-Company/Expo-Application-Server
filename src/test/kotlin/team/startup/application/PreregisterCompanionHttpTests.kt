@@ -77,6 +77,7 @@ class PreregisterCompanionHttpTests {
         startedAt.set(Instant.parse("2030-01-01T00:00:00Z"))
         userReject.set(0)
         target.set(null)
+        occupationOpenAt.set(null)
     }
 
     @Test
@@ -96,6 +97,17 @@ class PreregisterCompanionHttpTests {
                 "${rs.getLong(1)}:${rs.getString(2)}"
             },
         )
+    }
+
+    @Test
+    fun `before occupationOpenAt only teachers are added as companions`() {
+        assertEquals(201, register(PHONE, "first").status)
+        val applicationId = representativeItem()["applicationId"].asString()
+        occupationOpenAt.set(OffsetDateTime.now().plusHours(1).toString())
+        val student = add(applicationId, companion("kid", "ELEMENTARY_STUDENT"))
+        assertEquals(400, student.status)
+        assertEquals("OCCUPATION_NOT_OPEN", mapper.readTree(student.contentAsString)["code"].asString())
+        assertEquals(201, add(applicationId, companion("teacher", "TEACHER")).status)
     }
 
     @Test
@@ -543,6 +555,9 @@ class PreregisterCompanionHttpTests {
         // #173 (teacher, nonTeacher) capacities; the capacity field must hold their sum.
         private val target = AtomicReference<Pair<Int, Int>?>()
 
+        // #209 교원·예비교사 외 유형 오픈 시각. null이면 폼 응답에 싣지 않는다.
+        private val occupationOpenAt = AtomicReference<String?>()
+
         @Volatile private var closed = false
         private val sessions = ConcurrentHashMap<String, String>()
 
@@ -641,7 +656,7 @@ class PreregisterCompanionHttpTests {
                                             """,{"id":2,"title":"occupation","formType":"SELECT","jsonData":{},"otherJson":null,""" +
                                                 """"dynamicFormType":"OCCUPATION"}"""
                                         }
-                                    ) + "]}"
+                                    ) + "]" + (occupationOpenAt.get()?.let { ""","occupationOpenAt":"$it"""" } ?: "") + "}"
                             }
 
                             else -> {

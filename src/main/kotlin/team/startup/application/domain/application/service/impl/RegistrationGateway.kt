@@ -21,6 +21,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.time.LocalDateTime
+import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
 import java.util.UUID
@@ -37,6 +38,8 @@ data class RegistrationForm(
     val startDate: String,
     val endDate: String,
     val dynamicForm: List<RegistrationField>,
+    /** 교원·예비교사 외 유형의 사전등록 시작 시각(#209). Form이 내려주기 전이나 null이면 제한 없다. */
+    val occupationOpenAt: OffsetDateTime? = null,
 )
 
 data class RegistrationField(

@@ -65,6 +65,7 @@ class PreregisterSessionAdditionHttpTests {
         closed.clear()
         nextId.set(42)
         formId.set(FORM)
+        occupationOpenAt.set(null)
     }
 
     @Test
@@ -105,6 +106,18 @@ class PreregisterSessionAdditionHttpTests {
         assertEquals(409, addSession(2, listOf(42), key = "add-1").status)
         assertEquals(409, addSession(2, listOf(42)).status)
         assertEquals(4, applications().size)
+    }
+
+    @Test
+    fun `before occupationOpenAt non-teacher attendees cannot add a session but a stored addition replays`() {
+        assertEquals(201, register(companion("friend")).status)
+        assertEquals(201, addSession(2, listOf(42), key = "before").status)
+        occupationOpenAt.set(OffsetDateTime.now().plusHours(1).toString())
+        // 이미 받은 추가의 멱등 재시도는 막지 않는다.
+        assertEquals(201, addSession(2, listOf(42), key = "before").status)
+        val rejected = addSession(2, listOf(43))
+        assertEquals(400, rejected.status)
+        assertEquals("OCCUPATION_NOT_OPEN", mapper.readTree(rejected.contentAsString)["code"].asString())
     }
 
     @Test
@@ -244,6 +257,9 @@ class PreregisterSessionAdditionHttpTests {
         private const val PHONE = "01000000001"
         private val nextId = AtomicLong(42)
         private val formId = AtomicReference(FORM)
+
+        // #209 교원·예비교사 외 유형 오픈 시각. null이면 폼 응답에 싣지 않는다.
+        private val occupationOpenAt = AtomicReference<String?>()
         private val capacities = ConcurrentHashMap<Long, Int>()
         private val closed = ConcurrentHashMap.newKeySet<Long>()
         private val sessions = ConcurrentHashMap<String, String>()
@@ -339,7 +355,8 @@ class PreregisterSessionAdditionHttpTests {
                                     """"dynamicForm":[{"id":1,"title":"companions","formType":"COMPANION","jsonData":{},""" +
                                     """"otherJson":{"maxSelection":4},"dynamicFormType":"DEFAULT"},""" +
                                     """{"id":2,"title":"occupation","formType":"SELECT","jsonData":{},"otherJson":null,""" +
-                                    """"dynamicFormType":"OCCUPATION"}]}"""
+                                    """"dynamicFormType":"OCCUPATION"}]""" +
+                                    (occupationOpenAt.get()?.let { ""","occupationOpenAt":"$it"""" } ?: "") + "}"
                             }
 
                             else -> {
