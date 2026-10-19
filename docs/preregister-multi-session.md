@@ -10,6 +10,18 @@
 - 취소는 회차별이다. 대표자가 자기 회차를 취소해도 동행자 신청은 남는다(`ACTIVE_COMPANIONS` 사유와 409 제거). 그 회차의 대표자 신청에 붙이려던 대기 중 동행자 추가만 함께 철회한다. 활성 프로그램 차단은 #200 전까지 그대로다.
 - 동행자 추가 진행 중 유니크(`uq_preregister_companion_in_progress`)는 대표자 단위로 유지한다. User 일행 5명 한도가 박람회 단위라 추가를 한 번에 하나씩 처리한다.
 
+## 다른 회차 추가 (#199, V34)
+
+`POST /application/expos/{expoId}/my-applications/preregister-sessions` 본문 `{"sessionId":S,"participantIds":[...]}`. 참가자 세션 쿠키와 CSRF 토큰이 필요하고 `Idempotency-Key`는 선택이다.
+
+- 참석자는 세션 번호의 User 일행(`/standard-participants/managed`)에서 1~5명을 고른다. 일행에 없는 ID는 400이다. 대표자는 빠져도 되지만, 참석자가 모두 학생(유치원·초·중·고)이면 400이다(Q1).
+- 대표자가 처음 낸 일행 신청의 `user_request`를 복사한다. 동행자 답변은 이번 참석자만 남기며, 동행자 추가(#169)로 더한 사람의 답변도 찾아 쓴다. 신청 뒤 사전등록 폼 ID가 바뀌었으면 409 `{"status":409,"code":"FORM_CHANGED"}`로 처음 신청부터 다시 하게 한다. 문항 수정은 보지 않는다.
+- 박람회 잠금 안에서 이미 신청한 회차(참석자의 활성 신청, 같은 번호로 처리 중이거나 대기 중인 예약)와 확정 회차와의 시간 겹침을 409로 거절한다. 마감·시작된 회차, 사전등록 기간이 아닌 경우도 409다. 정원·대기·대상별 정원 판정은 일반 신청과 같다.
+- User에 저장하지 않는다. 예약(`session_addition`)의 `result`에 대표자와 참석자를 미리 담아 기존 복구 경로가 User 호출 없이 확정한다. QR·문자·인원 집계는 그대로다. 좌석 구분은 완료 때 참석자의 User 직업으로 정한다.
+- 대기했다 승급된 추가가 그사이 같은 회차를 신청했거나 시간이 겹치게 됐으면 User에 저장한 것이 없으므로 검토로 남기지 않고 좌석을 돌려준다(409).
+- 응답은 201 `CONFIRMED`(확정 참석자 ID), 202 `WAITING`(position) 또는 `PROCESSING`이다.
+- Gateway·Config 익명 경로에 이 POST 경로를 등록해야 한다.
+
 ## 내 대기 조회·철회
 
 - `GET /application/expos/{expoId}/my-applications/preregister-waitlists`: 회차별 대기 목록(최근 순, 없으면 `[]`). 항목 형식은 기존 단건과 같다.
