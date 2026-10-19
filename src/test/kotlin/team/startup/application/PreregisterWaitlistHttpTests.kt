@@ -474,6 +474,47 @@ class PreregisterWaitlistHttpTests {
     }
 
     @Test
+    fun `owner lists waiting parties per session and withdraws only the selected session`() {
+        assertEquals(201, submit("a", 1, "01000000001").status)
+        waiting(submit("b", 2, "010-0000-0002"), 1)
+        // #198: a later session wait of the same party (as #199 would add) gets its own queue position.
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "SELECT expo_id, 'b2', 2, command || '2', user_request, applicants, 'WAITING', nextval('seq_preregister_waitlist') " +
+                "FROM tb_preregister_reservation WHERE request_id = 'b'",
+        )
+        val owner = Cookie("PARTICIPANT_SESSION", "owner")
+        val lookup = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists").cookie(owner)).andReturn()
+        assertEquals(200, lookup.response.status)
+        assertEquals(
+            mapper.readTree(
+                """[{"sessionId":2,"applicants":2,"status":"WAITING","position":1},""" +
+                    """{"sessionId":1,"applicants":2,"status":"WAITING","position":1}]""",
+            ),
+            mapper.readTree(lookup.response.contentAsString),
+        )
+        val first = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlist?sessionId=1").cookie(owner)).andReturn()
+        assertEquals(1L, mapper.readTree(first.response.contentAsString)["sessionId"].asLong())
+        val withdrawal =
+            mvc
+                .perform(
+                    post("/application/expos/$EXPO/my-applications/preregister-waitlist/cancellation?sessionId=1")
+                        .cookie(*listOfNotNull(owner, lookup.response.getCookie("XSRF-TOKEN")).toTypedArray())
+                        .session(lookup.request.session as MockHttpSession)
+                        .header("X-CSRF-TOKEN", requireNotNull(lookup.response.getHeader("X-CSRF-TOKEN"))),
+                ).andReturn()
+        assertEquals(204, withdrawal.response.status)
+        assertEquals("REJECTED", state("b"))
+        assertEquals("WAITING", state("b2"))
+        val after = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists").cookie(owner)).andReturn()
+        assertEquals(
+            mapper.readTree("""[{"sessionId":2,"applicants":2,"status":"WAITING","position":1}]"""),
+            mapper.readTree(after.response.contentAsString),
+        )
+    }
+
+    @Test
     fun `admin cancels one confirmed party or withdraws one waiting party with the verified admin ID`() {
         capacity.set(2)
         assertEquals(201, submit("a", 2, "01000000001").status)
@@ -489,8 +530,9 @@ class PreregisterWaitlistHttpTests {
         assertEquals(404, adminCancel("APPLICATION:${UUID.randomUUID()}:1"))
         assertEquals(400, adminCancel(representative, "RESERVATION:$EXPO:c"))
         assertEquals(400, adminCancel("RESERVATION:$EXPO:b", "RESERVATION:$EXPO:c"))
-        // The representative cannot leave a confirmed companion behind.
-        assertEquals(409, adminCancel(representative))
+        // #198: the representative's session is cancelled on its own; the companion keeps its seat.
+        assertEquals(200, adminCancel(representative))
+        assertEquals("WAITING", state("b"))
         assertEquals(200, adminCancel(representative, companion))
         val transitions = "SELECT actor_type || ':' || actor_id FROM tb_preregister_transition WHERE status = 'CANCELLED'"
         assertEquals(listOf("ADMIN:7", "ADMIN:7"), jdbc.queryForList(transitions, String::class.java))

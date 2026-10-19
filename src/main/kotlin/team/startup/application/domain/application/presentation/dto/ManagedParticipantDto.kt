@@ -23,7 +23,14 @@ data class ProgramParticipantItem(
     val ineligibleReason: ProgramIneligibleReason? = null,
 )
 
-enum class ProgramIneligibleReason { OCCUPATION_NOT_ALLOWED, PREREGISTRATION_NOT_CONFIRMED, GROUP_ALREADY_APPLIED, TIME_CONFLICT }
+// SESSION_TIME_MISMATCH(#197): 확정 사전등록은 있지만 그 회차 시간이 프로그램 시간과 겹치지 않는다.
+enum class ProgramIneligibleReason {
+    OCCUPATION_NOT_ALLOWED,
+    PREREGISTRATION_NOT_CONFIRMED,
+    SESSION_TIME_MISMATCH,
+    GROUP_ALREADY_APPLIED,
+    TIME_CONFLICT,
+}
 
 data class ProgramParticipantsResponse(
     val registered: Boolean,

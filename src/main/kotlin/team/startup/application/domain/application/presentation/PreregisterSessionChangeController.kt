@@ -52,7 +52,7 @@ class PreregisterSessionChangeController(
         summary = "신뢰된 서비스의 일행 일부 또는 관리자 신청 취소",
         description =
             "공개 소유자 취소와 같은 보호를 거친다: Attendance 관리자 취소 보호, 입장 여부, Expo 사전등록 취소 마감, " +
-                "활성 프로그램 신청(CONFIRMED/WAITING), 동행자가 남은 대표자 취소 거절. 한 요청은 최대 5건이며 대표자는 같은 요청의 동행자 뒤에 취소된다.",
+                "활성 프로그램 신청(CONFIRMED/WAITING) 거절. 한 요청은 최대 5건이며 대표자는 같은 요청의 동행자 뒤에 취소된다. 동행자는 대표자 없이 남을 수 있다.",
     )
     @ApiResponses(
         value = [
@@ -61,7 +61,7 @@ class PreregisterSessionChangeController(
             ApiResponse(responseCode = "404", description = "회차 없음"),
             ApiResponse(
                 responseCode = "409",
-                description = "신청 소속·정원·버전·변경 상태 충돌, 취소 마감, 입장, 활성 프로그램 신청 또는 남은 동행자",
+                description = "신청 소속·정원·버전·변경 상태 충돌, 취소 마감, 입장 또는 활성 프로그램 신청",
             ),
             ApiResponse(responseCode = "502", description = "Expo·User·Attendance 응답 계약 오류"),
             ApiResponse(responseCode = "503", description = "Expo·User·Attendance 연동 불가 또는 출석 취소 전달 비활성"),

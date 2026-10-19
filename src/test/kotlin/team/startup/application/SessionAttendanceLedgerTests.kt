@@ -79,9 +79,9 @@ class SessionAttendanceLedgerTests {
         val receipt = apply.execute(command(1, 2, 3, 4, 5))
         val cancellation = CancelPreregisterSessionCommand(expo, 1, 1, listOf(receipt[1].id, receipt[3].id))
         cancel.execute(cancellation)
-        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2", "DELETE:4"), pending())
+        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2:1", "DELETE:4:1"), pending())
         cancel.execute(cancellation)
-        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2", "DELETE:4"), pending())
+        assertEquals(listOf("PUT:1:1", "PUT:2:1", "PUT:3:1", "PUT:4:1", "PUT:5:1", "DELETE:2:1", "DELETE:4:1"), pending())
     }
 
     @Test
@@ -91,7 +91,7 @@ class SessionAttendanceLedgerTests {
         cancel.execute(cancellation)
         apply.execute(command(1).copy(sessionId = 2))
         cancel.execute(cancellation)
-        assertEquals(listOf("PUT:1:1", "DELETE:1", "PUT:1:2"), pending())
+        assertEquals(listOf("PUT:1:1", "DELETE:1:1", "PUT:1:2"), pending())
     }
 
     @Test
@@ -114,7 +114,7 @@ class SessionAttendanceLedgerTests {
         val receipt = apply.execute(command(1)).single()
         cancel.execute(CancelPreregisterSessionCommand(expo, 1, null, listOf(receipt.id)))
         purge.execute(expo)
-        assertEquals(listOf("PUT:1:1", "DELETE:1"), pending())
+        assertEquals(listOf("PUT:1:1", "DELETE:1:1"), pending())
     }
 
     private fun command(vararg participants: Long) =
@@ -122,10 +122,15 @@ class SessionAttendanceLedgerTests {
 
     private fun pending(): List<String> =
         jdbc.query(
-            "SELECT participant_id, session_id FROM tb_session_attendance_outbox ORDER BY id",
+            "SELECT participant_id, session_id, cancelled FROM tb_session_attendance_outbox ORDER BY id",
             { rs, _ ->
                 val session = rs.getObject("session_id", Long::class.javaObjectType)
-                if (session == null) "DELETE:${rs.getLong("participant_id")}" else "PUT:${rs.getLong("participant_id")}:$session"
+                val participant = rs.getLong("participant_id")
+                when {
+                    session == null -> "DELETE:$participant"
+                    rs.getBoolean("cancelled") -> "DELETE:$participant:$session"
+                    else -> "PUT:$participant:$session"
+                }
             },
         )
 

@@ -53,7 +53,10 @@ class StudentGuardianEligibilityHttpTests {
                 "tb_training_operation_receipt, tb_deleted_standard_program, tb_deleted_training_program, " +
                 "tb_preregister_application, tb_preregister_session_state RESTART IDENTITY",
         )
-        jdbc.update("INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{}')", UUID.fromString(EXPO))
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}')",
+            UUID.fromString(EXPO),
+        )
         (1L..5L).forEach { id ->
             jdbc.update(
                 "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
