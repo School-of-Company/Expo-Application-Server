@@ -296,7 +296,7 @@ class RegistrationGateway(
         expoId: UUID,
         sessionId: String,
     ): OwnerApplicationParty {
-        if (sessionId.isBlank()) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
+        if (sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
         val phoneNumber = participantSessionPhone(expoId.toString(), sessionId)
         val response =
             decode(

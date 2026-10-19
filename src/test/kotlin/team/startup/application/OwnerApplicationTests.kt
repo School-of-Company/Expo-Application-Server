@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
@@ -646,6 +647,42 @@ class OwnerApplicationTests {
         assertEquals(1L, count("tb_session_attendance_outbox"))
         sessionStatus = 401
         mvc.perform(get(path).cookie(Cookie("PARTICIPANT_SESSION", "session"))).andExpect(status().isUnauthorized)
+    }
+
+    @Test
+    fun `session 401 carries SESSION_REQUIRED or SESSION_EXPIRED code on query and cancellation`() {
+        val path = "/application/expos/$EXPO/my-applications"
+        val session = Cookie("PARTICIPANT_SESSION", "session")
+
+        fun codes(expected: String) {
+            mvc
+                .perform(get(path).cookie(session))
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.code").value(expected))
+            mvc
+                .perform(post("$path/PREREGISTER/2/cancellation").with(csrf()).cookie(session))
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.code").value(expected))
+            mvc
+                .perform(get("$path/preregister-waitlist").cookie(session))
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.code").value(expected))
+            mvc
+                .perform(post("$path/preregister-waitlist/cancellation").with(csrf()).cookie(session))
+                .andExpect(status().isUnauthorized)
+                .andExpect(jsonPath("$.code").value(expected))
+        }
+        mvc
+            .perform(get(path))
+            .andExpect(status().isUnauthorized)
+            .andExpect(jsonPath("$.code").value("SESSION_REQUIRED"))
+        sessionStatus = 401
+        codes("SESSION_REQUIRED")
+        // 만료는 User의 401 code 또는 만료 시각으로 구분한다.
+        sessionStatus = 200
+        sessionBody = """{"expoId":"$EXPO","phoneNumber":"01012345678","expiresAt":"2000-01-01T00:00:00"}"""
+        codes("SESSION_EXPIRED")
     }
 
     private fun cancelCommand(

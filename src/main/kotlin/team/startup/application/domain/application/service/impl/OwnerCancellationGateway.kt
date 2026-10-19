@@ -36,7 +36,7 @@ class OwnerCancellationGateway(
 
     @Transactional(propagation = Propagation.NEVER)
     fun verify(command: GetOwnerCancellationStatusCommand): VerifiedStatus {
-        if (command.sessionId.isBlank()) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요합니다.")
+        if (command.sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
         if (command.participantId <= 0) throw ResponseStatusException(HttpStatus.NOT_FOUND)
         val session =
             post(
@@ -107,7 +107,7 @@ class OwnerCancellationGateway(
             }
         when (response.statusCode()) {
             200 -> Unit
-            401 -> if (session) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "참가자 세션이 필요하거나 만료되었습니다.") else invalidResponse()
+            401 -> if (session) throw ParticipantSessionException(sessionCode(response.body())) else invalidResponse()
             404 -> if (!session) throw ResponseStatusException(HttpStatus.NOT_FOUND) else invalidResponse()
             in 500..599 -> throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "취소 상태 조회 서비스가 응답하지 않습니다.")
             else -> invalidResponse()
@@ -118,6 +118,14 @@ class OwnerCancellationGateway(
             invalidResponse()
         }
     }
+
+    // User가 만료(SESSION_EXPIRED)를 구분해 주면 그대로 전달하고, 그 밖에는 SESSION_REQUIRED로 둔다.
+    private fun sessionCode(body: String?): String =
+        try {
+            if (mapper.readTree(body).path("code").stringValue() == "SESSION_EXPIRED") "SESSION_EXPIRED" else "SESSION_REQUIRED"
+        } catch (_: Exception) {
+            "SESSION_REQUIRED"
+        }
 
     private fun invalidResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "취소 상태 조회 응답이 올바르지 않습니다.")
 }
