@@ -151,4 +151,10 @@ data class OwnerPreregisterSessionResult(
 data class OwnerApplicationsResponse(
     @field:Schema(description = "관리 가능한 일행") val participants: List<ManagedOwnerParticipant>,
     @field:Schema(description = "일행의 신청 목록") val applications: List<OwnerApplicationItem>,
+    @field:Schema(
+        description =
+            "개인 QR 조회(GET /participants/{participantId}/qr) 대상 참가자 ID. 확정 사전등록 또는 사전등록 이력 없는 현장등록 참가자이며 " +
+                "신청이 없어도 들어간다. Attendance 연동이 꺼져 있으면 비어 있다(#250)",
+    )
+    val qrParticipantIds: List<Long> = emptyList(),
 )

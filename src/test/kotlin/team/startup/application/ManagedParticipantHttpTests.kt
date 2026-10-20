@@ -51,7 +51,8 @@ class ManagedParticipantHttpTests {
         )
         jdbc.update(
             "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
-                "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CANCELLED')",
+                "VALUES (?, 1, 1, 1, 'CONFIRMED'), (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CANCELLED'), (?, 1, 1, 5, 'CANCELLED')",
+            expo,
             expo,
             expo,
             expo,
@@ -285,6 +286,34 @@ class ManagedParticipantHttpTests {
     }
 
     @Test
+    fun `field registered participant without preregistration history gets owned QR`() {
+        mvc
+            .perform(get(qrPath(4)).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(header().string("Cache-Control", "no-store"))
+            .andExpect(jsonPath("$.participantId").value(4))
+            .andExpect(jsonPath("$.code").value("private-code"))
+        assertEquals(1, qrCalls.get())
+        // 사전등록 취소 이력이 있는 현장등록(#249), 다른 대표자의 참가자, 관리자 QR은 그대로다
+        mvc.perform(get(qrPath(5)).cookie(cookie)).andExpect(status().isNotFound)
+        mvc.perform(get(qrPath(99)).cookie(cookie)).andExpect(status().isNotFound)
+        mvc.perform(get(adminQrPath(4)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(1, qrCalls.get())
+        duringQr = {
+            jdbc.update(
+                "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                    "VALUES (?, 1, 1, 4, 'CANCELLED')",
+                expo,
+            )
+        }
+        mvc
+            .perform(get(qrPath(4)).cookie(cookie))
+            .andExpect(status().isNotFound)
+            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("private-code"))))
+        assertEquals(2, qrCalls.get())
+    }
+
+    @Test
     fun `pending cancellation and cancellation during QR retrieval cannot expose code`() {
         jdbc.update(
             "INSERT INTO tb_owner_cancellation_delivery " +
@@ -403,7 +432,7 @@ class ManagedParticipantHttpTests {
                                 if (!registered) {
                                     """{"registered":false,"participants":[]}"""
                                 } else {
-                                    """{"registered":true,"participants":[{"participantId":1,"name":"Owner","occupation":"TEACHER","representative":true},{"participantId":2,"name":"Companion","occupation":"STUDENT","representative":false},{"participantId":3,"name":"Cancelled","occupation":"TEACHER","representative":false}]}"""
+                                    """{"registered":true,"participants":[{"participantId":1,"name":"Owner","occupation":"TEACHER","representative":true},{"participantId":2,"name":"Companion","occupation":"STUDENT","representative":false},{"participantId":3,"name":"Cancelled","occupation":"TEACHER","representative":false},{"participantId":4,"name":"Field","occupation":"TEACHER","representative":false,"applicationType":"FIELD"},{"participantId":5,"name":"Field after cancel","occupation":"TEACHER","representative":false,"applicationType":"FIELD"}]}"""
                                 }
                             }
 
