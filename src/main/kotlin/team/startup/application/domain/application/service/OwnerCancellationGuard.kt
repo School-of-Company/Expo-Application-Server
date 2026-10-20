@@ -35,7 +35,11 @@ interface OwnerCancellationGuard {
         val cancelEndedAt: Instant
 
         // Called inside the local transaction; remote delivery happens only after it completes.
-        fun committed(cancellationRevision: Long? = null) {}
+        // sessionId names the cancelled preregister session so Attendance keeps the participant's other sessions (#221).
+        fun committed(
+            cancellationRevision: Long? = null,
+            sessionId: Long? = null,
+        ) {}
 
         override fun close()
     }

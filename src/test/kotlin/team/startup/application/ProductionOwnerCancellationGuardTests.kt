@@ -83,9 +83,9 @@ class ProductionOwnerCancellationGuardTests {
         val source = DriverManagerDataSource(postgres.jdbcUrl, postgres.username, postgres.password)
         jdbc = JdbcTemplate(source)
         jdbc.execute("DROP TABLE IF EXISTS tb_owner_cancellation_delivery")
-        jdbc.execute(
-            ClassPathResource("db/migration/V14__owner_cancellation_delivery.sql").inputStream.bufferedReader().use { it.readText() },
-        )
+        listOf("V14__owner_cancellation_delivery.sql", "V35__owner_cancellation_delivery_session.sql").forEach { migration ->
+            jdbc.execute(ClassPathResource("db/migration/$migration").inputStream.bufferedReader().use { it.readText() })
+        }
         deliveries = OwnerCancellationDeliveryRepository(jdbc, source)
         transactions = TransactionTemplate(DataSourceTransactionManager(source))
         owners = mock(OwnerApplicationRepository::class.java)

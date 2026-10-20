@@ -38,7 +38,7 @@
 | 전체 해제 | `DELETE .../preregister-session?revision=R` | 그 참가자의 모든 회차 배정을 해제한다. 박람회 삭제(purge)와 V33 이전에 쌓인 취소 기록이 쓴다. |
 
 - `revision`은 Application outbox ID × 2(+1은 DELETE)로, 같은 참가자 안에서 커밋 순서대로 증가한다. 참가자별 발송 순서는 기존과 같다.
-- 취소 보호(`cancellation-guard`)의 `committed` revision은 회차 취소 DELETE의 revision과 같다.
+- 취소 보호(`cancellation-guard`)의 `committed` revision은 회차 취소 DELETE의 revision과 같다. commit 본문에는 취소한 회차 `sessionId`도 함께 보내, 남은 회차 입장이 막히지 않게 한다(#221). 전체 취소만 `sessionId` 없이 보낸다.
 
 ## 배포
 
