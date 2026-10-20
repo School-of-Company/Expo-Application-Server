@@ -45,11 +45,11 @@ class ProgramPromotionGateway(
             programId = event.programId,
             status = "CONFIRMED",
             representativePhoneNumber = phone,
-            participantName = label(participant, "name"),
-            programName = label(program, "title"),
+            participantName = text(participant, "name"),
+            programName = text(program, "title"),
             startedAt = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             endedAt = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            location = program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
+            location = program.get("place")?.takeUnless { it.isNull }?.let { text(program, "place") },
             applicationLookupUrl =
                 program.get("applicationLookupUrl")?.takeUnless { it.isNull }?.let {
                     val url = it.takeIf { value -> value.isString }?.stringValue() ?: invalid()
