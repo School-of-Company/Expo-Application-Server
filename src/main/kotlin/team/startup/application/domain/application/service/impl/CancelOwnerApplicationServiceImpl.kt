@@ -66,6 +66,12 @@ class CancelOwnerApplicationServiceImpl(
                 }
                 if (!clock.instant().isBefore(permit.cancelEndedAt)) conflict("신청 취소 기간이 끝났습니다.")
                 if (command.type == OwnerApplicationType.PREREGISTER) {
+                    // #257: 본인 취소만 막는다. 관리자·회차 일괄 취소는 일행 전체를 다루므로 PreregisterCancellation에 두지 않는다
+                    if (current.participantId == party.representativeId &&
+                        owners.activeCompanions(command.expoId, current.sessionOrProgramId, current.participantId)
+                    ) {
+                        throw OwnerCompanionsActiveException()
+                    }
                     preregisterCancellation.cancel(
                         command.expoId,
                         current.sessionOrProgramId,
@@ -90,3 +96,5 @@ class CancelOwnerApplicationServiceImpl(
         if (command.type == OwnerApplicationType.PREREGISTER) waitlist.promoteQuietly(command.expoId, original.sessionOrProgramId)
     }
 }
+
+class OwnerCompanionsActiveException : ResponseStatusException(HttpStatus.CONFLICT, "동행자의 사전등록을 먼저 취소해야 합니다.")

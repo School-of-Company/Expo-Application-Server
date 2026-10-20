@@ -138,6 +138,29 @@ class OwnerApplicationRepository(
         )
     }
 
+    // #257: 같은 회차의 확정 동행자 또는 승급 뒤 저장 중인(RESERVED) 동행자 추가. 대기 중인 추가는 대표자 취소가 함께 철회한다.
+    fun activeCompanions(
+        expoId: UUID,
+        sessionId: Long,
+        representativeId: Long,
+    ): Boolean =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND session_id = ? " +
+                    "AND representative_id = ? AND participant_id <> ? AND status = 'CONFIRMED') OR " +
+                    "EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? " +
+                    "AND companion_representative_id = ? AND state = 'RESERVED')",
+                Boolean::class.java,
+                expoId,
+                sessionId,
+                representativeId,
+                representativeId,
+                expoId,
+                sessionId,
+                representativeId,
+            ),
+        )
+
     fun activePrograms(
         expoId: UUID,
         participantId: Long,

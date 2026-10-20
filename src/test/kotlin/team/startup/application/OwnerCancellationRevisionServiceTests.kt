@@ -102,6 +102,17 @@ class OwnerCancellationRevisionServiceTests {
 
     @Test
     fun `companion and representative cancellation store exact outbox revision and repeat only once`() {
+        // #257: the representative waits for the companion of the same session, with a code the Client can show.
+        val blocked =
+            mvc
+                .perform(
+                    post("/application/expos/$EXPO/my-applications/PREREGISTER/1/cancellation")
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "owner")),
+                ).andReturn()
+                .response
+        assertEquals(409, blocked.status)
+        assertEquals("COMPANIONS_ACTIVE", MAPPER.readTree(blocked.contentAsString).path("code").stringValue())
         assertEquals(204, cancel("PREREGISTER", "2"))
         val revision =
             requireNotNull(

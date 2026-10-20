@@ -62,6 +62,7 @@ import team.startup.application.domain.application.service.GetOwnerApplicationsS
 import team.startup.application.domain.application.service.OwnerCancellationGuard
 import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.impl.CancelOwnerApplicationServiceImpl
+import team.startup.application.domain.application.service.impl.OwnerCompanionsActiveException
 import team.startup.application.domain.application.service.impl.PreregisterCancellation
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
 import team.startup.application.domain.application.service.impl.PreregisterWaitlist
@@ -271,7 +272,7 @@ class OwnerApplicationTests {
     }
 
     @Test
-    fun `representative cancels its own session while companions keep theirs and repeat is idempotent`() {
+    fun `representative cancels its own session after its companions there and repeat is idempotent`() {
         transactions.executeWithoutResult {
             preregister.saveDefinition(session.copy(id = 2))
             preregister.insert(EXPO, 2, 1, 4, "CONFIRMED")
@@ -279,12 +280,21 @@ class OwnerApplicationTests {
         partyBody = """{"registered":true,"participants":[$REPRESENTATIVE,""" +
             """{"participantId":2,"name":"Companion","occupation":null,"representative":false},""" +
             """{"participantId":4,"name":"Other session","occupation":null,"representative":false}]}"""
-        // #198: the representative no longer waits for companions; each companion keeps its own session.
-        cancel.execute(cancelCommand("1"))
-        cancel.execute(cancelCommand("1"))
-        assertEquals("CONFIRMED", state(2))
-        assertEquals("CONFIRMED", state(4))
+        // #257: a confirmed companion in the same session blocks the representative's own cancellation.
+        assertThrows(OwnerCompanionsActiveException::class.java) { cancel.execute(cancelCommand("1")) }
         cancel.execute(cancelCommand("2"))
+        // A companion addition promoted and still being saved (RESERVED) blocks too; a WAITING one is withdrawn with the representative.
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants, " +
+                "companion_representative_id) VALUES (?, 'companion-addition', 1, '{}', '{}', 1, 1)",
+            EXPO,
+        )
+        failure(HttpStatus.CONFLICT) { cancel.execute(cancelCommand("1")) }
+        jdbc.update("UPDATE tb_preregister_reservation SET state = 'COMPLETED' WHERE request_id = 'companion-addition'")
+        // #198: companions in the representative's other sessions keep theirs.
+        cancel.execute(cancelCommand("1"))
+        cancel.execute(cancelCommand("1"))
+        assertEquals("CONFIRMED", state(4))
         cancel.execute(cancelCommand("4"))
         assertEquals(3L, count("tb_session_attendance_outbox"))
         assertEquals(7L, count("tb_preregister_transition"))
@@ -292,7 +302,7 @@ class OwnerApplicationTests {
             listOf("1:USER:1:true", "2:USER:1:true", "4:USER:1:true"),
             cancelledTransitions(),
         )
-        assertEquals(3, closedPermits.get())
+        assertEquals(5, closedPermits.get())
         val applications = query.execute(GetOwnerApplicationsCommand(EXPO, "session")).applications
         assertTrue(applications.all { !it.applied && !it.cancellable })
         assertEquals(listOf("CONFIRMED", "CANCELLED"), applications.first().history.map { it.status })

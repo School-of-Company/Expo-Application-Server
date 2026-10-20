@@ -202,6 +202,11 @@ class GetOwnerApplicationsServiceImpl(
                     "ACTIVE_PROGRAMS"
                 }
 
+                application.participantId == party.representativeId &&
+                    repository.activeCompanions(command.expoId, application.sessionOrProgramId, application.participantId) -> {
+                    "COMPANIONS_ACTIVE"
+                }
+
                 else -> {
                     null
                 }

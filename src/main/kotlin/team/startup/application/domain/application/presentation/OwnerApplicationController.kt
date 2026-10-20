@@ -39,6 +39,7 @@ import team.startup.application.domain.application.service.GetOwnerPreregisterWa
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.impl.OccupationNotOpenException
+import team.startup.application.domain.application.service.impl.OwnerCompanionsActiveException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.PreregisterFormChangedException
 import java.util.UUID
@@ -90,7 +91,10 @@ class OwnerApplicationController(
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
             ApiResponse(responseCode = "404", description = "취소 대상 없음"),
-            ApiResponse(responseCode = "409", description = "취소 조건 또는 공급자 상태 충돌"),
+            ApiResponse(
+                responseCode = "409",
+                description = "취소 조건 또는 공급자 상태 충돌. 같은 회차에 동행자가 남은 대표자 사전등록은 code COMPANIONS_ACTIVE",
+            ),
             ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
             ApiResponse(responseCode = "503", description = "공급자 보호 계약 또는 연동 불가"),
         ],
@@ -279,7 +283,7 @@ class OwnerApplicationController(
 }
 
 // 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199),
-// 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209) 싣는다.
+// 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209), 동행자가 남은 대표자 사전등록 취소 409에 COMPANIONS_ACTIVE code를(#257) 싣는다.
 // 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
 class OwnerApplicationSessionExceptionHandler {
@@ -296,4 +300,10 @@ class OwnerApplicationSessionExceptionHandler {
     @ExceptionHandler(PreregisterFormChangedException::class)
     fun formChanged(ex: PreregisterFormChangedException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "FORM_CHANGED"))
+
+    @ExceptionHandler(OwnerCompanionsActiveException::class)
+    fun companionsActive(ex: OwnerCompanionsActiveException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .body(mapOf("status" to 409, "code" to "COMPANIONS_ACTIVE", "message" to ex.reason.orEmpty()))
 }
