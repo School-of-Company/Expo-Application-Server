@@ -103,6 +103,45 @@ class SessionAttendanceOutboxTests {
     }
 
     @Test
+    fun `현장 재등록은 사전등록 취소 이력이 있는 참가자만 취소 다음 순서로 회차 없는 PUT을 보낸다`() {
+        jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?", EXPO)
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}') ON CONFLICT DO NOTHING",
+            EXPO,
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 42, 42, 'CANCELLED'), (?, 1, 44, 44, 'CONFIRMED')",
+            EXPO,
+            EXPO,
+        )
+        inTransaction { outbox.cancelled(EXPO, 42, 1) }
+        // 43은 사전등록 이력이 없고 44는 취소하지 않았다
+        outbox.fieldRegistered(EXPO, listOf(42, 43, 44))
+        assertEquals(2, count())
+
+        repeat(2) { assertTrue(dispatcher.dispatchNext()) }
+        assertFalse(dispatcher.dispatchNext())
+        val path = "/internal/expos/$EXPO/participants/42/preregister-session"
+        assertEquals(
+            listOf(
+                Request("DELETE", "$path?revision=3&sessionId=1", "", TOKEN, null),
+                Request("PUT", "$path/field-registration", "{\"revision\":4}", TOKEN, "application/json"),
+            ),
+            requests.toList(),
+        )
+
+        // 박람회가 삭제되면 재등록 대신 같은 메시지의 보상 DELETE로 모든 회차를 푼다
+        requests.clear()
+        outbox.fieldRegistered(EXPO, listOf(42))
+        jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", EXPO)
+        assertTrue(dispatcher.dispatchNext())
+        assertEquals(listOf(Request("DELETE", "$path?revision=7", "", TOKEN, null)), requests.toList())
+        assertEquals(0, count())
+        jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?", EXPO)
+    }
+
+    @Test
     fun `신청 트랜잭션 롤백은 발송 기록도 롤백하고 단독 저장은 거부한다`() {
         assertThrows(IllegalTransactionStateException::class.java) { outbox.confirmed(EXPO, 42, 1) }
         assertThrows(IllegalStateException::class.java) {
@@ -502,7 +541,7 @@ class SessionAttendanceOutboxTests {
                     gate?.first?.countDown()
                     gate?.second?.await(30, TimeUnit.SECONDS)
                     val sessionId =
-                        if (request.method == "DELETE") {
+                        if (request.method == "DELETE" || !request.body.contains("\"sessionId\":")) {
                             null
                         } else {
                             request.body

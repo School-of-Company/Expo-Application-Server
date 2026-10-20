@@ -12,8 +12,13 @@ data class SessionAttendanceMessage(
     val attempts: Int,
     // #198: DELETE of only [sessionId]. A null sessionId still releases every session of the participant.
     val cancelled: Boolean = false,
+    // #249: a cancelled participant re-registered on site. PUT without a session, never a DELETE.
+    val fieldRegistered: Boolean = false,
 ) {
-    val delete: Boolean get() = sessionId == null || cancelled
+    val delete: Boolean get() = !fieldRegistered && (sessionId == null || cancelled)
+
+    // Releases every session of a purged expo, with the revision reserved for this message.
+    fun purge() = copy(sessionId = null, cancelled = false, fieldRegistered = false)
 
     // Reserve the next revision for purge DELETE compensation of this immutable PUT.
     val revision: Long
@@ -62,6 +67,7 @@ class SessionAttendanceOutboxRepository(
                         rs.getObject("session_id", Long::class.javaObjectType),
                         rs.getInt("attempts"),
                         rs.getBoolean("cancelled"),
+                        rs.getBoolean("field_registered"),
                     )
                 },
                 expoId,
@@ -76,12 +82,7 @@ class SessionAttendanceOutboxRepository(
         sessionId: Long?,
         cancelled: Boolean = false,
     ): Long {
-        // Keep identity order equal to commit order for this participant, including concurrent reapplications.
-        jdbc.queryForObject(
-            "SELECT CAST(pg_advisory_xact_lock(36, hashtext(?)) AS text)",
-            String::class.java,
-            "$expoId:$participantId",
-        )
+        lockParticipant(expoId, participantId)
         return requireNotNull(
             jdbc.queryForObject(
                 "INSERT INTO tb_session_attendance_outbox (expo_id, participant_id, session_id, cancelled) VALUES (?, ?, ?, ?) RETURNING id",
@@ -91,6 +92,34 @@ class SessionAttendanceOutboxRepository(
                 sessionId,
                 cancelled,
             ),
+        )
+    }
+
+    /** #249: only a participant whose preregistration was cancelled here has an Attendance record to release. */
+    fun appendFieldRegistered(
+        expoId: UUID,
+        participantId: Long,
+    ) {
+        lockParticipant(expoId, participantId)
+        jdbc.update(
+            "INSERT INTO tb_session_attendance_outbox (expo_id, participant_id, field_registered) SELECT ?, ?, TRUE " +
+                "WHERE EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CANCELLED')",
+            expoId,
+            participantId,
+            expoId,
+            participantId,
+        )
+    }
+
+    // Keep identity order equal to commit order for this participant, including concurrent reapplications.
+    private fun lockParticipant(
+        expoId: UUID,
+        participantId: Long,
+    ) {
+        jdbc.queryForObject(
+            "SELECT CAST(pg_advisory_xact_lock(36, hashtext(?)) AS text)",
+            String::class.java,
+            "$expoId:$participantId",
         )
     }
 

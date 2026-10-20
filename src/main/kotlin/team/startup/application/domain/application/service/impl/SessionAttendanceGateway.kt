@@ -36,6 +36,7 @@ class SessionAttendanceGateway(
         val path = "/internal/expos/${message.expoId}/participants/${message.participantId}/preregister-session"
         val target =
             when {
+                message.fieldRegistered -> "$path/field-registration"
                 message.sessionId == null -> "$path?revision=${message.revision}"
                 message.cancelled -> "$path?revision=${message.revision}&sessionId=${message.sessionId}"
                 else -> path
@@ -48,8 +49,9 @@ class SessionAttendanceGateway(
         if (message.delete) {
             request.DELETE()
         } else {
+            val session = if (message.fieldRegistered) "" else "\"sessionId\":${message.sessionId},"
             request.header("Content-Type", "application/json")
-            request.PUT(HttpRequest.BodyPublishers.ofString("{\"sessionId\":${message.sessionId},\"revision\":${message.revision}}"))
+            request.PUT(HttpRequest.BodyPublishers.ofString("{$session\"revision\":${message.revision}}"))
         }
         val response = client.send(request.build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() != 204) throw IOException("Attendance HTTP ${response.statusCode()}")

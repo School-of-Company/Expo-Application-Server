@@ -18,6 +18,7 @@ class RegistrationWorkflow(
     private val gateway: RegistrationGateway,
     private val mapper: ObjectMapper,
     private val preregistration: PreregisterRegistrationWorkflow,
+    private val attendance: SessionAttendanceOutbox,
 ) {
     private val occupations = CompanionAnswers.occupations
     private val regions = CompanionAnswers.regions
@@ -172,8 +173,23 @@ class RegistrationWorkflow(
             return preregistration.register(authenticatedCommand, registration, 1 + companionKeys.size).pendingOrNull()
         }
         val participant = gateway.participant(participantType, registration)
-        if (participantType == "STANDARD") participant.groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
+        if (participantType == "STANDARD") {
+            val field = applicationType == "FIELD"
+            if (field) attendance.fieldRegistered(UUID.fromString(expoId), reregistered(participant, companionKeys.size))
+            participant.groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
+        }
         return null
+    }
+
+    // #249: User returns the same IDs for resubmitted companions but not which answer is which, so existing companions count as
+    // re-registered only when this submission resubmits all of them. Created companions have no cancelled history.
+    private fun reregistered(
+        result: ParticipantRegistrationResult,
+        submittedCompanions: Int,
+    ): List<Long> {
+        val created = result.createdIds ?: return listOf(result.participantId)
+        val existing = result.groupParticipantIds - result.participantId - created.toSet()
+        return listOf(result.participantId) + existing.takeIf { submittedCompanions - created.size == it.size }.orEmpty()
     }
 
     // Null keeps the existing 201 contract for confirmed registrations.
