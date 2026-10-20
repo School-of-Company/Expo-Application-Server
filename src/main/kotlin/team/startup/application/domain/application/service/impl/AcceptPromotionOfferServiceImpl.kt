@@ -9,12 +9,16 @@ import team.startup.application.domain.application.exception.ProgramApplicationC
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.OwnerPromotionOffer
 import team.startup.application.domain.application.presentation.dto.OwnerPromotionOfferCommand
+import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.repository.PreregisterReservation
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
+import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.ProgramWaitlistRepository
 import team.startup.application.domain.application.repository.PromotionOffer
 import team.startup.application.domain.application.repository.PromotionOfferRepository
 import team.startup.application.domain.application.service.AcceptPromotionOfferService
 import java.time.Clock
+import java.time.Instant
 
 // The authenticated representative's explicit acceptance is the only way an offer confirms (#144). Session, User and
 // Expo/Form lookups run before the local transaction; the existing promotion checks run again under the locks.
@@ -27,6 +31,7 @@ class AcceptPromotionOfferServiceImpl(
     private val waitlist: ProgramWaitlist,
     private val guardianBatches: StudentGuardianBatchPromotion,
     private val reservations: PreregisterReservationRepository,
+    private val sessions: PreregisterSessionRepository,
     private val preregisterWaitlist: PreregisterWaitlist,
     private val ledger: PreregisterSessionLedger,
     private val clock: Clock,
@@ -84,10 +89,36 @@ class AcceptPromotionOfferServiceImpl(
             val now = clock.instant()
             if (definition.closed || !now.isBefore(applicationEndedAt) || !now.isBefore(definition.startedAt)) conflict("PROMOTION_ENDED")
             val waiting = reservations.find(offer.expoId, reservation.requestId, "")
-            if (waiting?.state != "WAITING" || !reservations.promote(waiting)) conflict("OFFER_TARGET_CHANGED")
+            if (waiting?.state != "WAITING") conflict("OFFER_TARGET_CHANGED")
+            requireNoConflictingSession(waiting, definition, now)
+            if (!reservations.promote(waiting)) conflict("OFFER_TARGET_CHANGED")
             offers.close(current.id, "ACCEPTED", ApplicationActorType.USER.name)
         }
         return shared.owner(requireNotNull(offers.find(offer.id)), clock.instant())
+    }
+
+    // #223: 수락은 승급 처리로 이어지므로 완료 단계에서 겹침으로 거절되기 전에 여기서 막는다. 같은 일행이 이미 확정했거나 선점한
+    // 겹치는 회차, 이미 신청한 같은 회차가 있으면 대기를 그대로 두고 409로 답한다. 다른 대기는 세지 않는다(승급은 아직 일어나지 않았다).
+    // 동행자 추가 예약은 일행 전체가 아니므로 검사하지 않는다.
+    private fun requireNoConflictingSession(
+        waiting: PreregisterReservation,
+        definition: PreregisterSessionDefinition,
+        now: Instant,
+    ) {
+        if (waiting.companionOf != null) return
+        val expoId = waiting.expoId
+        val phone = waiting.userRequest.phoneNumber.filter { it in '0'..'9' }
+        val ids = waiting.result?.participantIds
+        if (ids != null && ids.any { sessions.active(expoId, waiting.sessionId, it) != null }) conflict("GROUP_ALREADY_APPLIED")
+        val confirmed =
+            if (ids != null) {
+                sessions.overlapping(expoId, waiting.sessionId, ids, definition)
+            } else {
+                reservations.overlappingConfirmedByPhone(expoId, waiting.sessionId, phone, definition).isNotEmpty()
+            }
+        if (confirmed || reservations.overlappingPending(expoId, waiting.sessionId, phone, ids, definition, now, listOf("RESERVED"))) {
+            conflict("TIME_CONFLICT")
+        }
     }
 
     private fun respondable(offer: PromotionOffer) {

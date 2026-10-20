@@ -3,6 +3,7 @@ package team.startup.application.domain.application.repository
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
+import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
@@ -29,6 +30,12 @@ data class PreregisterReservation(
     // #199: 이미 저장된 일행의 다른 회차 추가. result에 참석자가 미리 담겨 User에 저장하지 않는다.
     val sessionAddition: Boolean = false,
 )
+
+// #223: 참석자가 정해진 예약(회차 추가)은 그 참석자와 겹칠 때만, 참석자를 아직 모르는 예약이나 참석자를 묻지 않는 호출은 번호로만 막는다.
+internal fun PreregisterReservation.blocks(participantIds: Collection<Long>?): Boolean {
+    val attendees = result?.participantIds
+    return participantIds == null || attendees == null || attendees.any { it in participantIds }
+}
 
 @Repository
 class PreregisterReservationRepository(
@@ -155,6 +162,61 @@ class PreregisterReservationRepository(
                 sessionId,
                 phone,
             ),
+        )
+
+    /**
+     * 같은 번호의 다른 회차 예약(기본 WAITING·RESERVED) 중 [window]와 시간이 겹치고 아직 승급이 가능한(시작 전, 마감 아님) 것이 있는지(#223).
+     * 시작·마감으로 승급이 끝난 대기는 다른 회차를 막지 않는다. 참석자가 정해진 예약(회차 추가)은 [participantIds]와 겹칠 때만 세고,
+     * 참석자를 아직 모르는 예약은 번호로만 본다. 동행자 추가 예약은 일행 전체가 아니므로 세지 않는다.
+     */
+    fun overlappingPending(
+        expoId: UUID,
+        sessionId: Long,
+        phone: String,
+        participantIds: Collection<Long>?,
+        window: PreregisterSessionDefinition,
+        now: java.time.Instant,
+        states: List<String> = listOf("WAITING", "RESERVED"),
+    ): Boolean =
+        jdbc
+            .query(
+                "SELECT r.* FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
+                    "ON st.expo_id = r.expo_id AND st.session_id = r.session_id WHERE r.expo_id = ? AND r.session_id <> ? " +
+                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                    "AND r.state IN (${states.joinToString { "'$it'" }}) AND r.companion_representative_id IS NULL " +
+                    "AND (st.definition::jsonb ->> 'closed')::boolean = FALSE " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
+                    "AND ? < (st.definition::jsonb ->> 'endedAt')::timestamptz",
+                { rs, _ -> reservation(rs) },
+                expoId,
+                sessionId,
+                phone,
+                java.sql.Timestamp.from(now),
+                java.sql.Timestamp.from(window.endedAt),
+                java.sql.Timestamp.from(window.startedAt),
+            ).any { it.blocks(participantIds) }
+
+    /** 번호로 연결된 다른 회차의 확정 신청 중 [window]와 시간이 겹치는 참가자 ID(#223). 수락 시 참석자를 모를 때 쓴다. */
+    fun overlappingConfirmedByPhone(
+        expoId: UUID,
+        sessionId: Long,
+        phone: String,
+        window: PreregisterSessionDefinition,
+    ): List<Long> =
+        jdbc.query(
+            "SELECT a.participant_id FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id JOIN tb_preregister_session_state st " +
+                "ON st.expo_id = a.expo_id AND st.session_id = a.session_id WHERE a.expo_id = ? AND a.session_id <> ? " +
+                "AND a.status = 'CONFIRMED' AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
+                "AND ? < (st.definition::jsonb ->> 'endedAt')::timestamptz",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            sessionId,
+            phone,
+            java.sql.Timestamp.from(window.endedAt),
+            java.sql.Timestamp.from(window.startedAt),
         )
 
     /** 대표자가 처음 낸 일행 신청의 원본 User 요청(가장 최근). 다른 회차 추가(#199)가 답변을 다시 쓴다. */
