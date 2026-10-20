@@ -59,6 +59,15 @@ class PromotionOfferSweepActionTests {
     }
 
     @Test
+    fun `definitive delivery failure expires like no response while unknown waits for the cutoff`() {
+        val expires = deadline.minusSeconds(600)
+        assertEquals(SweepAction.NONE, sweepAction(offer(expires, "DELIVERY_FAILED"), true, expires.minusSeconds(1)))
+        assertEquals(SweepAction.EXPIRE, sweepAction(offer(expires, "DELIVERY_FAILED"), true, expires))
+        assertEquals(SweepAction.VOID_HARD_DEADLINE, sweepAction(offer(deadline, "DELIVERY_FAILED"), true, deadline))
+        assertEquals(SweepAction.NONE, sweepAction(offer(null, "UNKNOWN"), true, expires))
+    }
+
+    @Test
     fun `closed target and unsent offers keep their handling`() {
         assertEquals(SweepAction.VOID_TARGET_CLOSED, sweepAction(offer(deadline.minusSeconds(60)), false, deadline))
         assertEquals(SweepAction.VOID_HARD_DEADLINE, sweepAction(offer(null, "SCHEDULED"), true, deadline))
