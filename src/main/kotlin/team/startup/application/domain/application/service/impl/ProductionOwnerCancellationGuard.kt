@@ -163,10 +163,13 @@ class ProductionOwnerCancellationGuard(
                 override val linkedTraineeId = linkedTrainee
                 override val cancelEndedAt = deadline
 
-                override fun committed(cancellationRevision: Long?) {
+                override fun committed(
+                    cancellationRevision: Long?,
+                    sessionId: Long?,
+                ) {
                     check(TransactionSynchronizationManager.isActualTransactionActive())
                     if (command.type == OwnerApplicationType.PREREGISTER) {
-                        deliveries.commit(id, requireNotNull(cancellationRevision))
+                        deliveries.commit(id, requireNotNull(cancellationRevision), sessionId)
                     } else {
                         deliveries.abort(id)
                     }
@@ -213,6 +216,7 @@ class ProductionOwnerCancellationGuard(
                         decision.participantId,
                         decision.operationId,
                         requireNotNull(decision.cancellationRevision),
+                        decision.sessionId,
                     )
                 } catch (exception: ResponseStatusException) {
                     if (exception.statusCode != HttpStatus.CONFLICT) throw exception

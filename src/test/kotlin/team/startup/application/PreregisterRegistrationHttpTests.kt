@@ -79,6 +79,7 @@ class PreregisterRegistrationHttpTests {
         userRequests.clear()
         attendanceRequests.clear()
         guardRequests.clear()
+        guardCommitSessions.clear()
         counts.clear()
         stored.clear()
         userStatus.set(201)
@@ -999,6 +1000,8 @@ class PreregisterRegistrationHttpTests {
             ),
             guardRequests.toList(),
         )
+        // #221: both commits name the cancelled session.
+        assertEquals(listOf(1L, 1L), guardCommitSessions.toList())
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
         assertEquals(200, cancel("test-token", 42))
         assertEquals(201, submit("again", people = 2, session = 2))
@@ -1104,6 +1107,7 @@ class PreregisterRegistrationHttpTests {
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val attendanceRequests = CopyOnWriteArrayList<String>()
         private val guardRequests = CopyOnWriteArrayList<String>()
+        private val guardCommitSessions = CopyOnWriteArrayList<Long>()
         private val counts = CopyOnWriteArrayList<Long>()
         private val stored = java.util.concurrent.ConcurrentHashMap<String, String>()
         private val userGate =
@@ -1138,6 +1142,11 @@ class PreregisterRegistrationHttpTests {
 
                             path.contains("cancellation-guard/") -> {
                                 guardRequests.add(exchange.requestMethod + ":" + path.split("/")[5] + ":" + path.split("/")[6])
+                                if (exchange.requestMethod == "POST") {
+                                    guardCommitSessions.add(
+                                        json.readTree(exchange.requestBody.bufferedReader().readText()).path("sessionId").asLong(),
+                                    )
+                                }
                                 204 to ""
                             }
 

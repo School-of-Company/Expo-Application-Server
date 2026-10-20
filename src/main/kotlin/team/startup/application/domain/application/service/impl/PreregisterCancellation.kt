@@ -61,6 +61,6 @@ class PreregisterCancellation(
             reservations.withdrawCompanionWaits(expoId, sessionId, participantId, actorType, adminId)
         }
         val outboxId = attendance.cancelled(expoId, participantId, sessionId)
-        permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L))
+        permit.committed(Math.addExact(Math.multiplyExact(outboxId, 2L), 1L), sessionId)
     }
 }
