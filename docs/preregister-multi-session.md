@@ -8,7 +8,7 @@
 - 같은 사람의 확정 회차끼리는 시간이 일부라도 겹치면 안 된다. 겹침은 `startedAt < 다른 endedAt AND 다른 startedAt < endedAt`이며 입장 허용 시간(leadMinutes)은 넣지 않는다. 신뢰 ID 경로(`ApplyPreregisterSessionService`)는 409로 거절하고, User 저장 뒤 완료 단계에서 발견하면 기존 활성 신청 충돌처럼 `needsReview(409)`로 좌석을 유지한다.
 - 회차 추가(공개 `addSession`과 신뢰 ID 경로)는 확정뿐 아니라 같은 번호의 다른 회차 `WAITING`·`RESERVED` 예약과 겹쳐도 409로 거절한다(#223). 시작했거나 마감돼 승급이 끝난 대기는 세지 않는다(`preregistration-waitlist-design.md` P12). 참석자가 정해진 예약(회차 추가)은 참석자가 겹칠 때만, 모르는 예약은 번호로 본다. 완료 단계의 겹침 검사는 확정만 그대로 본다(서로 대기·선점 중인 두 회차가 서로를 거절하지 않도록). 참여 제안 수락도 승급 처리 전에 같은 검사를 하며(다른 `WAITING`은 세지 않고 확정·`RESERVED`만) 겹치면 409 `TIME_CONFLICT`, 이미 신청한 회차면 `GROUP_ALREADY_APPLIED`이고 대기와 제안은 그대로 둔다.
 - 공개 일행 신청(`POST /application/pre-standard/{expoId}`)은 대표 번호당 한 번이다(`samePhoneInUse` 그대로). User는 이미 있는 번호에 대해 일행 전체 ID를 돌려주므로 두 번째 회차의 제출 구성과 ID를 짝지을 수 없다. 이미 신청한 일행의 다른 회차는 참가자 ID로 고르는 "다른 회차 추가"(#199)로 받는다. 대표 불참 회차와 "학생 아닌 참석자 1명 이상" 규칙(Q1)도 #199에서 적용한다.
-- 취소는 회차별이다. 대표자가 자기 회차를 취소해도 동행자 신청은 남는다(`ACTIVE_COMPANIONS` 사유와 409 제거). 그 회차의 대표자 신청에 붙이려던 대기 중 동행자 추가만 함께 철회한다. 활성 프로그램 차단은 #200 전까지 그대로다.
+- 취소는 회차별이다. 관리자·회차 일괄 취소는 대표자만 취소해도 동행자 신청이 남는다. 다만 나의 신청 현황의 대표자 본인 취소는 같은 회차에 확정 동행자나 승급 뒤 저장 중인 동행자 추가가 있으면 409 `COMPANIONS_ACTIVE`이고 조회도 `cancellationBlockedReason=COMPANIONS_ACTIVE`다(#257). 대표자가 같은 번호로 다시 들어올 길이 없기 때문이다. 그 회차의 대표자 신청에 붙이려던 대기 중 동행자 추가만 함께 철회한다. 활성 프로그램 차단은 #200 전까지 그대로다.
 - 동행자 추가 진행 중 유니크(`uq_preregister_companion_in_progress`)는 대표자 단위로 유지한다. User 일행 5명 한도가 박람회 단위라 추가를 한 번에 하나씩 처리한다.
 
 ## 다른 회차 추가 (#199, V34)
@@ -28,6 +28,9 @@
 - `GET /application/expos/{expoId}/my-applications/preregister-waitlists`: 회차별 대기 목록(최근 순, 없으면 `[]`). 항목 형식은 기존 단건과 같다.
 - 기존 `GET .../preregister-waitlist`, `POST .../preregister-waitlist/cancellation`은 그대로이며 선택 쿼리 `sessionId`를 받는다. 없으면 가장 최근 1건이다.
 - 참여 제안 목록의 사전등록 제안은 대기 예약마다 최신 1건이다.
+- 대기 없이 바로 좌석을 잡았지만 User 저장 전(재시도 중 또는 운영자 확인 대기)인 예약도 조회에 `PROCESSING`으로 나온다(#252). 이 예약은 번호를 막지만(409) 참가자가 없어 신청 목록에는 없다. 대기 순번이 없어 대기열을 거친 항목 뒤에 두고 `position`은 null이다. 회차 추가·동행자 추가 예약은 이미 일행 신청에 보이므로 넣지 않는다.
+- 항목의 `reviewRequired`는 `PROCESSING`이 운영자 확인(`needsReview`: `error_status` 있음, 무한 `next_attempt_at`)에 멈췄으면 true다. Client는 이때 운영 문의를 안내하고, 그 외 처리 중은 기존처럼 다시 조회하게 한다. 원인 코드·번호·폼·User 결과는 내려 주지 않는다.
+- 철회는 대기열을 거친 예약만 대상이다. 바로 잡은 예약은 `sessionId`로 지정해도 404이며 좌석을 풀지 않는다.
 
 ## Attendance 회차 통지 계약 (Expo-Attendance-Server#160)
 

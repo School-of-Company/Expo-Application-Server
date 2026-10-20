@@ -16,6 +16,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.repository.ManagedParticipantRepository
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
@@ -33,6 +34,7 @@ class GetOwnerApplicationsServiceImpl(
     private val preregister: PreregisterSessionRepository,
     private val clock: Clock,
     private val companions: PreregisterCompanionPolicy,
+    private val managed: ManagedParticipantRepository,
     transactionManager: PlatformTransactionManager,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
 ) : GetOwnerApplicationsService {
@@ -51,6 +53,18 @@ class GetOwnerApplicationsServiceImpl(
                 }.associateBy { it.programType.name to it.id }
         val applications = stored.map { it.copy(place = definitions[it.type.name to it.sessionOrProgramId]?.place) }
         if (!attendanceEnabled) return OwnerApplicationsResponse(party.participants, withCompanions(command, party, applications))
+        // QR 조회와 같은 판정이다. 조회 시점 값이라 QR 조회가 다시 확인한다
+        val qrParticipantIds =
+            party.representativeId
+                ?.let { representative ->
+                    requireNotNull(
+                        reads.execute {
+                            party.participants
+                                .filter { managed.qrAvailable(command.expoId, it.participantId, representative, it.fieldRegistered) }
+                                .map { it.participantId }
+                        },
+                    )
+                }.orEmpty()
         val observations =
             applications.filter { it.applied }.map { it.participantId }.distinct().associateWith { participantId ->
                 runCatching {
@@ -115,7 +129,7 @@ class GetOwnerApplicationsServiceImpl(
                     }
                 application.copy(cancellable = reason == null, cancellationBlockedReason = reason ?: "")
             }
-        return OwnerApplicationsResponse(party.participants, withCompanions(command, party, eligible))
+        return OwnerApplicationsResponse(party.participants, withCompanions(command, party, eligible), qrParticipantIds)
     }
 
     // #169: 대표자 본인의 확정 사전등록에만 동행자 추가 가능 여부를 붙인다. 공급자 조회 실패는 목록을 막지 않는다.
@@ -186,6 +200,11 @@ class GetOwnerApplicationsServiceImpl(
 
                 repository.activePrograms(command.expoId, application.participantId, traineeId) -> {
                     "ACTIVE_PROGRAMS"
+                }
+
+                application.participantId == party.representativeId &&
+                    repository.activeCompanions(command.expoId, application.sessionOrProgramId, application.participantId) -> {
+                    "COMPANIONS_ACTIVE"
                 }
 
                 else -> {

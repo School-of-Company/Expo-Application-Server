@@ -58,6 +58,8 @@ class RegistrationHttpTests {
 
     @MockitoBean private lateinit var preregistration: PreregisterRegistrationWorkflow
 
+    @Autowired private lateinit var jdbc: org.springframework.jdbc.core.JdbcTemplate
+
     @BeforeEach
     fun isolatePreregistrationPersistence() {
         // This class verifies form validation/serialization; PreregisterRegistrationHttpTests exercises the real reservation.
@@ -505,6 +507,92 @@ class RegistrationHttpTests {
                 verify(gateway).participant(type, registration)
             }
         }
+    }
+
+    @Test
+    fun `사전등록을 취소한 일행의 현장 재등록은 다시 등록한 것이 확실한 참가자만 Attendance 해제 대상으로 남긴다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul")).toString()
+        `when`(gateway.expoPeriod(EXPO_5)).thenReturn(ExpoPeriod(today, today))
+        val fields = listOf(RegistrationField(9, "함께 오는 사람", "COMPANION", mapper.readTree("{}"), null, "DEFAULT"))
+        `when`(gateway.form(EXPO_5, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString(), fields),
+        )
+        val questions = listOf(RegistrationQuestion(9, "함께 오는 사람", 0, "COMPANION", mapper.readTree("{}"), null, "DEFAULT"))
+        jdbc.update("DELETE FROM tb_session_attendance_outbox WHERE expo_id = ?::uuid", EXPO_5)
+        jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?::uuid", EXPO_5)
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?::uuid, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}') ON CONFLICT DO NOTHING",
+            EXPO_5,
+        )
+        // 대표자 35와 동행자 36·37은 사전등록을 취소했다
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?::uuid, 1, 35, 35, 'CANCELLED'), (?::uuid, 1, 35, 36, 'CANCELLED'), (?::uuid, 1, 35, 37, 'CANCELLED')",
+            EXPO_5,
+            EXPO_5,
+            EXPO_5,
+        )
+
+        fun register(
+            requestId: String,
+            companions: Int,
+            result: ParticipantRegistrationResult,
+        ): List<Long> {
+            val answers =
+                mapper.writeValueAsString(
+                    mapOf("함께 오는 사람" to (1..companions).map { mapOf("name" to "동행$it", "occupation" to "GENERAL", "region" to "GWANGJU") }),
+                )
+            val registration =
+                ParticipantRegistration(
+                    EXPO_5,
+                    "홍길동",
+                    "01012345678",
+                    answers,
+                    true,
+                    "FIELD",
+                    null,
+                    null,
+                    null,
+                    requestId,
+                    FORM_ID,
+                    questions,
+                )
+            `when`(gateway.participant("STANDARD", registration)).thenReturn(result)
+            mockMvc
+                .perform(
+                    post("/application/field/standard/$EXPO_5")
+                        .header("Idempotency-Key", requestId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(answers)),
+                ).andExpect(status().isCreated)
+            val ids =
+                jdbc.queryForList(
+                    "SELECT participant_id FROM tb_session_attendance_outbox WHERE expo_id = ?::uuid AND field_registered ORDER BY id",
+                    Long::class.java,
+                    EXPO_5,
+                )
+            jdbc.update("DELETE FROM tb_session_attendance_outbox WHERE expo_id = ?::uuid", EXPO_5)
+            return ids.filterNotNull()
+        }
+
+        // 대표자만 다시 등록하면 User가 일행 전원에게 QR을 다시 보내도 동행자는 계속 막는다
+        assertEquals(
+            listOf(35L),
+            register("field-alone", 0, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37), createdIds = emptyList())),
+        )
+        // 기존 동행자를 모두 다시 적으면 일행 전원을 푼다
+        assertEquals(
+            listOf(35L, 36L, 37L),
+            register("field-all", 2, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37), createdIds = emptyList())),
+        )
+        // 기존 동행자 중 일부만 다시 적으면 누구인지 알 수 없어 대표자만 푼다. 새 동행자 38은 취소 이력이 없다
+        assertEquals(
+            listOf(35L),
+            register("field-some", 2, ParticipantRegistrationResult(35, "01012345678", listOf(38), listOf(35, 36, 37, 38), listOf(38))),
+        )
+        // 옛 User 응답처럼 새로 만든 참가자를 알 수 없으면 대표자만 푼다
+        assertEquals(listOf(35L), register("field-legacy", 2, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37))))
+        jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?::uuid", EXPO_5)
     }
 
     @Test
@@ -1060,6 +1148,7 @@ class RegistrationHttpTests {
         private const val EXPO_2 = "0199c000-0000-7000-8000-000000000002"
         private const val EXPO_3 = "0199c000-0000-7000-8000-000000000003"
         private const val EXPO_4 = "0199c000-0000-7000-8000-000000000004"
+        private const val EXPO_5 = "0199c000-0000-7000-8000-000000000005"
 
         @Container
         @ServiceConnection

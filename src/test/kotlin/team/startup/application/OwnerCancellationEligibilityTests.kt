@@ -27,6 +27,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerCancellationStatus
+import team.startup.application.domain.application.repository.ManagedParticipantRepository
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
@@ -49,6 +50,7 @@ class OwnerCancellationEligibilityTests {
     private val deadlines = mock(OwnerCancellationDeadlineGateway::class.java)
     private val deliveries = mock(OwnerCancellationDeliveryRepository::class.java)
     private val preregister = mock(PreregisterSessionRepository::class.java)
+    private val managed = mock(ManagedParticipantRepository::class.java)
     private var reading = false
     private val transactions =
         object : PlatformTransactionManager {
@@ -96,6 +98,29 @@ class OwnerCancellationEligibilityTests {
     }
 
     @Test
+    fun `field registered participants without applications are listed for QR lookup`() {
+        val party =
+            OwnerApplicationParty(
+                listOf(
+                    ManagedOwnerParticipant(1, "Owner", null, true, fieldRegistered = true),
+                    ManagedOwnerParticipant(2, "Companion", null, false, fieldRegistered = true),
+                    ManagedOwnerParticipant(3, "Waiting", null, false),
+                ),
+            )
+        `when`(gateway.managedParty(EXPO, COMMAND.sessionId)).thenReturn(party)
+        `when`(repository.applications(EXPO, party)).thenReturn(emptyList())
+        `when`(managed.qrAvailable(EXPO, 1, 1, true)).thenReturn(true)
+        `when`(managed.qrAvailable(EXPO, 2, 1, true)).thenReturn(true)
+
+        val response = service().execute(COMMAND)
+
+        assertEquals(emptyList<OwnerApplicationItem>(), response.applications)
+        assertEquals(listOf(1L, 2L), response.qrParticipantIds)
+        verify(managed).qrAvailable(EXPO, 3, 1, false)
+        assertEquals(emptyList<Long>(), service(false).execute(COMMAND).qrParticipantIds)
+    }
+
+    @Test
     fun `entered attended and held or committed participant states block eligibility`() {
         for ((snapshot, reason) in listOf(
             OBSERVATION.copy(entered = true) to "ENTERED",
@@ -120,9 +145,23 @@ class OwnerCancellationEligibilityTests {
     }
 
     @Test
-    fun `active programs are checked before showing cancellation`() {
+    fun `active programs and representative companions are checked before showing cancellation`() {
         `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(true)
         blocked("ACTIVE_PROGRAMS")
+        // #257: only the representative's own session is checked; a companion's application never is.
+        `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(false)
+        `when`(repository.activeCompanions(EXPO, 7, 2)).thenReturn(true)
+        assertTrue(
+            service()
+                .execute(COMMAND)
+                .applications
+                .single()
+                .cancellable,
+        )
+        val representative = APPLICATION.copy(participantId = 1)
+        configure(representative)
+        `when`(repository.activeCompanions(EXPO, 7, 1)).thenReturn(true)
+        blocked("COMPANIONS_ACTIVE")
     }
 
     @Test
@@ -231,6 +270,7 @@ class OwnerCancellationEligibilityTests {
                 throw org.springframework.web.server
                     .ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
             },
+            managed,
             transactions,
             enabled,
         )
