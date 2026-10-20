@@ -192,8 +192,22 @@ class PreregisterRegistrationWorkflow(
                         if (waits || teacher < categories.first || other < categories.second) conflict("일행 전원을 수용할 수 없습니다.")
                     }
                     // 이미 일행에 있는 사람을 다시 보내면 User가 새로 만들지 않고 QR만 다시 보낸다. 미리 거절한다.
-                    val known = party.participants.map { it.name.trim() to it.occupation }.toSet()
-                    if (added.any { (it.path("name").asString().trim() to it.path("occupation").asString()) in known }) {
+                    // #225: User처럼 대표자를 빼고 동행자의 이름·구분·학교로 같은 사람을 가린다. 학교를 싣지 않는 옛 User 응답이면 이름·구분만 본다.
+                    val known = party.participants.filterNot { it.representative }
+                    if (added.any { candidate ->
+                            val school =
+                                candidate
+                                    .path("school")
+                                    .asString()
+                                    .trim()
+                                    .ifEmpty { null }
+                            known.any {
+                                it.name.trim() == candidate.path("name").asString().trim() &&
+                                    it.occupation == candidate.path("occupation").asString() &&
+                                    (!it.schoolReported || it.school == school)
+                            }
+                        }
+                    ) {
                         conflict("이미 일행에 있는 동행자입니다.")
                     }
                     val snapshot = requireNotNull(availability.snapshot)
