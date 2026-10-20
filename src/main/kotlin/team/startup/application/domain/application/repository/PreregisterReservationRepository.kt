@@ -29,6 +29,9 @@ data class PreregisterReservation(
     val categories: Pair<Int, Int>? = null,
     // #199: 이미 저장된 일행의 다른 회차 추가. result에 참석자가 미리 담겨 User에 저장하지 않는다.
     val sessionAddition: Boolean = false,
+    // #222: 재시도 상한(횟수·경과 시간)을 세는 창의 시작. 운영자 재시도(retryReviewed)가 다시 연다.
+    val retryWindowStartedAt: java.time.Instant? = null,
+    val retryWindowAttempts: Int = 0,
 )
 
 // #223: 참석자가 정해진 예약(회차 추가)은 그 참석자와 겹칠 때만, 참석자를 아직 모르는 예약이나 참석자를 묻지 않는 호출은 번호로만 막는다.
@@ -113,6 +116,8 @@ class PreregisterReservationRepository(
             rs.getObject("companion_representative_id", Long::class.javaObjectType),
             rs.getObject("teacher_applicants", Int::class.javaObjectType)?.let { it to rs.getInt("other_applicants") },
             rs.getBoolean("session_addition"),
+            rs.getTimestamp("retry_window_started_at")?.toInstant(),
+            rs.getInt("retry_window_attempts"),
         )
 
     /**
@@ -601,7 +606,8 @@ class PreregisterReservationRepository(
 
     fun retryReviewed(reservation: PreregisterReservation) {
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET error_status = NULL, result = NULL, next_attempt_at = CURRENT_TIMESTAMP " +
+            "UPDATE tb_preregister_reservation SET error_status = NULL, result = NULL, next_attempt_at = CURRENT_TIMESTAMP, " +
+                "retry_window_started_at = clock_timestamp(), retry_window_attempts = attempts " +
                 "WHERE expo_id = ? AND request_id = ? AND state = 'RESERVED'",
             reservation.expoId,
             reservation.requestId,
