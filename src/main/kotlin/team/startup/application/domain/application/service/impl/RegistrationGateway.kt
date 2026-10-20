@@ -82,6 +82,12 @@ data class ParticipantRegistration(
      */
     @get:JsonInclude(JsonInclude.Include.NON_EMPTY)
     val releasedParticipantIds: List<Long>? = null,
+    /**
+     * 같은 번호의 대표자에게 활성 신청이 하나도 없을 때만 true(#237). User는 기존 대표자를 이번 요청 값으로 바꾸고 기존 동행자를 모두 일행에서 뺀다.
+     * null이면 싣지 않아 이 필드가 생기기 전 요청과 같다.
+     */
+    @get:JsonInclude(JsonInclude.Include.NON_NULL)
+    val replaceRepresentative: Boolean? = null,
 )
 
 data class ManagedParticipantSelection(

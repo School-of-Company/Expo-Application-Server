@@ -235,6 +235,8 @@ class PreregisterRegistrationWorkflow(
                         snapshot.copy(
                             informationJson = mapper.writeValueAsString(answers),
                             requestId = UUID.randomUUID().toString(),
+                            // #237: 처음 신청이 대표자를 교체했어도 동행자 추가는 대표자를 다시 바꾸지 않는다.
+                            replaceRepresentative = null,
                         )
                     reservations.insertCompanions(
                         expoId,
@@ -417,20 +419,32 @@ class PreregisterRegistrationWorkflow(
             informationJson = mapper.writeValueAsString(answers),
             requestId = UUID.randomUUID().toString(),
             releasedParticipantIds = null,
+            replaceRepresentative = null,
         )
     }
 
     private fun withReleased(saved: PreregisterReservation): PreregisterReservation {
+        val phone =
+            saved.userRequest.phoneNumber
+                .filter { it in '0'..'9' }
+                .takeIf { it.isNotEmpty() }
+        // #237: 활성 신청이 하나도 없는 대표자에게 새 일행을 신청하면 대표자를 이번 제출로 바꾸고 이전 동행자를 모두 뺀다.
+        val replaced =
+            if (saved.companionOf == null && phone != null) {
+                reservations.replaceableCompanions(saved.expoId, phone, saved.requestId, waitlist.now())
+            } else {
+                null
+            }
         val ids =
-            saved.companionOf?.let { reservations.cancelledCompanions(saved.expoId, it) }
-                ?: saved.userRequest.phoneNumber
-                    .filter { it in '0'..'9' }
-                    .takeIf { it.isNotEmpty() }
-                    ?.let { reservations.cancelledCompanionsOfPhone(saved.expoId, it) }
-                    .orEmpty()
-        if (ids.isEmpty()) return saved
-        reservations.saveReleased(saved, ids)
-        return saved.copy(userRequest = saved.userRequest.copy(releasedParticipantIds = ids))
+            replaced
+                ?: saved.companionOf?.let { reservations.cancelledCompanions(saved.expoId, it) }
+                ?: phone?.let { reservations.cancelledCompanionsOfPhone(saved.expoId, it) }.orEmpty()
+        val replace = replaced?.let { true }
+        if (ids.isEmpty() && replace == null) return saved
+        reservations.saveReleased(saved, ids, replace)
+        return saved.copy(
+            userRequest = saved.userRequest.copy(releasedParticipantIds = ids.ifEmpty { null }, replaceRepresentative = replace),
+        )
     }
 
     fun recover(

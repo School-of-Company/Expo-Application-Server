@@ -349,16 +349,76 @@ class PreregisterReservationRepository(
             phone,
         )
 
-    /** User로 처음 보내기 전에 계산한 취소 동행자 ID를 원본 요청에 고정한다. 재시도는 같은 본문을 보내야 User 멱등 검사를 통과한다. */
+    /**
+     * 같은 전화번호(숫자만)로 저장된 대표자에게 활성 신청이 하나도 없으면 그 대표자의 이전 동행자 전원(#237). 대표자가 없거나
+     * 사전등록·프로그램의 확정·대기 신청, 지금 보내는 [requestId] 밖의 처리 중·대기 예약이 남아 있으면 null이다. 같은 박람회 잠금 안에서 부른다.
+     */
+    fun replaceableCompanions(
+        expoId: UUID,
+        phone: String,
+        requestId: String,
+        now: java.time.Instant,
+    ): List<Long>? {
+        val representatives =
+            jdbc.query(
+                "SELECT DISTINCT (r.result::jsonb ->> 'participantId')::bigint FROM tb_preregister_reservation r WHERE r.expo_id = ? " +
+                    "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL AND NOT r.session_addition " +
+                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+                { rs, _ -> rs.getLong(1) },
+                expoId,
+                phone,
+            )
+        if (representatives.isEmpty()) return null
+        val ids = mapper.writeValueAsString(representatives)
+        val active =
+            requireNotNull(
+                jdbc.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM tb_preregister_application a WHERE a.expo_id = ? AND a.status <> 'CANCELLED' " +
+                        "AND (a.representative_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint) " +
+                        "OR a.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint))) " +
+                        "OR EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.status <> 'CANCELLED' " +
+                        "AND p.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)) " +
+                        "OR EXISTS(SELECT 1 FROM tb_standard_program_application s " +
+                        "WHERE s.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)) " +
+                        "OR EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = ? AND r.request_id <> ? " +
+                        "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                        "AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND EXISTS(SELECT 1 FROM tb_preregister_session_state st " +
+                        "WHERE st.expo_id = r.expo_id AND st.session_id = r.session_id " +
+                        "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ?))))",
+                    Boolean::class.java,
+                    expoId,
+                    ids,
+                    ids,
+                    ids,
+                    ids,
+                    expoId,
+                    requestId,
+                    phone,
+                    java.sql.Timestamp.from(now),
+                ),
+            )
+        if (active) return null
+        return jdbc.query(
+            "SELECT DISTINCT participant_id FROM tb_preregister_application WHERE expo_id = ? AND participant_id <> representative_id " +
+                "AND representative_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint) ORDER BY participant_id",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            ids,
+        )
+    }
+
+    /** User로 처음 보내기 전에 계산한 취소 동행자 ID와 대표자 교체 여부(#237)를 원본 요청에 고정한다. 재시도는 같은 본문을 보내야 User 멱등 검사를 통과한다. */
     fun saveReleased(
         reservation: PreregisterReservation,
         ids: List<Long>,
+        replaceRepresentative: Boolean? = null,
     ) {
         jdbc.update(
             "UPDATE tb_preregister_reservation SET user_request = " +
-                "(user_request::jsonb || jsonb_build_object('releasedParticipantIds', ?::jsonb))::text " +
-                "WHERE expo_id = ? AND request_id = ?",
-            mapper.writeValueAsString(ids),
+                "(user_request::jsonb || jsonb_strip_nulls(jsonb_build_object('releasedParticipantIds', ?::jsonb, " +
+                "'replaceRepresentative', ?::boolean)))::text WHERE expo_id = ? AND request_id = ?",
+            if (ids.isEmpty()) null else mapper.writeValueAsString(ids),
+            replaceRepresentative,
             reservation.expoId,
             reservation.requestId,
         )
