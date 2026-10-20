@@ -63,6 +63,9 @@ application:
   registration:
     enabled: ${APPLICATION_REGISTRATION_ENABLED:false}
     waitlist-intake-enabled: ${APPLICATION_PREREGISTER_WAITLIST_INTAKE_ENABLED:false}
+    reservation-review:
+      max-attempts: ${APPLICATION_RESERVATION_REVIEW_MAX_ATTEMPTS:40}
+      max-age-minutes: ${APPLICATION_RESERVATION_REVIEW_MAX_AGE_MINUTES:60}
     expo-url: ${APPLICATION_REGISTRATION_EXPO_URL:}
     form-url: ${APPLICATION_REGISTRATION_FORM_URL:}
     user-url: ${APPLICATION_REGISTRATION_USER_URL:}

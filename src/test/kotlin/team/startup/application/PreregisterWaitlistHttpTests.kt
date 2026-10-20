@@ -337,7 +337,9 @@ class PreregisterWaitlistHttpTests {
         assertEquals(201, submit("a", 2, "01000000001").status)
         waiting(submit("b", 2, "01000000002"), 1)
         waiting(submit("c", 1, "01000000003"), 2)
-        assertEquals(409, submit("d", 1, "01000000004").status)
+        val full = submit("d", 1, "01000000004")
+        assertEquals(409, full.status)
+        assertEquals("SEATS_UNAVAILABLE", mapper.readTree(full.contentAsString)["code"].asString())
         waiting(submit("b", 2, "01000000002"), 1)
         recovery.recover()
         assertEquals(1, userRequests.size)
@@ -405,6 +407,7 @@ class PreregisterWaitlistHttpTests {
         assertEquals(201, submit("a", 1, "01000000001").status)
         waiting(submit("b", 1, "01000000002"), 1)
         change(close = true)
+        assertEquals("SESSION_CLOSED", mapper.readTree(submit("c", 1, "01000000003").contentAsString)["code"].asString())
         cancel(1)
         assertEquals("WAITING", state("b"))
         assertEquals(

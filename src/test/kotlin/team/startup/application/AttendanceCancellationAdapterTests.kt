@@ -63,13 +63,15 @@ class AttendanceCancellationAdapterTests {
     @Test
     fun `commit carries the immutable cancellation revision and rejects nonpositive revisions`() {
         adapter.commit(EXPO, 2, OPERATION, 123)
+        adapter.commit(EXPO, 2, OPERATION, 123, 7)
+        val path = "/internal/expos/$EXPO/participants/2/cancellation-guard/$OPERATION/commit"
         assertEquals(
-            listOf(Triple("POST", "/internal/expos/$EXPO/participants/2/cancellation-guard/$OPERATION/commit", """{"revision":123}""")),
+            listOf(Triple("POST", path, """{"revision":123}"""), Triple("POST", path, """{"revision":123,"sessionId":7}""")),
             requests,
         )
         assertThrows(IllegalArgumentException::class.java) { adapter.commit(EXPO, 2, OPERATION, 0) }
         assertThrows(IllegalArgumentException::class.java) { adapter.commit(EXPO, 2, OPERATION, -1) }
-        assertEquals(1, requests.size)
+        assertEquals(2, requests.size)
     }
 
     @Test

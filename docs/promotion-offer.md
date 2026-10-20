@@ -10,18 +10,20 @@
 - 응답 기한 = 공급자 실제 접수 시각 + 6시간, 단 기존 마감을 넘지 않는다. 야간을 빼지 않으며 마감을 연장하지 않는다. 기존 마감은 프로그램이 `min(applicationEndedAt, promotionEndedAt)`, 사전등록이 `min(PRE 폼 endDate, 회차 startedAt)`이다. 나중에 Expo에서 더 이른 마감을 관찰하면 진행 중인 제안도 그 마감으로 줄인다.
 - 응답 가능한 구간이 없으면(발송 가능 시각 또는 공급자 접수 시각이 마감 이후) 보내지도 확정하지도 않는다.
 - 거절과 응답 만료는 해당 대기를 종료(프로그램 `CANCELLED`, 사전등록 `REJECTED`+`withdrawn_at`)하고 다음 FIFO 대상에게 제안한다. 처리자는 #143 규칙(거절 USER+대표자, 만료 SYSTEM)으로 기록한다.
-- 발송 확정 실패(`DELIVERY_FAILED`)나 결과 불명(`UNKNOWN`)은 거절·무응답으로 보지 않는다. 좌석을 유지하다가 마감에 `VOIDED`로 확보만 풀고 대기는 남긴다.
+- 발송 확정 실패(`DELIVERY_FAILED`)는 거절로 보지 않는다. 응답 기한까지는 본인이 내 신청 화면에서 수락·거절할 수 있고, 기한이 지나면 무응답과 같이 `EXPIRED`로 대기를 종료하고 다음 FIFO 대상에게 제안한다(#226). 공급자 접수 전에 실패해 기한이 없으면 실패 보고 시각 + 6시간(기존 마감을 넘지 않음)을 기한으로 둔다. 실패 보고가 마감 이후면 기한 없이 마감에 `VOIDED`로 확보만 푼다.
+- 결과 불명(`UNKNOWN`)은 거절·무응답으로 보지 않는다. 좌석을 유지하다가 마감에 `VOIDED`로 확보만 풀고 대기는 남긴다.
 
 ## 저장과 상태
 
-V27 `tb_promotion_offer`가 좌석 확보다. 대기 행은 `WAITING`을 유지하므로 기존 CHECK·트리거·#143 이력 계약은 바뀌지 않는다.
+V27 `tb_promotion_offer`가 좌석 확보다. V37은 공급자 접수 없이 실패 보고로 생긴 응답 기한을 허용한다. 대기 행은 `WAITING`을 유지하므로 기존 CHECK·트리거·#143 이력 계약은 바뀌지 않는다.
 
 | 상태 | 뜻 | 좌석 |
 | --- | --- | --- |
 | SCHEDULED | outbox. 아직 Kafka ACK 없음 | 확보 |
 | PUBLISHED | Kafka ACK. 공급자 결과 미수신 | 확보 |
 | SENT | 공급자 접수. 응답 기한 진행 | 확보 |
-| UNKNOWN / DELIVERY_FAILED | 결과 불명 / 확정 실패 | 확보(마감까지) |
+| DELIVERY_FAILED | 확정 실패. 응답 기한 진행(접수 전 실패면 보고 + 6시간) | 확보(기한까지) |
+| UNKNOWN | 결과 불명 | 확보(마감까지) |
 | ACCEPTED / DECLINED / EXPIRED / VOIDED | 종료 | 해제 |
 
 - 확보 좌석은 대상이 아직 `WAITING`일 때만 센다. 그래서 대상이 다른 경로로 취소되면 확보가 바로 풀리고, 스케줄러가 제안을 `VOIDED`(`TARGET_CLOSED`)로 정리한다.
@@ -39,7 +41,7 @@ V27 `tb_promotion_offer`가 좌석 확보다. 대기 행은 `WAITING`을 유지�
 - `POST /internal/promotion-offers/check`: 이벤트 그대로 보낸다. `eligible=false`이면 `reason`이 `NOT_CURRENT_OFFER`(현재 제안 아님·대기 종료·마감) 또는 `OUTSIDE_SEND_WINDOW`이다. eligible이면 대표 번호, 수신자 이름, 프로그램/회차명·KST 일시·장소, 좌석 수, `responseUrl`, `hardDeadline`, `sendWindowEndsAt`, `responseHours`(6)을 준다.
 - `POST /internal/promotion-offers/{offerId}/deliveries`: `{eventId, status, attemptId, attemptedAt, providerAcceptedAt, reason}`.
   - `ACCEPTED`은 공급자 성공 응답을 받은 실제 시각(`providerAcceptedAt`)이 필요하다. `attemptedAt`과 다른 값이어야 하고 미래(1분 초과)나 시도 이전이면 400이다. 같은 결과의 재전송은 멱등이고 다른 결과는 409다.
-  - `FAILED`→`DELIVERY_FAILED`, `UNKNOWN`→`UNKNOWN`, `DELIVERED`는 기록만 한다. `SKIPPED`+`OUTSIDE_SEND_WINDOW`이면 새 eventId로 다음 09:00에 다시 예약하거나, 시간이 없으면 `VOIDED`(`NO_SEND_INTERVAL`)로 둔다.
+  - `FAILED`→`DELIVERY_FAILED`(기한이 없으면 보고 시각 + 6시간, 마감 이전일 때만), `UNKNOWN`→`UNKNOWN`, `DELIVERED`는 기록만 한다. `SKIPPED`+`OUTSIDE_SEND_WINDOW`이면 새 eventId로 다음 09:00에 다시 예약하거나, 시간이 없으면 `VOIDED`(`NO_SEND_INTERVAL`)로 둔다.
   - eventId가 현재 값과 다르면 409다.
 
 ### Client → Application (참가자 세션 쿠키 + CSRF)

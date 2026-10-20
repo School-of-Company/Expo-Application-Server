@@ -34,7 +34,7 @@ data class PromotionOffer(
 ) {
     val active: Boolean get() = state in PromotionOfferRepository.ACTIVE_STATES
 
-    // A response is possible only after a real provider acceptance and before the derived deadline.
+    // A response is possible only before the derived deadline: provider acceptance, or a failure report when none came (#226).
     fun respondable(now: Instant): Boolean = (state == "SENT" || state == "DELIVERY_FAILED") && expiresAt != null && now.isBefore(expiresAt)
 }
 
@@ -268,7 +268,7 @@ class PromotionOfferRepository(
             "SELECT o.id FROM tb_promotion_offer o " +
                 "LEFT JOIN tb_program_session_application a ON a.id = o.application_id " +
                 "LEFT JOIN tb_preregister_reservation r ON r.expo_id = o.expo_id AND r.request_id = o.request_id " +
-                "WHERE o.state IN $ACTIVE AND ((o.state = 'SENT' AND o.expires_at <= ?) OR o.hard_deadline <= ? " +
+                "WHERE o.state IN $ACTIVE AND ((o.state IN ('SENT', 'DELIVERY_FAILED') AND o.expires_at <= ?) OR o.hard_deadline <= ? " +
                 "OR coalesce(a.status, r.state) IS DISTINCT FROM 'WAITING') ORDER BY o.created_at, o.id LIMIT 100",
             { rs, _ -> rs.getObject(1, UUID::class.java) },
             Timestamp.from(now),
@@ -358,15 +358,17 @@ class PromotionOfferRepository(
         attemptedAt: Instant?,
         status: String,
         reason: String?,
+        expiresAt: Instant? = null,
     ) {
         jdbc.update(
             "UPDATE tb_promotion_offer SET state = ?, attempt_id = coalesce(?, attempt_id), attempted_at = coalesce(?, attempted_at), " +
-                "delivery_status = ?, delivery_reason = ? WHERE id = ?",
+                "delivery_status = ?, delivery_reason = ?, expires_at = coalesce(expires_at, ?) WHERE id = ?",
             state,
             attemptId,
             attemptedAt?.let(Timestamp::from),
             status,
             reason,
+            expiresAt?.let(Timestamp::from),
             id,
         )
     }

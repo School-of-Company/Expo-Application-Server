@@ -4303,7 +4303,7 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
-    fun `decline and expiry end the wait for the next FIFO party while delivery failure keeps seats until the cutoff`() {
+    fun `decline expiry and expired delivery failure end the wait for the next FIFO party`() {
         waitingCapacity = 3
         listOf(3L, 4L).forEach(::addParticipant)
         managedIds = listOf(1, 2, 3, 4)
@@ -4343,17 +4343,18 @@ class ProgramSessionApplicationTests {
                 )
             },
         )
-        // Definitive failure and unknown delivery never become a decline or a no-response expiry.
+        // A definitive failure before provider acceptance gets report time + 6 hours, then expires like no response (#226).
+        val failedAt = testClock.current
         deliver(activeOffer(), "FAILED", reason = "PROVIDER_CONFIRMED_FAILURE")
-        testClock.current = cutoff.minusNanos(1000)
+        assertEquals(failedAt.plusSeconds(6 * 3600), (activeOffer()["expires_at"] as java.sql.Timestamp).toInstant())
+        testClock.current = failedAt.plusSeconds(6 * 3600).minusNanos(1000)
         scheduler.sweep()
         assertEquals("DELIVERY_FAILED", activeOffer()["state"])
         assertEquals("WAITING", status(waiting[2].applicationId))
-        respond(activeOffer()["id"], "acceptance", 409)
-        testClock.current = cutoff
+        testClock.current = failedAt.plusSeconds(6 * 3600)
         scheduler.sweep()
-        assertEquals("VOIDED:HARD_DEADLINE", offerRows().last().let { "${it["state"]}:${it["void_reason"]}" })
-        assertEquals("WAITING", status(waiting[2].applicationId))
+        assertEquals("EXPIRED:SYSTEM", offerRows().last().let { "${it["state"]}:${it["responder_type"]}" })
+        assertEquals("CANCELLED", status(waiting[2].applicationId))
         applied(4, false)
     }
 

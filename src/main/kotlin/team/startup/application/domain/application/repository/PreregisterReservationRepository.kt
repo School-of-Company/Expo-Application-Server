@@ -3,6 +3,7 @@ package team.startup.application.domain.application.repository
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
+import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
@@ -28,7 +29,16 @@ data class PreregisterReservation(
     val categories: Pair<Int, Int>? = null,
     // #199: 이미 저장된 일행의 다른 회차 추가. result에 참석자가 미리 담겨 User에 저장하지 않는다.
     val sessionAddition: Boolean = false,
+    // #222: 재시도 상한(횟수·경과 시간)을 세는 창의 시작. 운영자 재시도(retryReviewed)가 다시 연다.
+    val retryWindowStartedAt: java.time.Instant? = null,
+    val retryWindowAttempts: Int = 0,
 )
+
+// #223: 참석자가 정해진 예약(회차 추가)은 그 참석자와 겹칠 때만, 참석자를 아직 모르는 예약이나 참석자를 묻지 않는 호출은 번호로만 막는다.
+internal fun PreregisterReservation.blocks(participantIds: Collection<Long>?): Boolean {
+    val attendees = result?.participantIds
+    return participantIds == null || attendees == null || attendees.any { it in participantIds }
+}
 
 @Repository
 class PreregisterReservationRepository(
@@ -106,6 +116,8 @@ class PreregisterReservationRepository(
             rs.getObject("companion_representative_id", Long::class.javaObjectType),
             rs.getObject("teacher_applicants", Int::class.javaObjectType)?.let { it to rs.getInt("other_applicants") },
             rs.getBoolean("session_addition"),
+            rs.getTimestamp("retry_window_started_at")?.toInstant(),
+            rs.getInt("retry_window_attempts"),
         )
 
     /**
@@ -155,6 +167,61 @@ class PreregisterReservationRepository(
                 sessionId,
                 phone,
             ),
+        )
+
+    /**
+     * 같은 번호의 다른 회차 예약(기본 WAITING·RESERVED) 중 [window]와 시간이 겹치고 아직 승급이 가능한(시작 전, 마감 아님) 것이 있는지(#223).
+     * 시작·마감으로 승급이 끝난 대기는 다른 회차를 막지 않는다. 참석자가 정해진 예약(회차 추가)은 [participantIds]와 겹칠 때만 세고,
+     * 참석자를 아직 모르는 예약은 번호로만 본다. 동행자 추가 예약은 일행 전체가 아니므로 세지 않는다.
+     */
+    fun overlappingPending(
+        expoId: UUID,
+        sessionId: Long,
+        phone: String,
+        participantIds: Collection<Long>?,
+        window: PreregisterSessionDefinition,
+        now: java.time.Instant,
+        states: List<String> = listOf("WAITING", "RESERVED"),
+    ): Boolean =
+        jdbc
+            .query(
+                "SELECT r.* FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
+                    "ON st.expo_id = r.expo_id AND st.session_id = r.session_id WHERE r.expo_id = ? AND r.session_id <> ? " +
+                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                    "AND r.state IN (${states.joinToString { "'$it'" }}) AND r.companion_representative_id IS NULL " +
+                    "AND (st.definition::jsonb ->> 'closed')::boolean = FALSE " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
+                    "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
+                    "AND ? < (st.definition::jsonb ->> 'endedAt')::timestamptz",
+                { rs, _ -> reservation(rs) },
+                expoId,
+                sessionId,
+                phone,
+                java.sql.Timestamp.from(now),
+                java.sql.Timestamp.from(window.endedAt),
+                java.sql.Timestamp.from(window.startedAt),
+            ).any { it.blocks(participantIds) }
+
+    /** 번호로 연결된 다른 회차의 확정 신청 중 [window]와 시간이 겹치는 참가자 ID(#223). 수락 시 참석자를 모를 때 쓴다. */
+    fun overlappingConfirmedByPhone(
+        expoId: UUID,
+        sessionId: Long,
+        phone: String,
+        window: PreregisterSessionDefinition,
+    ): List<Long> =
+        jdbc.query(
+            "SELECT a.participant_id FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id JOIN tb_preregister_session_state st " +
+                "ON st.expo_id = a.expo_id AND st.session_id = a.session_id WHERE a.expo_id = ? AND a.session_id <> ? " +
+                "AND a.status = 'CONFIRMED' AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
+                "AND ? < (st.definition::jsonb ->> 'endedAt')::timestamptz",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            sessionId,
+            phone,
+            java.sql.Timestamp.from(window.endedAt),
+            java.sql.Timestamp.from(window.startedAt),
         )
 
     /** 대표자가 처음 낸 일행 신청의 원본 User 요청(가장 최근). 다른 회차 추가(#199)가 답변을 다시 쓴다. */
@@ -282,16 +349,76 @@ class PreregisterReservationRepository(
             phone,
         )
 
-    /** User로 처음 보내기 전에 계산한 취소 동행자 ID를 원본 요청에 고정한다. 재시도는 같은 본문을 보내야 User 멱등 검사를 통과한다. */
+    /**
+     * 같은 전화번호(숫자만)로 저장된 대표자에게 활성 신청이 하나도 없으면 그 대표자의 이전 동행자 전원(#237). 대표자가 없거나
+     * 사전등록·프로그램의 확정·대기 신청, 지금 보내는 [requestId] 밖의 처리 중·대기 예약이 남아 있으면 null이다. 같은 박람회 잠금 안에서 부른다.
+     */
+    fun replaceableCompanions(
+        expoId: UUID,
+        phone: String,
+        requestId: String,
+        now: java.time.Instant,
+    ): List<Long>? {
+        val representatives =
+            jdbc.query(
+                "SELECT DISTINCT (r.result::jsonb ->> 'participantId')::bigint FROM tb_preregister_reservation r WHERE r.expo_id = ? " +
+                    "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL AND NOT r.session_addition " +
+                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+                { rs, _ -> rs.getLong(1) },
+                expoId,
+                phone,
+            )
+        if (representatives.isEmpty()) return null
+        val ids = mapper.writeValueAsString(representatives)
+        val active =
+            requireNotNull(
+                jdbc.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM tb_preregister_application a WHERE a.expo_id = ? AND a.status <> 'CANCELLED' " +
+                        "AND (a.representative_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint) " +
+                        "OR a.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint))) " +
+                        "OR EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.status <> 'CANCELLED' " +
+                        "AND p.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)) " +
+                        "OR EXISTS(SELECT 1 FROM tb_standard_program_application s " +
+                        "WHERE s.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)) " +
+                        "OR EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = ? AND r.request_id <> ? " +
+                        "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                        "AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND EXISTS(SELECT 1 FROM tb_preregister_session_state st " +
+                        "WHERE st.expo_id = r.expo_id AND st.session_id = r.session_id " +
+                        "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ?))))",
+                    Boolean::class.java,
+                    expoId,
+                    ids,
+                    ids,
+                    ids,
+                    ids,
+                    expoId,
+                    requestId,
+                    phone,
+                    java.sql.Timestamp.from(now),
+                ),
+            )
+        if (active) return null
+        return jdbc.query(
+            "SELECT DISTINCT participant_id FROM tb_preregister_application WHERE expo_id = ? AND participant_id <> representative_id " +
+                "AND representative_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint) ORDER BY participant_id",
+            { rs, _ -> rs.getLong(1) },
+            expoId,
+            ids,
+        )
+    }
+
+    /** User로 처음 보내기 전에 계산한 취소 동행자 ID와 대표자 교체 여부(#237)를 원본 요청에 고정한다. 재시도는 같은 본문을 보내야 User 멱등 검사를 통과한다. */
     fun saveReleased(
         reservation: PreregisterReservation,
         ids: List<Long>,
+        replaceRepresentative: Boolean? = null,
     ) {
         jdbc.update(
             "UPDATE tb_preregister_reservation SET user_request = " +
-                "(user_request::jsonb || jsonb_build_object('releasedParticipantIds', ?::jsonb))::text " +
-                "WHERE expo_id = ? AND request_id = ?",
-            mapper.writeValueAsString(ids),
+                "(user_request::jsonb || jsonb_strip_nulls(jsonb_build_object('releasedParticipantIds', ?::jsonb, " +
+                "'replaceRepresentative', ?::boolean)))::text WHERE expo_id = ? AND request_id = ?",
+            if (ids.isEmpty()) null else mapper.writeValueAsString(ids),
+            replaceRepresentative,
             reservation.expoId,
             reservation.requestId,
         )
@@ -539,7 +666,8 @@ class PreregisterReservationRepository(
 
     fun retryReviewed(reservation: PreregisterReservation) {
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET error_status = NULL, result = NULL, next_attempt_at = CURRENT_TIMESTAMP " +
+            "UPDATE tb_preregister_reservation SET error_status = NULL, result = NULL, next_attempt_at = CURRENT_TIMESTAMP, " +
+                "retry_window_started_at = clock_timestamp(), retry_window_attempts = attempts " +
                 "WHERE expo_id = ? AND request_id = ? AND state = 'RESERVED'",
             reservation.expoId,
             reservation.requestId,

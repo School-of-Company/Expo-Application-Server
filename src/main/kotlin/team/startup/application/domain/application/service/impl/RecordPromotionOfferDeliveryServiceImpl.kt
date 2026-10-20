@@ -12,9 +12,10 @@ import team.startup.application.domain.application.service.RecordPromotionOfferD
 import java.time.Clock
 import java.time.Duration
 
-// Notification reports what the provider actually did. Only ACCEPTED with a real provider acceptance time starts the
-// response deadline; FAILED and UNKNOWN keep the seats and are never read as a user decline or no-response. Reports
-// are idempotent and a stale event ID cannot change a newer attempt.
+// Notification reports what the provider actually did. ACCEPTED with a real provider acceptance time starts the
+// response deadline; FAILED keeps that deadline, or starts report time + 6 hours when the provider never accepted, and
+// then expires like no response (#226). UNKNOWN keeps the seats until the hard cutoff. Reports are idempotent and a
+// stale event ID cannot change a newer attempt.
 @Service
 class RecordPromotionOfferDeliveryServiceImpl(
     private val offers: PromotionOfferRepository,
@@ -70,7 +71,16 @@ class RecordPromotionOfferDeliveryServiceImpl(
 
             PromotionOfferDeliveryStatus.FAILED -> {
                 if (offer.state in SENDABLE + listOf("UNKNOWN", "SENT")) {
-                    offers.delivery(offer.id, "DELIVERY_FAILED", request.attemptId, request.attemptedAt, "FAILED", request.reason)
+                    offers.delivery(
+                        offer.id,
+                        "DELIVERY_FAILED",
+                        request.attemptId,
+                        request.attemptedAt,
+                        "FAILED",
+                        request.reason,
+                        // At or after the hard cutoff no response interval is left; the sweeper only releases the hold.
+                        policy.expiresAt(now, offer.hardDeadline).takeIf { now.isBefore(offer.hardDeadline) },
+                    )
                 }
             }
 

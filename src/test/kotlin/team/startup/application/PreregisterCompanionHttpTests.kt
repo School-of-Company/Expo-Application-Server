@@ -64,9 +64,11 @@ class PreregisterCompanionHttpTests {
         jdbc.execute(
             "TRUNCATE tb_promotion_offer, tb_preregister_reservation, tb_preregister_count_outbox, tb_session_attendance_outbox, " +
                 "tb_preregister_transition, tb_preregister_request, tb_preregister_application, tb_preregister_session_change, " +
-                "tb_preregister_session_state, tb_preregister_deleted_expo RESTART IDENTITY CASCADE",
+                "tb_preregister_session_state, tb_preregister_deleted_expo, tb_standard_program_application RESTART IDENTITY CASCADE",
         )
         parties.clear()
+        details.clear()
+        reportSchool = false
         smsTries.clear()
         userRequests.clear()
         nextId.set(42)
@@ -395,9 +397,12 @@ class PreregisterCompanionHttpTests {
             capacity.set(5)
             assertEquals(201, register(PHONE, null, companions = previous).status, "$previous")
             jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED'")
+            // #237: 대표자에게 프로그램 신청이 남아 있으면 대표자를 바꾸지 않는 재등록이다.
+            jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (42, 1)")
             if (orphan) jdbc.update("DELETE FROM tb_preregister_application WHERE participant_id = ?", 42L + previous.size)
             val response = register(PHONE, null, companions = next)
             assertEquals(status, response.status, "$previous -> $next: ${response.contentAsString}")
+            assertFalse(userRequests.last().has("replaceRepresentative"))
             assertEquals(
                 confirmed,
                 jdbc.queryForList(
@@ -416,6 +421,37 @@ class PreregisterCompanionHttpTests {
                 )
             }
         }
+    }
+
+    @Test
+    fun `a new party after the whole party is cancelled replaces the representative with the submitted one`() {
+        // #237 dev 재현: 조화정(초등학생)+동행자 3명 신청, 전원 취소 뒤 같은 번호로 홍(예비교사)이 신청하면 조화정이 다시 확정됐다.
+        target.set(1 to 4)
+        capacity.set(5)
+        val first = register(PHONE, null, companions = listOf("b", "c", "d"), name = "조화정", occupation = "ELEMENTARY_STUDENT")
+        assertEquals(201, first.status, first.contentAsString)
+        assertFalse(userRequests.first().has("replaceRepresentative"))
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED'")
+
+        val response = register(PHONE, null, name = "홍", occupation = "PRE_SERVICE_TEACHER", school = "AI교육원")
+        assertEquals(201, response.status, response.contentAsString)
+        val sent = userRequests.last()
+        assertTrue(sent["replaceRepresentative"].asBoolean(), sent.toString())
+        assertEquals(mapper.readTree("[43,44,45]"), sent["releasedParticipantIds"])
+        assertEquals(listOf(42L to "홍"), parties.getValue(PHONE))
+        // 확정 대상·좌석 구분·답변 스냅샷이 모두 교체된 대표자 기준이다.
+        assertEquals(
+            listOf("42:42:TEACHER:홍:PRE_SERVICE_TEACHER"),
+            jdbc.query(
+                "SELECT a.representative_id, a.participant_id, a.seat_category, r.user_request::jsonb ->> 'name', " +
+                    "r.user_request::jsonb ->> 'occupation' FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                    "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id WHERE a.status = 'CONFIRMED'",
+            ) { rs, _ -> (1..5).joinToString(":") { rs.getString(it) } },
+        )
+        // 교체한 신청에 동행자를 더해도 대표자를 다시 바꾸지 않는다.
+        val confirmed = items().single { it["type"].asString() == "PREREGISTER" && it["status"].asString() == "CONFIRMED" }
+        assertEquals(201, add(confirmed["applicationId"].asString(), companion("e")).status)
+        assertFalse(userRequests.last().has("replaceRepresentative"))
     }
 
     @Test
@@ -439,6 +475,30 @@ class PreregisterCompanionHttpTests {
         assertEquals(mapper.readTree(created.contentAsString), mapper.readTree(replay.contentAsString))
         assertEquals(sent, userRequests.size)
         assertEquals(409, add(id, companion("other"), key = "added").status)
+    }
+
+    @Test
+    fun `a same-name teacher from another school is a new companion once User reports the school`() {
+        assertEquals(201, register(PHONE, null, teachers = listOf("teacher")).status)
+        val id = representativeItem()["applicationId"].asString()
+        val otherSchool = companion("teacher", "TEACHER") + mapOf("school" to "other")
+        // 학교를 싣지 않는 옛 User 응답이면 이름·구분만 본다.
+        assertEquals(409, add(id, otherSchool).status)
+        reportSchool = true
+        assertEquals(409, add(id, companion("teacher", "TEACHER")).status)
+        // #225: User처럼 이름·구분·학교가 모두 같아야 같은 사람이다.
+        val response = add(id, otherSchool)
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(mapper.readTree("[44]"), mapper.readTree(response.contentAsString)["participantIds"])
+    }
+
+    @Test
+    fun `a companion named like the representative is not a known companion`() {
+        assertEquals(201, register(PHONE, null).status)
+        // #225: User는 대표자를 빼고 동행자끼리만 같은 사람을 가린다.
+        val response = add(representativeItem()["applicationId"].asString(), companion("person"))
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(mapper.readTree("[43]"), mapper.readTree(response.contentAsString)["participantIds"])
     }
 
     @Test
@@ -471,19 +531,23 @@ class PreregisterCompanionHttpTests {
         companion: String?,
         session: String = "owner",
         companions: List<String> = emptyList(),
+        teachers: List<String> = emptyList(),
+        name: String = "person",
+        occupation: String = "GENERAL",
+        school: String? = null,
     ): MockHttpServletResponse {
         sessions[session] = phone
-        val companions = (listOfNotNull(companion) + companions).map { companion(it) }
+        val companions = (listOfNotNull(companion) + companions).map { companion(it) } + teachers.map { companion(it, "TEACHER") }
         val body =
             mapper.writeValueAsString(
                 mapOf(
-                    "name" to "person",
+                    "name" to name,
                     "phoneNumber" to phone,
                     "personalInformationStatus" to true,
                     "informationJson" to
                         mapper.writeValueAsString(
                             // Target sessions (#173) need the representative occupation.
-                            mapOf("companions" to companions, "occupation" to "GENERAL"),
+                            mapOf("companions" to companions, "occupation" to occupation) + listOfNotNull(school?.let { "school" to it }),
                         ),
                     "sessionId" to 1,
                 ),
@@ -563,6 +627,12 @@ class PreregisterCompanionHttpTests {
 
         // 번호별 User 일행: (참가자 ID, 이름). 첫 항목이 대표자다.
         private val parties = ConcurrentHashMap<String, MutableList<Pair<Long, String>>>()
+
+        // 동행자 ID별 (구분, 학교). 없으면 GENERAL이고 학교가 없다.
+        private val details = ConcurrentHashMap<Long, Pair<String, String?>>()
+
+        // #225 User managed 응답에 school을 싣는지. 옛 User는 싣지 않는다.
+        @Volatile private var reportSchool = false
         private val smsTries = ConcurrentHashMap<String, Int>()
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val json =
@@ -575,16 +645,23 @@ class PreregisterCompanionHttpTests {
                 """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"""" +
                 (target.get()?.let { (t, n) -> ""","teacherCapacity":$t,"nonTeacherCapacity":$n""" } ?: "") + "}"
 
+        private fun detail(node: JsonNode) = node["occupation"].asString() to node.path("school").asString().ifEmpty { null }
+
         // User의 재등록 규칙: 같은 번호면 새 동행자만 만들어 participantIds로, 일행 전체를 groupParticipantIds로 준다.
         @Synchronized
         private fun saveParticipants(request: JsonNode): Pair<Int, String> {
             userRequests.add(request)
             val phone = request["phoneNumber"].asString()
             val companions: JsonNode = json.readTree(request["informationJson"].asString()).path("companions")
-            val names = (0 until companions.size()).map { companions[it]["name"].asString() }
+            val people = companions.toList()
             val party = parties[phone]
             if (party == null) {
-                val created = (listOf("person") + names).map { nextId.getAndIncrement() to it }
+                val created =
+                    (listOf(request["name"].asString()) + people.map { it["name"].asString() }).map {
+                        nextId.getAndIncrement() to
+                            it
+                    }
+                created.drop(1).zip(people).forEach { (person, node) -> details[person.first] = detail(node) }
                 parties[phone] = created.toMutableList()
                 smsTries[phone] = 1
                 val ids = created.joinToString(",") { it.first.toString() }
@@ -592,8 +669,34 @@ class PreregisterCompanionHttpTests {
                     """{"participantId":${created.first().first},"phoneNumber":"$phone","participantIds":[$ids],"groupParticipantIds":[$ids]}"""
             }
             if (userReject.get() != 0) return userReject.get() to "{}"
+            if (request.path("replaceRepresentative").asBoolean(false)) {
+                // #237 User 계약: 대표자를 이번 요청 값으로 바꾸고 기존 동행자를 모두 빼며, 같은 사람의 동행자는 되살린다.
+                val previous = party.drop(1)
+                val created = mutableListOf<Long>()
+                val requested =
+                    people.map { node ->
+                        previous.firstOrNull { it.second == node["name"].asString() && details[it.first] == detail(node) }
+                            ?: (nextId.getAndIncrement() to node["name"].asString()).also {
+                                details[it.first] = detail(node)
+                                created.add(it.first)
+                            }
+                    }
+                val representative = party.first().first to request["name"].asString()
+                party.clear()
+                party.add(representative)
+                party.addAll(requested)
+                smsTries[phone] = 1
+                val group = party.joinToString(",") { it.first.toString() }
+                return 201 to
+                    """{"participantId":${representative.first},"phoneNumber":"$phone","participantIds":[$group],""" +
+                    """"groupParticipantIds":[$group],"createdIds":[${created.joinToString(",")}]}"""
+            }
             if (smsTries.getValue(phone) >= 2) return 409 to "{}"
-            val added = names.filter { name -> party.none { it.second == name } }.map { nextId.getAndIncrement() to it }
+            // User처럼 대표자를 빼고 동행자끼리 이름·구분·학교로 같은 사람을 가린다.
+            val added =
+                people
+                    .filter { node -> party.drop(1).none { it.second == node["name"].asString() && details[it.first] == detail(node) } }
+                    .map { node -> (nextId.getAndIncrement() to node["name"].asString()).also { details[it.first] = detail(node) } }
             party.addAll(added)
             smsTries.merge(phone, 1, Int::plus)
             val texted = (if (added.isEmpty()) party else added).joinToString(",") { it.first.toString() }
@@ -620,7 +723,11 @@ class PreregisterCompanionHttpTests {
                                 val party = parties[json.readTree(requestBody)["phoneNumber"].asString()].orEmpty()
                                 val people =
                                     party.mapIndexed { index, (id, name) ->
-                                        """{"participantId":$id,"name":"$name","occupation":"GENERAL","representative":${index == 0},"applicationType":"PRE"}"""
+                                        val (occupation, school) = details[id] ?: ("GENERAL" to null)
+                                        val quoted = school?.let { "\"$it\"" }
+                                        val schoolField = if (reportSchool) ""","school":$quoted""" else ""
+                                        """{"participantId":$id,"name":"$name","occupation":"$occupation",""" +
+                                            """"representative":${index == 0},"applicationType":"PRE"$schoolField}"""
                                     }
                                 200 to """{"registered":${party.isNotEmpty()},"participants":[${people.joinToString(",")}]}"""
                             }
@@ -654,7 +761,8 @@ class PreregisterCompanionHttpTests {
                                             ""
                                         } else {
                                             """,{"id":2,"title":"occupation","formType":"SELECT","jsonData":{},"otherJson":null,""" +
-                                                """"dynamicFormType":"OCCUPATION"}"""
+                                                """"dynamicFormType":"OCCUPATION"},{"id":3,"title":"school","formType":"SENTENCE",""" +
+                                                """"jsonData":{},"otherJson":null,"dynamicFormType":"SCHOOL"}"""
                                         }
                                     ) + "]" + (occupationOpenAt.get()?.let { ""","occupationOpenAt":"$it"""" } ?: "") + "}"
                             }

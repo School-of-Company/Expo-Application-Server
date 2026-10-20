@@ -79,6 +79,7 @@ class PreregisterRegistrationHttpTests {
         userRequests.clear()
         attendanceRequests.clear()
         guardRequests.clear()
+        guardCommitSessions.clear()
         counts.clear()
         stored.clear()
         userStatus.set(201)
@@ -247,6 +248,17 @@ class PreregisterRegistrationHttpTests {
         if (key != null) request.header("Idempotency-Key", key)
         if (cookie != null) request.cookie(Cookie("PARTICIPANT_SESSION", cookie))
         return mvc.perform(request).andReturn().response
+    }
+
+    // #238: 409 본문은 사유 code와 화면 문구를 싣는다.
+    private fun assertConflict(
+        code: String,
+        response: org.springframework.mock.web.MockHttpServletResponse,
+    ) {
+        assertEquals(409, response.status)
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(code, body["code"].asString())
+        assertTrue(body["message"].asString().isNotBlank())
     }
 
     private fun capacity(): JsonNode {
@@ -660,7 +672,7 @@ class PreregisterRegistrationHttpTests {
     fun `phone index blocks formatted duplicate representatives before User and preserves ambiguous seats`() {
         userStatus.set(0)
         assertEquals(503, submit(phone = "010-1234-5678"))
-        assertEquals(409, submit("other", phone = "01012345678"))
+        assertConflict("PHONE_IN_USE", submitResponse("other", phone = "01012345678"))
         assertEquals(1, userRequests.size)
         ledger.transactions.execute {
             jdbc.execute("SET LOCAL enable_seqscan = off")
@@ -799,7 +811,7 @@ class PreregisterRegistrationHttpTests {
     @Test
     fun `whole group is rejected with no User call and no reservation`() {
         capacity.set(2)
-        assertEquals(409, submit(people = 3))
+        assertConflict("SEATS_UNAVAILABLE", submitResponse(people = 3))
         assertTrue(userRequests.isEmpty())
         assertEquals(0, count("tb_preregister_reservation"))
         assertEquals(0, count("tb_preregister_application"))
@@ -835,7 +847,7 @@ class PreregisterRegistrationHttpTests {
         val requests = userRequests.size
         assertEquals(201, submit(people = 2))
         assertEquals(requests, userRequests.size)
-        assertEquals(409, submit(people = 1))
+        assertConflict("IDEMPOTENCY_KEY_REUSED", submitResponse(people = 1))
     }
 
     @Test
@@ -859,9 +871,9 @@ class PreregisterRegistrationHttpTests {
     fun `explicit User rollback response releases seats but invalid successful response retains seats`() {
         capacity.set(1)
         userStatus.set(409)
-        assertEquals(409, submit())
+        assertConflict("PARTY_LIMIT_EXCEEDED", submitResponse())
         assertEquals(1, capacity().get("remaining").intValue())
-        assertEquals(409, submit())
+        assertConflict("PARTY_LIMIT_EXCEEDED", submitResponse())
         assertEquals(1, userRequests.size)
         userStatus.set(201)
         responseIds.set(2)
@@ -999,6 +1011,8 @@ class PreregisterRegistrationHttpTests {
             ),
             guardRequests.toList(),
         )
+        // #221: both commits name the cancelled session.
+        assertEquals(listOf(1L, 1L), guardCommitSessions.toList())
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
         assertEquals(200, cancel("test-token", 42))
         assertEquals(201, submit("again", people = 2, session = 2))
@@ -1104,6 +1118,7 @@ class PreregisterRegistrationHttpTests {
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val attendanceRequests = CopyOnWriteArrayList<String>()
         private val guardRequests = CopyOnWriteArrayList<String>()
+        private val guardCommitSessions = CopyOnWriteArrayList<Long>()
         private val counts = CopyOnWriteArrayList<Long>()
         private val stored = java.util.concurrent.ConcurrentHashMap<String, String>()
         private val userGate =
@@ -1138,6 +1153,11 @@ class PreregisterRegistrationHttpTests {
 
                             path.contains("cancellation-guard/") -> {
                                 guardRequests.add(exchange.requestMethod + ":" + path.split("/")[5] + ":" + path.split("/")[6])
+                                if (exchange.requestMethod == "POST") {
+                                    guardCommitSessions.add(
+                                        json.readTree(exchange.requestBody.bufferedReader().readText()).path("sessionId").asLong(),
+                                    )
+                                }
                                 204 to ""
                             }
 

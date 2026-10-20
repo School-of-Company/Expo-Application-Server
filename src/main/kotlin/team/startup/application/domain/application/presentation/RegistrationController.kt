@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.media.Schema
 import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
@@ -40,6 +41,33 @@ data class RegistrationRequest(
     val sessionId: Long? = null,
 )
 
+// #238: 서비스의 409 사유 문구 -> (code, 화면 문구). 다른 사람의 개인정보는 싣지 않는다.
+// ponytail: 사유 문구를 키로 쓴다. 문구가 바뀌면 CONFLICT로 떨어지므로 PreregisterRegistrationHttpTests가 code를 단언한다.
+private val conflictCodes =
+    run {
+        val pending = "REQUEST_PENDING" to "이전 신청을 확인하는 중입니다. 나의 신청 현황을 확인하거나 행사 담당자에게 문의해 주세요."
+        // User는 같은 번호 일행이 대표자 포함 누적 5명을 넘으면 409로 저장을 거절한다.
+        val partyLimit = "PARTY_LIMIT_EXCEEDED" to "이 번호로 등록된 일행과 합쳐 대표자를 포함해 최대 5명까지 신청할 수 있습니다."
+        val session = "SESSION_UNAVAILABLE" to "회차 정보가 바뀌었습니다. 새로고침 후 다시 신청해 주세요."
+        mapOf(
+            "대표자의 활성 신청 또는 복구 중인 신청이 있습니다." to
+                ("PHONE_IN_USE" to "이 번호로 이미 신청한 내역이 있습니다. 나의 신청 현황에서 확인해 주세요."),
+            "일행 전원을 수용할 수 없습니다." to ("SEATS_UNAVAILABLE" to "남은 자리가 부족해 일행 전원을 신청할 수 없습니다."),
+            "마감된 회차입니다." to ("SESSION_CLOSED" to "신청이 마감된 회차입니다."),
+            "같은 신청 키의 내용이 다릅니다." to
+                ("IDEMPOTENCY_KEY_REUSED" to "같은 신청 키로 다른 내용을 보낼 수 없습니다. 처음부터 다시 신청해 주세요."),
+            "User 계약 확인과 운영자 복구가 필요합니다. 좌석을 유지합니다." to pending,
+            "이미 활성 신청이 있는 참가자입니다. 좌석을 유지합니다." to pending,
+            "User 참가자 저장이 거절되었습니다." to partyLimit,
+            "참가자 저장이 거절되었습니다." to partyLimit,
+            "삭제된 회차입니다." to session,
+            "회차 변경 확인이 필요합니다." to session,
+            "승인되지 않은 회차 정의 변경입니다." to session,
+            "박람회 삭제 또는 회차 변경 중입니다." to session,
+            "삭제된 박람회입니다." to ("EXPO_DELETED" to "삭제된 박람회입니다."),
+        )
+    }
+
 @RestController
 class RegistrationController(
     private val traineePreService: RegisterTraineePreService,
@@ -62,6 +90,20 @@ class RegistrationController(
     @ExceptionHandler(WaitlistWithdrawnException::class)
     fun withdrawn(): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "WAITLIST_WITHDRAWN"))
+
+    // #238: 409 사유별 code와 화면 문구를 싣는다. 409가 아니면 ResponseStatusExceptionResolver와 같이 sendError로 기본 오류 응답에 맡긴다.
+    @ExceptionHandler(ResponseStatusException::class)
+    fun conflict(
+        ex: ResponseStatusException,
+        response: HttpServletResponse,
+    ): ResponseEntity<Map<String, Any>>? {
+        if (ex.statusCode.value() != 409) {
+            response.sendError(ex.statusCode.value(), ex.reason)
+            return null
+        }
+        val (code, message) = conflictCodes[ex.reason] ?: ("CONFLICT" to ex.reason.orEmpty())
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to code, "message" to message))
+    }
 
     @Operation(
         summary = "연수자 사전 등록",
@@ -94,7 +136,14 @@ class RegistrationController(
             ApiResponse(responseCode = "400", description = "입력 검증 또는 등록·폼 규칙 위반"),
             ApiResponse(responseCode = "401", description = "등록 비활성 시 인증 필요 또는 참가자 세션 인증 실패"),
             ApiResponse(responseCode = "404", description = "박람회, 폼 또는 회차 없음"),
-            ApiResponse(responseCode = "409", description = "중복 등록, 정원 또는 공급자 상태 충돌. 취소된 대기의 같은 키 재시도는 code WAITLIST_WITHDRAWN"),
+            ApiResponse(
+                responseCode = "409",
+                description =
+                    "{status:409, code, message}. code: PHONE_IN_USE(같은 번호의 활성·처리 중 신청), SEATS_UNAVAILABLE(좌석·대기 부족), " +
+                        "SESSION_CLOSED(마감), REQUEST_PENDING(이전 신청 확인 중), IDEMPOTENCY_KEY_REUSED(같은 키 다른 내용), " +
+                        "PARTY_LIMIT_EXCEEDED(번호의 누적 일행 5명 초과), SESSION_UNAVAILABLE(회차 삭제·변경 중), EXPO_DELETED, " +
+                        "WAITLIST_WITHDRAWN(취소된 대기의 같은 키 재시도, message 없음), 그 밖은 CONFLICT",
+            ),
             ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
             ApiResponse(responseCode = "503", description = "등록 비활성 또는 공급자 연동 불가"),
         ],

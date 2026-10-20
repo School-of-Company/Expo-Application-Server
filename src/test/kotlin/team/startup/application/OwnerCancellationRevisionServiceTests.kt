@@ -107,7 +107,10 @@ class OwnerCancellationRevisionServiceTests {
             requireNotNull(
                 jdbc.queryForObject("SELECT id * 2 + 1 FROM tb_session_attendance_outbox WHERE participant_id = 2", Long::class.java),
             )
-        assertEquals(revision, MAPPER.readTree(requests.last { it.path.endsWith("/commit") }.body).path("revision").asLong())
+        val commit = MAPPER.readTree(requests.last { it.path.endsWith("/commit") }.body)
+        assertEquals(revision, commit.path("revision").asLong())
+        // #221: a session cancellation must name its session so Attendance keeps the participant's other sessions admissible.
+        assertEquals(1L, commit.path("sessionId").asLong())
         assertEquals(204, cancel("PREREGISTER", "2"))
         assertEquals(204, cancel("PREREGISTER", "1"))
         assertEquals(0L, count("tb_owner_cancellation_delivery"))
