@@ -24,11 +24,11 @@ class SessionAttendanceDispatcher(
         repository: SessionAttendanceOutboxRepository,
         message: SessionAttendanceMessage,
     ): Boolean {
-        val delivery = if (repository.lockExpoForDelivery(message.expoId)) message.copy(sessionId = null) else message
+        val delivery = if (repository.lockExpoForDelivery(message.expoId)) message.purge() else message
         try {
             gateway.send(delivery)
             if (!delivery.delete && repository.lockExpoForDelivery(message.expoId)) {
-                gateway.send(message.copy(sessionId = null))
+                gateway.send(message.purge())
             }
         } catch (ex: InterruptedException) {
             Thread.currentThread().interrupt()

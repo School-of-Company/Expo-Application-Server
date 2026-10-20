@@ -30,4 +30,13 @@ class SessionAttendanceOutbox(
         require(participantId > 0 && sessionId > 0)
         return repository.append(expoId, participantId, sessionId, cancelled = true)
     }
+
+    // #249: on-site registration of a participant whose preregistration was cancelled lets them enter again.
+    @Transactional
+    fun fieldRegistered(
+        expoId: UUID,
+        participantIds: List<Long>,
+    ) {
+        participantIds.forEach { repository.appendFieldRegistered(expoId, it) }
+    }
 }

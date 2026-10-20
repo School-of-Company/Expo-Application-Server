@@ -21,6 +21,7 @@ import team.startup.application.domain.application.service.impl.RegisterTraineeF
 import team.startup.application.domain.application.service.impl.RegisterTraineePreServiceImpl
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.domain.application.service.impl.RegistrationWorkflow
+import team.startup.application.domain.application.service.impl.SessionAttendanceOutbox
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
@@ -112,7 +113,8 @@ class RegistrationIntegrationContractTests {
                     ),
                     org.mockito.ArgumentMatchers.anyInt(),
                 )
-            val workflow = RegistrationWorkflow(gateway, mapper, preregistration)
+            val workflow =
+                RegistrationWorkflow(gateway, mapper, preregistration, org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java))
             val mvc =
                 MockMvcBuilders
                     .standaloneSetup(
@@ -390,7 +392,8 @@ class RegistrationIntegrationContractTests {
                     ),
                     org.mockito.ArgumentMatchers.anyInt(),
                 )
-            val workflow = RegistrationWorkflow(gateway, mapper, preregistration)
+            val workflow =
+                RegistrationWorkflow(gateway, mapper, preregistration, org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java))
             val controller =
                 RegistrationController(
                     RegisterTraineePreServiceImpl(workflow),
