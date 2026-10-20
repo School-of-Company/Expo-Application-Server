@@ -117,8 +117,9 @@ class PromotionOfferScheduler(
         }
     }
 
-    // No-response expiry ends the wait and offers the next party. Past the hard cutoff, or once the target left the
-    // queue, only the hold is released: delivery failure or unknown never becomes a decline.
+    // No-response expiry, including a definitive delivery failure past its deadline (#226), ends the wait and offers the
+    // next party. Past the hard cutoff, or once the target left the queue, only the hold is released: unknown delivery
+    // never becomes a decline.
     fun sweep(id: UUID) {
         val offer = offers.find(id) ?: return
         var next = false
@@ -158,7 +159,7 @@ class PromotionOfferScheduler(
                 offers.close(offer.id, "VOIDED", null, voidReason = "TARGET_CLOSED").let { false }
             }
 
-            offer.state == "SENT" && expiresAt != null && !now.isBefore(expiresAt) -> {
+            offer.state in EXPIRABLE && expiresAt != null && !now.isBefore(expiresAt) -> {
                 expire()
                 true
             }
@@ -175,5 +176,6 @@ class PromotionOfferScheduler(
 
     private companion object {
         const val TOPIC = "application.promotion-offer.requested"
+        val EXPIRABLE = listOf("SENT", "DELIVERY_FAILED")
     }
 }
