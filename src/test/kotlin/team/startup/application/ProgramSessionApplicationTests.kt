@@ -4358,6 +4358,28 @@ class ProgramSessionApplicationTests {
         applied(4, false)
     }
 
+    // #236: Notification retries a check it cannot parse forever, so the response must fit its 100-unit label contract.
+    @Test
+    fun `program offer text is normalized and a title Notification cannot take fails delivery instead of retrying`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        testClock.current = offerSwitch
+        cancel(confirmed.applicationId)
+        val offer = activeOffer()
+        testClock.current = nineKst.plusSeconds(1800)
+        places = mapOf("1" to "Room\r\nA")
+        check(offer).andExpect(jsonPath("$.eligible").value(true)).andExpect(jsonPath("$.location").value("Room A"))
+        title = "T".repeat(100)
+        check(offer).andExpect(jsonPath("$.eligible").value(true)).andExpect(jsonPath("$.title").value(title))
+        title = "T".repeat(101)
+        check(offer).andExpect(jsonPath("$.eligible").value(false)).andExpect(jsonPath("$.reason").value("NOT_CURRENT_OFFER"))
+        val failed = activeOffer()
+        assertEquals("DELIVERY_FAILED", failed["state"])
+        assertEquals("INVALID_MESSAGE_TEXT", failed["delivery_reason"])
+        assertEquals("WAITING", status(waiting.applicationId))
+    }
+
     @Test
     fun `check and delivery reports respect the send window stale events and the hard cutoff`() {
         waitingCapacity = 1

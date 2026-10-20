@@ -1,21 +1,28 @@
 package team.startup.application.domain.application.service.impl
 
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PromotionOfferCheck
+import team.startup.application.domain.application.presentation.dto.PromotionOfferDeliveryCommand
+import team.startup.application.domain.application.presentation.dto.PromotionOfferDeliveryRequest
+import team.startup.application.domain.application.presentation.dto.PromotionOfferDeliveryStatus
 import team.startup.application.domain.application.presentation.dto.PromotionOfferEvent
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.repository.PromotionOffer
 import team.startup.application.domain.application.repository.PromotionOfferRepository
 import team.startup.application.domain.application.service.CheckPromotionOfferService
+import team.startup.application.domain.application.service.RecordPromotionOfferDeliveryService
 import java.time.Clock
 import java.time.format.DateTimeFormatter
 
 // Notification asks right before the irreversible provider request. Remote lookups run without a transaction and the
-// local state is checked again afterwards, like the promotion notice check.
+// local state is checked again afterwards, like the promotion notice check. Notification retries a response it cannot
+// parse forever (#236), so text is normalized to its labels and a name or title with nothing sendable fails the
+// delivery instead, which keeps the seats until the #226 response deadline.
 @Service
 class CheckPromotionOfferServiceImpl(
     private val offers: PromotionOfferRepository,
@@ -23,8 +30,11 @@ class CheckPromotionOfferServiceImpl(
     private val sessions: PreregisterSessionRepository,
     private val gateway: ProgramPromotionGateway,
     private val policy: PromotionOfferPolicy,
+    private val record: RecordPromotionOfferDeliveryService,
     private val clock: Clock,
 ) : CheckPromotionOfferService {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     @Transactional(propagation = Propagation.NEVER)
     override fun execute(event: PromotionOfferEvent): PromotionOfferCheck {
         ineligible(event)?.let { return it }
@@ -54,8 +64,16 @@ class CheckPromotionOfferServiceImpl(
                     session.place,
                 )
             }
-        ineligible(event)?.let { return it }
-        return check
+        if (check == null) {
+            log.warn("Promotion offer has no sendable name or title: {}", offer.id)
+            record.execute(
+                PromotionOfferDeliveryCommand(
+                    offer.id,
+                    PromotionOfferDeliveryRequest(offer.eventId, PromotionOfferDeliveryStatus.FAILED, reason = "INVALID_MESSAGE_TEXT"),
+                ),
+            )
+        }
+        return ineligible(event) ?: check ?: PromotionOfferCheck(false, NOT_CURRENT)
     }
 
     // SCHEDULED with the same event ID means Kafka delivered it before the publisher recorded the ACK.
@@ -72,6 +90,7 @@ class CheckPromotionOfferServiceImpl(
         return null
     }
 
+    // A place Notification cannot show is left out of the message rather than cut.
     private fun eligible(
         offer: PromotionOffer,
         phone: String?,
@@ -80,26 +99,45 @@ class CheckPromotionOfferServiceImpl(
         startedAt: String,
         endedAt: String,
         location: String?,
-    ) = PromotionOfferCheck(
-        eligible = true,
-        eventId = offer.eventId,
-        offerId = offer.id,
-        expoId = offer.expoId,
-        target = offer.target,
-        representativePhoneNumber = phone,
-        recipientName = name,
-        title = title,
-        startedAt = startedAt,
-        endedAt = endedAt,
-        location = location,
-        seats = offer.seats,
-        responseUrl = policy.responseUrl(offer.expoId),
-        hardDeadline = offer.hardDeadline,
-        sendWindowEndsAt = minOf(policy.windowEnd(clock.instant()), offer.hardDeadline),
-        responseHours = PromotionOfferPolicy.RESPONSE.toHours().toInt(),
-    )
+    ): PromotionOfferCheck? {
+        val recipientName = label(name, 100) ?: return null
+        val programTitle = label(title, 100) ?: return null
+        return PromotionOfferCheck(
+            eligible = true,
+            eventId = offer.eventId,
+            offerId = offer.id,
+            expoId = offer.expoId,
+            target = offer.target,
+            representativePhoneNumber = phone,
+            recipientName = recipientName,
+            title = programTitle,
+            startedAt = startedAt,
+            endedAt = endedAt,
+            location = location?.let { label(it, 255) },
+            seats = offer.seats,
+            responseUrl = policy.responseUrl(offer.expoId),
+            hardDeadline = offer.hardDeadline,
+            sendWindowEndsAt = minOf(policy.windowEnd(clock.instant()), offer.hardDeadline),
+            responseHours = PromotionOfferPolicy.RESPONSE.toHours().toInt(),
+        )
+    }
 
     private companion object {
         const val NOT_CURRENT = "NOT_CURRENT_OFFER"
+
+        // Notification labels are trimmed, at most max UTF-16 units and free of \p{C}, \p{Zl} and \p{Zp}. Line breaks
+        // become spaces and invisible format characters are dropped; nothing else is rewritten or cut.
+        val BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
+        val HIDDEN = Regex("""\p{C}""")
+
+        fun label(
+            value: String,
+            max: Int,
+        ): String? =
+            value
+                .replace(BREAKS, " ")
+                .replace(HIDDEN, "")
+                .trim()
+                .takeIf { it.isNotEmpty() && it.length <= max }
     }
 }
