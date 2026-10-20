@@ -330,6 +330,98 @@ class PreregisterWaitlistHttpTests {
         assertEquals(1, userRequests.size)
     }
 
+    private fun check(offer: Map<String, Any?>): JsonNode =
+        mapper.readTree(
+            mvc
+                .perform(
+                    post("/internal/promotion-offers/check")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"version":1,"eventId":"${offer["event_id"]}","offerId":"${offer["id"]}","expoId":"$EXPO"}"""),
+                ).andReturn()
+                .response
+                .also { assertEquals(200, it.status) }
+                .contentAsString,
+        )
+
+    private fun stored(
+        place: String,
+        name: String,
+    ) {
+        jdbc.update(
+            "UPDATE tb_preregister_session_state SET definition = jsonb_set(definition::jsonb, '{place}', to_jsonb(?::text))::text",
+            place,
+        )
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET user_request = jsonb_set(user_request::jsonb, '{name}', to_jsonb(?::text))::text WHERE request_id = 'b'",
+            name,
+        )
+    }
+
+    // #236: Notification `promotionOfferCheckSchema` labels (trimmed, UTF-16 length, no \p{C}\p{Zl}\p{Zp}).
+    private fun notificationLabel(
+        value: JsonNode,
+        max: Int,
+    ) {
+        val text = value.stringValue().trim()
+        assert(text.isNotEmpty() && text.length <= max && Regex("^[^\\p{C}\\p{Zl}\\p{Zp}]+$").matches(text)) { text }
+    }
+
+    @Test
+    fun `offer check turns place and name breaks and invisible characters into the Notification label contract`() {
+        offerDay()
+        assertEquals(201, submit("a", 2, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        freeSession()
+        val offer = offer("b")
+        val cases =
+            listOf(
+                Triple("1층\n강당", "per\u200Bson\r\n", "1층 강당"),
+                Triple("\t본관\u2028\u2029 3층\u0007 \uDB40\uDC01강당\u200D ", "\u00A0person\u2060", "본관  3층  강당"),
+                Triple("\uD83D\uDE00".repeat(127) + "가", "person", "\uD83D\uDE00".repeat(127) + "가"),
+                Triple("\uD83D\uDE00".repeat(128), "person", null),
+                Triple("가".repeat(256), "person", null),
+                Triple("\u200B\n\u00A0", "person", null),
+            )
+        for ((place, name, location) in cases) {
+            stored(place, name)
+            val check = check(offer)
+            assertEquals(true, check.get("eligible").booleanValue(), place)
+            assertEquals("person", check.get("recipientName").stringValue())
+            assertEquals("Morning", check.get("title").stringValue())
+            assertEquals(location, check.get("location").takeUnless { it.isNull }?.stringValue(), place)
+            notificationLabel(check.get("recipientName"), 100)
+            notificationLabel(check.get("title"), 100)
+            if (location != null) notificationLabel(check.get("location"), 255)
+        }
+        assertEquals("SCHEDULED", offer("b")["state"])
+        assertEquals("WAITING", state("b"))
+    }
+
+    @Test
+    fun `an offer whose recipient name has nothing sendable fails delivery instead of retrying and keeps its seats`() {
+        offerDay()
+        assertEquals(201, submit("a", 2, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        freeSession()
+        val offer = offer("b")
+        stored("1층\n강당", "\u200B\u00A0\n")
+        val check = check(offer)
+        assertEquals(false, check.get("eligible").booleanValue())
+        assertEquals("NOT_CURRENT_OFFER", check.get("reason").stringValue())
+        val failed = offer("b")
+        assertEquals("DELIVERY_FAILED", failed["state"])
+        assertEquals("INVALID_MESSAGE_TEXT", failed["delivery_reason"])
+        assertEquals(now.get().plus(6, ChronoUnit.HOURS), (failed["expires_at"] as java.sql.Timestamp).toInstant())
+        assertEquals("NOT_CURRENT_OFFER", check(offer).get("reason").stringValue())
+        assertEquals("WAITING", state("b"))
+        assertEquals(2L, repository.occupied(EXPO, 1))
+        // The in-app response still works; restore the definition Expo approved before acceptance rechecks it.
+        stored("Place", "person")
+        assertEquals(200, respond(offer, "acceptance").status)
+        assertEquals("RESERVED", state("b"))
+    }
+
     @Test
     fun `short confirmed seats queue the whole party without User delivery and same key retries do not requeue`() {
         capacity.set(2)

@@ -39,6 +39,7 @@ V27 `tb_promotion_offer`가 좌석 확보다. V37은 공급자 접수 없이 실
 ### Notification → Application (내부 토큰)
 
 - `POST /internal/promotion-offers/check`: 이벤트 그대로 보낸다. `eligible=false`이면 `reason`이 `NOT_CURRENT_OFFER`(현재 제안 아님·대기 종료·마감) 또는 `OUTSIDE_SEND_WINDOW`이다. eligible이면 대표 번호, 수신자 이름, 프로그램/회차명·KST 일시·장소, 좌석 수, `responseUrl`, `hardDeadline`, `sendWindowEndsAt`, `responseHours`(6)을 준다.
+  - Notification은 파싱하지 못한 응답을 끝없이 다시 조회하므로(#236) 이름·제목·장소를 Notification 스키마(앞뒤 공백 제거, UTF-16 길이 이름·제목 100·장소 255, `\p{C}\p{Zl}\p{Zp}` 금지)에 맞춰 준다. 줄바꿈·제어 문자는 공백으로, 보이지 않는 서식 문자는 지우고 그 밖의 글자는 바꾸거나 자르지 않는다. 장소가 비거나 길이를 넘으면 장소를 빼고 보낸다. 이름이나 제목이 그렇게 되면 지어내지 않고 `FAILED`(`INVALID_MESSAGE_TEXT`)로 기록한 뒤 `NOT_CURRENT_OFFER`를 준다. 그래서 #226 실패와 같이 기한까지 내 신청 화면에서 응답할 수 있고 좌석도 그때까지 유지된다.
 - `POST /internal/promotion-offers/{offerId}/deliveries`: `{eventId, status, attemptId, attemptedAt, providerAcceptedAt, reason}`.
   - `ACCEPTED`은 공급자 성공 응답을 받은 실제 시각(`providerAcceptedAt`)이 필요하다. `attemptedAt`과 다른 값이어야 하고 미래(1분 초과)나 시도 이전이면 400이다. 같은 결과의 재전송은 멱등이고 다른 결과는 409다.
   - `FAILED`→`DELIVERY_FAILED`(기한이 없으면 보고 시각 + 6시간, 마감 이전일 때만), `UNKNOWN`→`UNKNOWN`, `DELIVERED`는 기록만 한다. `SKIPPED`+`OUTSIDE_SEND_WINDOW`이면 새 eventId로 다음 09:00에 다시 예약하거나, 시간이 없으면 `VOIDED`(`NO_SEND_INTERVAL`)로 둔다.
