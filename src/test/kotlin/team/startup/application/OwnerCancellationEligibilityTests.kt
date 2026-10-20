@@ -145,9 +145,23 @@ class OwnerCancellationEligibilityTests {
     }
 
     @Test
-    fun `active programs are checked before showing cancellation`() {
+    fun `active programs and representative companions are checked before showing cancellation`() {
         `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(true)
         blocked("ACTIVE_PROGRAMS")
+        // #257: only the representative's own session is checked; a companion's application never is.
+        `when`(repository.activePrograms(EXPO, 2, 502)).thenReturn(false)
+        `when`(repository.activeCompanions(EXPO, 7, 2)).thenReturn(true)
+        assertTrue(
+            service()
+                .execute(COMMAND)
+                .applications
+                .single()
+                .cancellable,
+        )
+        val representative = APPLICATION.copy(participantId = 1)
+        configure(representative)
+        `when`(repository.activeCompanions(EXPO, 7, 1)).thenReturn(true)
+        blocked("COMPANIONS_ACTIVE")
     }
 
     @Test
