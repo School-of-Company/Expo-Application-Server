@@ -34,6 +34,9 @@ data class ManagedOwnerParticipant(
     @field:Schema(description = "대표자 여부", example = "true") val representative: Boolean,
     // User가 저장한 박람회 현장 등록(FIELD) 여부. 현장 접수 자격 판정에만 쓰고 응답에는 싣지 않는다
     @get:JsonIgnore val fieldRegistered: Boolean = false,
+    // User가 저장한 소속(학교). 동행자 중복 판정(#225)에만 쓴다. 옛 User 응답에는 없어 schoolReported가 false다
+    @get:JsonIgnore val school: String? = null,
+    @get:JsonIgnore val schoolReported: Boolean = false,
 )
 
 data class OwnerApplicationParty(

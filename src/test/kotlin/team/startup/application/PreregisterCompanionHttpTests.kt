@@ -67,6 +67,8 @@ class PreregisterCompanionHttpTests {
                 "tb_preregister_session_state, tb_preregister_deleted_expo RESTART IDENTITY CASCADE",
         )
         parties.clear()
+        details.clear()
+        reportSchool = false
         smsTries.clear()
         userRequests.clear()
         nextId.set(42)
@@ -442,6 +444,30 @@ class PreregisterCompanionHttpTests {
     }
 
     @Test
+    fun `a same-name teacher from another school is a new companion once User reports the school`() {
+        assertEquals(201, register(PHONE, null, teachers = listOf("teacher")).status)
+        val id = representativeItem()["applicationId"].asString()
+        val otherSchool = companion("teacher", "TEACHER") + mapOf("school" to "other")
+        // 학교를 싣지 않는 옛 User 응답이면 이름·구분만 본다.
+        assertEquals(409, add(id, otherSchool).status)
+        reportSchool = true
+        assertEquals(409, add(id, companion("teacher", "TEACHER")).status)
+        // #225: User처럼 이름·구분·학교가 모두 같아야 같은 사람이다.
+        val response = add(id, otherSchool)
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(mapper.readTree("[44]"), mapper.readTree(response.contentAsString)["participantIds"])
+    }
+
+    @Test
+    fun `a companion named like the representative is not a known companion`() {
+        assertEquals(201, register(PHONE, null).status)
+        // #225: User는 대표자를 빼고 동행자끼리만 같은 사람을 가린다.
+        val response = add(representativeItem()["applicationId"].asString(), companion("person"))
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(mapper.readTree("[43]"), mapper.readTree(response.contentAsString)["participantIds"])
+    }
+
+    @Test
     fun `addition needs the participant session csrf token and valid companions`() {
         assertEquals(201, register(PHONE, null).status)
         val id = representativeItem()["applicationId"].asString()
@@ -471,9 +497,10 @@ class PreregisterCompanionHttpTests {
         companion: String?,
         session: String = "owner",
         companions: List<String> = emptyList(),
+        teachers: List<String> = emptyList(),
     ): MockHttpServletResponse {
         sessions[session] = phone
-        val companions = (listOfNotNull(companion) + companions).map { companion(it) }
+        val companions = (listOfNotNull(companion) + companions).map { companion(it) } + teachers.map { companion(it, "TEACHER") }
         val body =
             mapper.writeValueAsString(
                 mapOf(
@@ -563,6 +590,12 @@ class PreregisterCompanionHttpTests {
 
         // 번호별 User 일행: (참가자 ID, 이름). 첫 항목이 대표자다.
         private val parties = ConcurrentHashMap<String, MutableList<Pair<Long, String>>>()
+
+        // 동행자 ID별 (구분, 학교). 없으면 GENERAL이고 학교가 없다.
+        private val details = ConcurrentHashMap<Long, Pair<String, String?>>()
+
+        // #225 User managed 응답에 school을 싣는지. 옛 User는 싣지 않는다.
+        @Volatile private var reportSchool = false
         private val smsTries = ConcurrentHashMap<String, Int>()
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
         private val json =
@@ -575,16 +608,19 @@ class PreregisterCompanionHttpTests {
                 """"revision":1,"cancelEndedAt":"2030-01-01T00:00:00Z"""" +
                 (target.get()?.let { (t, n) -> ""","teacherCapacity":$t,"nonTeacherCapacity":$n""" } ?: "") + "}"
 
+        private fun detail(node: JsonNode) = node["occupation"].asString() to node.path("school").asString().ifEmpty { null }
+
         // User의 재등록 규칙: 같은 번호면 새 동행자만 만들어 participantIds로, 일행 전체를 groupParticipantIds로 준다.
         @Synchronized
         private fun saveParticipants(request: JsonNode): Pair<Int, String> {
             userRequests.add(request)
             val phone = request["phoneNumber"].asString()
             val companions: JsonNode = json.readTree(request["informationJson"].asString()).path("companions")
-            val names = (0 until companions.size()).map { companions[it]["name"].asString() }
+            val people = companions.toList()
             val party = parties[phone]
             if (party == null) {
-                val created = (listOf("person") + names).map { nextId.getAndIncrement() to it }
+                val created = (listOf("person") + people.map { it["name"].asString() }).map { nextId.getAndIncrement() to it }
+                created.drop(1).zip(people).forEach { (person, node) -> details[person.first] = detail(node) }
                 parties[phone] = created.toMutableList()
                 smsTries[phone] = 1
                 val ids = created.joinToString(",") { it.first.toString() }
@@ -593,7 +629,11 @@ class PreregisterCompanionHttpTests {
             }
             if (userReject.get() != 0) return userReject.get() to "{}"
             if (smsTries.getValue(phone) >= 2) return 409 to "{}"
-            val added = names.filter { name -> party.none { it.second == name } }.map { nextId.getAndIncrement() to it }
+            // User처럼 대표자를 빼고 동행자끼리 이름·구분·학교로 같은 사람을 가린다.
+            val added =
+                people
+                    .filter { node -> party.drop(1).none { it.second == node["name"].asString() && details[it.first] == detail(node) } }
+                    .map { node -> (nextId.getAndIncrement() to node["name"].asString()).also { details[it.first] = detail(node) } }
             party.addAll(added)
             smsTries.merge(phone, 1, Int::plus)
             val texted = (if (added.isEmpty()) party else added).joinToString(",") { it.first.toString() }
@@ -620,7 +660,11 @@ class PreregisterCompanionHttpTests {
                                 val party = parties[json.readTree(requestBody)["phoneNumber"].asString()].orEmpty()
                                 val people =
                                     party.mapIndexed { index, (id, name) ->
-                                        """{"participantId":$id,"name":"$name","occupation":"GENERAL","representative":${index == 0},"applicationType":"PRE"}"""
+                                        val (occupation, school) = details[id] ?: ("GENERAL" to null)
+                                        val quoted = school?.let { "\"$it\"" }
+                                        val schoolField = if (reportSchool) ""","school":$quoted""" else ""
+                                        """{"participantId":$id,"name":"$name","occupation":"$occupation",""" +
+                                            """"representative":${index == 0},"applicationType":"PRE"$schoolField}"""
                                     }
                                 200 to """{"registered":${party.isNotEmpty()},"participants":[${people.joinToString(",")}]}"""
                             }
