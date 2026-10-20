@@ -305,6 +305,10 @@ class PreregisterRegistrationWorkflow(
                         conflict("이미 신청한 회차입니다.")
                     }
                     if (repository.overlapping(expoId, sessionId, participantIds, definition)) conflict("확정된 다른 회차와 시간이 겹칩니다.")
+                    // #223: 승급될 수 있는 다른 회차의 대기·선점도 겹침으로 본다. 나중에 승급이 겹침으로 거절되는 것을 막는다.
+                    if (reservations.overlappingPending(expoId, sessionId, phone, participantIds, definition, waitlist.now())) {
+                        conflict("대기 중인 다른 회차와 시간이 겹칩니다.")
+                    }
                     val categories =
                         attendees.map { PreregisterSeatCategory.of(it.occupation) }.let { seats ->
                             seats.count { it == PreregisterSeatCategory.TEACHER } to seats.count { it == PreregisterSeatCategory.OTHER }
