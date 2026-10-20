@@ -169,8 +169,9 @@ class PromotionOfferScheduler(
 
 enum class SweepAction { VOID_TARGET_CLOSED, EXPIRE, VOID_HARD_DEADLINE, NONE }
 
-// expiresAt is capped at the hard deadline, so the two can coincide (#227). Then the hard cutoff wins: only the hold is
-// released and the waiting row is left alone, never read as a decline.
+// expiresAt is capped at the hard deadline, so the two can coincide, and a late sweep can see an expiry that is already
+// past the deadline (#227). Once now has reached the hard deadline the cutoff wins: only the hold is released and the
+// waiting row is left alone, never read as a decline.
 fun sweepAction(
     offer: PromotionOffer,
     waiting: Boolean,
@@ -180,8 +181,8 @@ fun sweepAction(
     val expirable = offer.state == "SENT" && expiresAt != null && expiresAt.isBefore(offer.hardDeadline)
     return when {
         !waiting -> SweepAction.VOID_TARGET_CLOSED
-        expirable && !now.isBefore(expiresAt) -> SweepAction.EXPIRE
         !now.isBefore(offer.hardDeadline) -> SweepAction.VOID_HARD_DEADLINE
+        expirable && !now.isBefore(expiresAt) -> SweepAction.EXPIRE
         else -> SweepAction.NONE
     }
 }

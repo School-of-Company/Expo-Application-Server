@@ -51,6 +51,14 @@ class PromotionOfferSweepActionTests {
     }
 
     @Test
+    fun `late sweep after expiry and hard deadline only releases the hold`() {
+        val expires = deadline.minusSeconds(600)
+        assertEquals(SweepAction.EXPIRE, sweepAction(offer(expires), true, deadline.minusSeconds(1)))
+        assertEquals(SweepAction.VOID_HARD_DEADLINE, sweepAction(offer(expires), true, deadline))
+        assertEquals(SweepAction.VOID_HARD_DEADLINE, sweepAction(offer(expires), true, deadline.plusSeconds(3600)))
+    }
+
+    @Test
     fun `closed target and unsent offers keep their handling`() {
         assertEquals(SweepAction.VOID_TARGET_CLOSED, sweepAction(offer(deadline.minusSeconds(60)), false, deadline))
         assertEquals(SweepAction.VOID_HARD_DEADLINE, sweepAction(offer(null, "SCHEDULED"), true, deadline))
