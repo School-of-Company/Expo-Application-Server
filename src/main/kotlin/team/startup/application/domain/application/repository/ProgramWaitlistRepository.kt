@@ -9,6 +9,7 @@ import team.startup.application.domain.application.presentation.dto.ApplicationA
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionKey
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.sql.Timestamp
@@ -158,12 +159,22 @@ class ProgramWaitlistRepository(
      * Expo V37은 기존 정책을 승인 요청 없이 "전체 정원 = 사전 정원, 현장 0"으로 바꿨다.
      * 정원 분리·직업 채널이 없는 예전 승인 정의는 그 변환 결과와 같은 정의로 본다. 직업 채널이 있던 정의는 자동 전환하지 않는다.
      */
-    private fun ProgramSessionDefinition.matchesApproved(stored: ProgramSessionDefinition): Boolean {
-        if (this == stored) return true
+    private fun ProgramSessionDefinition.matchesApproved(approved: ProgramSessionDefinition): Boolean {
+        val remote = withComparableTimes()
+        val stored = approved.withComparableTimes()
+        if (remote == stored) return true
         val policy = stored.policy ?: return false
         if (policy.channels != null || policy.preRegistrationCapacity != null || policy.onsiteCapacity != null) return false
-        return this == stored.copy(policy = policy.copy(preRegistrationCapacity = policy.capacity, onsiteCapacity = 0))
+        return remote == stored.copy(policy = policy.copy(preRegistrationCapacity = policy.capacity, onsiteCapacity = 0))
     }
+
+    // #251: Expo는 같은 회차 시간을 변경 승인 요청·현재 회차 페이지에는 저장값 "yyyy-MM-ddTHH:mm"으로,
+    // 연수 일괄 조회에는 "yyyy-MM-dd HH:mm"으로 보낸다. 표기만 다른 같은 시각은 같은 정의로 보고, 읽을 수 없는 값은 그대로 비교한다.
+    private fun ProgramSessionDefinition.withComparableTimes() =
+        copy(startedAt = startedAt?.let(::comparableTime), endedAt = endedAt?.let(::comparableTime))
+
+    private fun comparableTime(value: String): String =
+        runCatching { ExpoProgramTime.parse(value).toInstant().toString() }.getOrDefault(value)
 
     fun observe(definition: ProgramSessionDefinition) {
         jdbc.update(

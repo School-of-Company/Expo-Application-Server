@@ -1355,6 +1355,27 @@ class AdminApplicationHttpTests {
     }
 
     @Test
+    fun `approved definition observed with space separated times matches the Expo page stored format`() {
+        // #251: 연수 일괄 조회로 저장된 "yyyy-MM-dd HH:mm" 정의와 현재 회차 페이지의 저장값 "yyyy-MM-ddTHH:mm"은 같은 시각이다.
+        storeDefinition(
+            99,
+            SESSION_99
+                .replace("\"policy\":null", "\"policy\":$LEGACY_POLICY")
+                .replace("2026-10-12T09:00", "2026-10-12 09:00")
+                .replace("2026-10-12T10:00", "2026-10-12 10:00"),
+        )
+        val page = expoPage()
+        page["items"][0].asObject().set("policy", mapper.readTree(LEGACY_POLICY))
+        expoBody = page.toString()
+        val response = read("/current-sessions")
+        assertEquals(200, response.status, response.contentAsString)
+
+        page["items"][0].asObject().put("startedAt", "2026-10-12T08:00")
+        expoBody = page.toString()
+        assertEquals("PROGRAM_DEFINITION_MISMATCH", mapper.readTree(read("/current-sessions").contentAsString)["code"].asString())
+    }
+
+    @Test
     fun `unapproved policy definition and Expo version change return distinct current session conflict codes`() {
         val policy = LEGACY_POLICY
         storeDefinition(99, SESSION_99.replace("\"policy\":null", "\"policy\":$policy"))

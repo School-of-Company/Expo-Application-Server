@@ -490,6 +490,51 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `approved training time change matches Expo batch times written in another format`() {
+        // #251: Expo는 변경 승인 요청에 저장값 "yyyy-MM-ddTHH:mm"을, 연수 일괄 조회에는 "yyyy-MM-dd HH:mm"을 보낸다.
+        for (withApplicant in listOf(false, true)) {
+            reset()
+            capacity = 2
+            if (withApplicant) assertEquals("CONFIRMED", service.execute(command(type = ProgramSessionType.TRAINING)).status)
+            val previous =
+                mapper.readTree(definition("1", "TRAINING")).asObject().apply {
+                    put("startedAt", path("startedAt").stringValue().replace(' ', 'T'))
+                    put("endedAt", path("endedAt").stringValue().replace(' ', 'T'))
+                }
+            val next =
+                previous.deepCopy().asObject().apply {
+                    put("revision", 2)
+                    put("startedAt", "2030-01-02T09:00")
+                    put("endedAt", "2030-01-02T10:00")
+                }
+            mvc
+                .perform(
+                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+                ).andReturn()
+                .response
+                .let { assertEquals(204, it.status, it.contentAsString) }
+            revision = 2
+            windows = mapOf(("TRAINING" to 1L) to ("2030-01-02 09:00" to "2030-01-02 10:00"))
+
+            fun participants() =
+                mvc.perform(
+                    get(
+                        "/application/expos/$EXPO/program-sessions/TRAINING/1/participants",
+                    ).cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                )
+            participants().andExpect(status().isOk)
+            assertEquals("CONFIRMED", service.execute(command(participant = 2, type = ProgramSessionType.TRAINING)).status)
+
+            // 형식만 같게 보고, 승인되지 않은 다른 시간은 계속 불일치다.
+            windows = mapOf(("TRAINING" to 1L) to ("2030-01-02 08:00" to "2030-01-02 10:00"))
+            participants().andExpect(status().isConflict)
+        }
+    }
+
+    @Test
     fun `training creates links only after acceptance and preserves QR and version compatibility`() {
         val receipt = service.execute(command(type = ProgramSessionType.TRAINING))
         assertEquals(501L, receipt.traineeId)
