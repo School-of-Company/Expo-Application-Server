@@ -93,13 +93,18 @@ data class OwnerPreregisterWaitlistCommand(
     val sessionId: Long? = null,
 )
 
-@Schema(description = "참가자 세션의 검증 번호로 찾은 대기 일행. User 저장 전이므로 QR이 없습니다.")
+@Schema(description = "참가자 세션의 검증 번호로 찾은 대기 또는 처리 중 일행. User 저장 전이므로 QR이 없습니다.")
 data class OwnerPreregisterWaitlist(
     @field:Schema(description = "회차 ID", example = "1") val sessionId: Long,
     @field:Schema(description = "대표자를 포함한 일행 인원", example = "3") val applicants: Int,
-    @field:Schema(description = "WAITING, 승급 뒤 User 저장 중인 PROCESSING, 회차 시작으로 승급이 끝난 PROMOTION_ENDED", example = "WAITING")
+    @field:Schema(
+        description = "WAITING, 좌석을 잡고(바로 또는 승급 뒤) User 저장 중인 PROCESSING, 회차 시작으로 승급이 끝난 PROMOTION_ENDED",
+        example = "WAITING",
+    )
     val status: String,
     @field:Schema(description = "대기 일행 순번(1부터). WAITING이 아니면 null", example = "2") val position: Int?,
+    @field:Schema(description = "PROCESSING이 운영자 확인을 기다리며 멈춘 상태면 true(운영 문의 안내). 그 외 false", example = "false")
+    val reviewRequired: Boolean = false,
 )
 
 @Schema(description = "사전등록 신청 접수 결과", example = """{"id":123,"participantId":123,"sessionId":1,"status":"CONFIRMED"}""")

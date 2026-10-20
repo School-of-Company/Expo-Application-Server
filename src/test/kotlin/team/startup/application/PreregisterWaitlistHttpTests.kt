@@ -543,7 +543,7 @@ class PreregisterWaitlistHttpTests {
                 ).andReturn()
         assertEquals(200, lookup.response.status)
         assertEquals(
-            mapper.readTree("""{"sessionId":1,"applicants":2,"status":"WAITING","position":1}"""),
+            mapper.readTree("""{"sessionId":1,"applicants":2,"status":"WAITING","position":1,"reviewRequired":false}"""),
             mapper.readTree(lookup.response.contentAsString),
         )
         val withdrawal =
@@ -584,8 +584,8 @@ class PreregisterWaitlistHttpTests {
         assertEquals(200, lookup.response.status)
         assertEquals(
             mapper.readTree(
-                """[{"sessionId":2,"applicants":2,"status":"WAITING","position":1},""" +
-                    """{"sessionId":1,"applicants":2,"status":"WAITING","position":1}]""",
+                """[{"sessionId":2,"applicants":2,"status":"WAITING","position":1,"reviewRequired":false},""" +
+                    """{"sessionId":1,"applicants":2,"status":"WAITING","position":1,"reviewRequired":false}]""",
             ),
             mapper.readTree(lookup.response.contentAsString),
         )
@@ -604,8 +604,103 @@ class PreregisterWaitlistHttpTests {
         assertEquals("WAITING", state("b2"))
         val after = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists").cookie(owner)).andReturn()
         assertEquals(
-            mapper.readTree("""[{"sessionId":2,"applicants":2,"status":"WAITING","position":1}]"""),
+            mapper.readTree("""[{"sessionId":2,"applicants":2,"status":"WAITING","position":1,"reviewRequired":false}]"""),
             mapper.readTree(after.response.contentAsString),
+        )
+    }
+
+    @Test
+    fun `owner sees direct reservations still being saved or held for review but cannot withdraw them`() {
+        // #252: a direct reservation has no queue_seq and no User participant yet, but its phone already answers 409.
+        verifiedSessionPhone = "01000000003"
+        assertEquals(201, submit("a", 1, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+
+        // Rows of the verified phone; each starts RESERVED, then takes its own state in one update (V17 checks).
+        fun copy(
+            key: String,
+            session: Long,
+            state: String,
+            extra: String = "",
+            expo: UUID = EXPO,
+        ) {
+            jdbc.update(
+                "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants) " +
+                    "SELECT ?, ?, ?, command || ?, jsonb_set(user_request::jsonb, '{phoneNumber}', '\"010-0000-0003\"')::text, 2 " +
+                    "FROM tb_preregister_reservation WHERE request_id = 'a'",
+                expo,
+                key,
+                session,
+                key,
+            )
+            val columns = if (extra.isEmpty()) "state = ?" else "state = ?, $extra"
+            jdbc.update("UPDATE tb_preregister_reservation SET $columns WHERE request_id = ?", state, key)
+        }
+        copy("w", 2, "WAITING", "queue_seq = nextval('seq_preregister_waitlist')")
+        copy("direct", 3, "RESERVED")
+        copy("review", 4, "RESERVED", "error_status = 409, next_attempt_at = 'infinity'")
+        copy(
+            "promoted-review",
+            5,
+            "RESERVED",
+            "queue_seq = nextval('seq_preregister_waitlist'), error_status = 502, next_attempt_at = 'infinity'",
+        )
+        copy("done", 6, "COMPLETED")
+        copy("rejected", 7, "REJECTED", "error_status = 409")
+        copy("addition", 8, "RESERVED", "session_addition = TRUE")
+        copy("companion", 9, "RESERVED", "companion_representative_id = 42")
+        copy("other-expo", 10, "RESERVED", expo = UUID.fromString("00000000-0000-0000-0000-000000000098"))
+        val occupied = repository.occupied(EXPO, 3)
+
+        val owner = Cookie("PARTICIPANT_SESSION", "owner")
+        val lookup = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists").cookie(owner)).andReturn()
+        assertEquals(200, lookup.response.status)
+        // Waitlisted rows keep their latest-first order; direct ones follow without a queue position.
+        assertEquals(
+            mapper.readTree(
+                """[{"sessionId":5,"applicants":2,"status":"PROCESSING","position":null,"reviewRequired":true},""" +
+                    """{"sessionId":2,"applicants":2,"status":"WAITING","position":1,"reviewRequired":false},""" +
+                    """{"sessionId":4,"applicants":2,"status":"PROCESSING","position":null,"reviewRequired":true},""" +
+                    """{"sessionId":3,"applicants":2,"status":"PROCESSING","position":null,"reviewRequired":false}]""",
+            ),
+            mapper.readTree(lookup.response.contentAsString),
+        )
+        val direct = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlist?sessionId=3").cookie(owner)).andReturn()
+        assertEquals(
+            mapper.readTree("""{"sessionId":3,"applicants":2,"status":"PROCESSING","position":null,"reviewRequired":false}"""),
+            mapper.readTree(direct.response.contentAsString),
+        )
+
+        fun ownerWithdraw(query: String) =
+            mvc
+                .perform(
+                    post("/application/expos/$EXPO/my-applications/preregister-waitlist/cancellation$query")
+                        .cookie(*listOfNotNull(owner, lookup.response.getCookie("XSRF-TOKEN")).toTypedArray())
+                        .session(lookup.request.session as MockHttpSession)
+                        .header("X-CSRF-TOKEN", requireNotNull(lookup.response.getHeader("X-CSRF-TOKEN"))),
+                ).andReturn()
+                .response.status
+        // A direct reservation is not a waiting party: withdrawal never releases its seats.
+        assertEquals(404, ownerWithdraw("?sessionId=3"))
+        assertEquals(404, ownerWithdraw("?sessionId=4"))
+        assertEquals("RESERVED", state("direct"))
+        assertEquals("RESERVED", state("review"))
+        assertEquals(occupied, repository.occupied(EXPO, 3))
+        assertEquals(204, ownerWithdraw(""))
+        assertEquals("REJECTED", state("w"))
+        assertEquals("RESERVED", state("promoted-review"))
+        // The phone stays held while the reservation is unresolved.
+        assertEquals(409, submit("again", 1, "010-0000-0003", session = 3).status)
+
+        verifiedSessionPhone = "01000000004"
+        val other = mvc.perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists").cookie(owner)).andReturn()
+        assertEquals("[]", other.response.contentAsString)
+        assertEquals(
+            401,
+            mvc
+                .perform(get("/application/expos/$EXPO/my-applications/preregister-waitlists"))
+                .andReturn()
+                .response.status,
         )
     }
 
@@ -673,7 +768,7 @@ class PreregisterWaitlistHttpTests {
         val ended = ownerWaitlist()
         assertEquals(200, ended.status)
         assertEquals(
-            mapper.readTree("""{"sessionId":1,"applicants":1,"status":"PROMOTION_ENDED","position":null}"""),
+            mapper.readTree("""{"sessionId":1,"applicants":1,"status":"PROMOTION_ENDED","position":null,"reviewRequired":false}"""),
             mapper.readTree(ended.contentAsString),
         )
         assertEquals(201, submit("other-session", 1, "01000000002", session = 2).status)

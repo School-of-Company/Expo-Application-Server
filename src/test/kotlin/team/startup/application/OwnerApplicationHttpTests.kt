@@ -221,7 +221,7 @@ class OwnerApplicationHttpTests {
         assertEquals("no-store", result.response.getHeader("Cache-Control"))
         assertEquals(
             tools.jackson.module.kotlin.jacksonObjectMapper().readTree(
-                """{"sessionId":1,"applicants":3,"status":"WAITING","position":2}""",
+                """{"sessionId":1,"applicants":3,"status":"WAITING","position":2,"reviewRequired":false}""",
             ),
             tools.jackson.module.kotlin
                 .jacksonObjectMapper()

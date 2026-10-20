@@ -207,7 +207,7 @@ class OwnerApplicationController(
             "참가자 세션의 검증 번호로 대기 일행을 찾습니다. sessionId가 없으면 가장 최근 대기 1건입니다. " +
                 "대기 일행은 User 저장 전이라 QR이 없습니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
         responses = [
-            ApiResponse(responseCode = "200", description = "대기 또는 승급 처리 중인 일행"),
+            ApiResponse(responseCode = "200", description = "대기 또는 처리 중인 일행(바로 잡은 예약 포함)"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "404", description = "대기 일행 없음"),
             ApiResponse(responseCode = "502", description = "User 응답 계약 또는 내부 인증 오류"),
@@ -231,7 +231,7 @@ class OwnerApplicationController(
         summary = "내 사전등록 대기 목록 조회",
         description = "회차마다 대기한 일행을 최근 순으로 돌려줍니다(#198). 없으면 빈 배열입니다. 응답 X-CSRF-TOKEN 헤더와 XSRF-TOKEN 쿠키를 대기 취소에 사용합니다.",
         responses = [
-            ApiResponse(responseCode = "200", description = "대기 또는 승급 처리 중인 일행 목록"),
+            ApiResponse(responseCode = "200", description = "대기 또는 처리 중인 일행 목록(바로 잡은 예약 포함)"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "502", description = "User 응답 계약 또는 내부 인증 오류"),
             ApiResponse(responseCode = "503", description = "User 연동 불가"),
