@@ -45,11 +45,11 @@ class ProgramPromotionGateway(
             programId = event.programId,
             status = "CONFIRMED",
             representativePhoneNumber = phone,
-            participantName = label(participant, "name"),
-            programName = label(program, "title"),
+            participantName = text(participant, "name"),
+            programName = text(program, "title"),
             startedAt = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             endedAt = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            location = program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
+            location = program.get("place")?.takeUnless { it.isNull }?.let { text(program, "place") },
             applicationLookupUrl =
                 program.get("applicationLookupUrl")?.takeUnless { it.isNull }?.let {
                     val url = it.takeIf { value -> value.isString }?.stringValue() ?: invalid()
@@ -176,11 +176,16 @@ class ProgramPromotionGateway(
             invalid()
         }
 
+    private fun text(
+        node: JsonNode,
+        field: String,
+    ): String = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
+
     private fun label(
         node: JsonNode,
         field: String,
     ): String {
-        val value = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
+        val value = text(node, field)
         if (value.isBlank() || value.codePointCount(0, value.length) > 255 ||
             value.any {
                 Character.isISOControl(it) ||

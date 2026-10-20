@@ -79,6 +79,7 @@ class ProgramPromotionTests {
         expoMode = "valid"
         requestedIds.clear()
         callback = {}
+        text = emptyMap()
     }
 
     private fun application(
@@ -505,18 +506,58 @@ class ProgramPromotionTests {
     @Test
     fun `Expo outages malformed identity and invalid session times are errors`() {
         val event = application()
-        for (mode in listOf("outage", "missing", "wrong-id", "malformed", "invalid-time", "reversed", "missing-title", "long-place")) {
+        for (mode in listOf("outage", "missing", "wrong-id", "malformed", "invalid-time", "reversed", "missing-title")) {
             expoMode = mode
             check(event).andExpect(status().is5xxServerError)
         }
     }
 
     @Test
-    fun `promotion accepts Expo places from 101 to 255 code points`() {
+    fun `notice text is normalized to Notification labels without rewriting other characters`() {
         val event = application()
-        for (length in listOf(101, 255)) {
-            expoMode = "place-$length"
-            check(event).andExpect(status().isOk).andExpect(jsonPath("$.location").value("\uD840\uDC00".repeat(length)))
+        text =
+            mapOf(
+                "name" to " Com\u200Dpanion\n",
+                "title" to "\tA\r\nB\u200B\u2028C\u00A0D\uDB40\uDC01 ",
+                "place" to "1층\n강당\u2029",
+            )
+        check(event)
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.eligible").value(true))
+            .andExpect(jsonPath("$.participantName").value("Companion"))
+            .andExpect(jsonPath("$.programName").value("A B C\u00A0D"))
+            .andExpect(jsonPath("$.location").value("1층 강당"))
+    }
+
+    @Test
+    fun `notice lengths are UTF-16 units like Notification`() {
+        val event = application()
+        val pair = "\uD840\uDC00"
+        text = mapOf("name" to pair.repeat(50), "title" to "a".repeat(100), "place" to pair.repeat(127) + "a")
+        check(event)
+            .andExpect(jsonPath("$.participantName").value(pair.repeat(50)))
+            .andExpect(jsonPath("$.programName").value("a".repeat(100)))
+            .andExpect(jsonPath("$.location").value(pair.repeat(127) + "a"))
+        for (place in listOf(pair.repeat(128), "a".repeat(256), " \u200B\n ")) {
+            text = mapOf("place" to place)
+            check(event).andExpect(jsonPath("$.eligible").value(true)).andExpect(jsonPath("$.location").isEmpty)
+        }
+    }
+
+    @Test
+    fun `unsendable name or title skips the notice instead of failing the check`() {
+        val event = application()
+        for (value in listOf(
+            mapOf("name" to "\uD840\uDC00".repeat(51)),
+            mapOf("title" to "a".repeat(101)),
+            mapOf("name" to " \u200B\r\n"),
+            mapOf("title" to ""),
+        )) {
+            text = value
+            check(event)
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.eligible").value(false))
+                .andExpect(jsonPath("$.reason").value("NOT_CURRENT_PROMOTION"))
         }
     }
 
@@ -536,6 +577,24 @@ class ProgramPromotionTests {
         @Volatile private var expoMode = "valid"
 
         @Volatile private var callback: () -> Unit = {}
+
+        // Overrides name/title/place, escaped so control characters reach the gateway intact.
+        @Volatile private var text: Map<String, String> = emptyMap()
+
+        private fun json(
+            field: String,
+            default: String,
+        ) = (text[field] ?: default)
+            .map {
+                if (it in ' '..'~' && it != '"' &&
+                    it != '\\'
+                ) {
+                    "$it"
+                } else {
+                    "\\u%04x".format(it.code)
+                }
+            }.joinToString("", "\"", "\"")
+
         private val requestedIds = java.util.concurrent.CopyOnWriteArrayList<Long>()
         private val server =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -559,17 +618,13 @@ class ProgramPromotionTests {
                             val id = if (request.contains("[2]")) 2L else 1L
                             requestedIds.add(id)
                             val phone = if (mode == "no-phone") "null" else "\"${if (id == 1L) "010-1111-2222" else "01099998888"}\""
-                            """[{"participantId":${if (mode == "wrong-id") 99 else id},"name":"${if (id == 2L) "Companion" else "Representative"}","representativeId":${if (id == 2L) 1 else "null"}${if (mode == "absent-phone") "" else ",\"phoneNumber\":$phone"},"notificationPhoneNumber":"01099998888"}]"""
+                            """[{"participantId":${if (mode == "wrong-id") 99 else id},"name":${json(
+                                "name",
+                                if (id == 2L) "Companion" else "Representative",
+                            )},"representativeId":${if (id == 2L) 1 else "null"}${if (mode == "absent-phone") "" else ",\"phoneNumber\":$phone"},"notificationPhoneNumber":"01099998888"}]"""
                         } else {
                             callback()
                             val separator = if (exchange.requestURI.path.endsWith("batch")) " " else "T"
-                            val place =
-                                when (mode) {
-                                    "place-101" -> "\uD840\uDC00".repeat(101)
-                                    "place-255" -> "\uD840\uDC00".repeat(255)
-                                    "long-place" -> "a".repeat(256)
-                                    else -> "Hall"
-                                }
                             val program = """{"id":${if (mode == "wrong-id") 99 else 3},"expoId":"$EXPO","programType":"${if (exchange.requestURI.path
                                     .endsWith(
                                         "batch",
@@ -578,7 +633,17 @@ class ProgramPromotionTests {
                                 "TRAINING"
                             } else {
                                 "STANDARD"
-                            }}","title":${if (mode == "missing-title") "null" else "\"Program\""},"startedAt":"2026-10-13${separator}10:00","endedAt":"2026-10-13$separator${if (mode == "reversed") "09" else "11"}:00","place":"$place"}"""
+                            }}","title":${if (mode == "missing-title") {
+                                "null"
+                            } else {
+                                json(
+                                    "title",
+                                    "Program",
+                                )
+                            }},"startedAt":"2026-10-13${separator}10:00","endedAt":"2026-10-13$separator${if (mode == "reversed") "09" else "11"}:00","place":${json(
+                                "place",
+                                "Hall",
+                            )}}"""
                             val response =
                                 when (mode) {
                                     "past" -> program.replace("2026-10-13", "2020-01-01")
