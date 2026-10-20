@@ -45,11 +45,11 @@ class ProgramPromotionGateway(
             programId = event.programId,
             status = "CONFIRMED",
             representativePhoneNumber = phone,
-            participantName = label(participant, "name"),
-            programName = label(program, "title"),
+            participantName = text(participant, "name"),
+            programName = text(program, "title"),
             startedAt = start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             endedAt = end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            location = program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
+            location = program.get("place")?.takeUnless { it.isNull }?.let { text(program, "place") },
             applicationLookupUrl =
                 program.get("applicationLookupUrl")?.takeUnless { it.isNull }?.let {
                     val url = it.takeIf { value -> value.isString }?.stringValue() ?: invalid()
@@ -72,7 +72,7 @@ class ProgramPromotionGateway(
         val location: String?,
     )
 
-    // Current Expo title, KST times and place for a #144 offer message, validated like the promotion notice.
+    // Current Expo title, KST times and place for a #144 offer message. The offer check normalizes the text itself (#236).
     fun programNotice(
         expoId: UUID,
         type: ProgramSessionType,
@@ -82,10 +82,10 @@ class ProgramPromotionGateway(
         val start = time(program, "startedAt")
         val end = time(program, "endedAt")
         return ProgramNotice(
-            label(program, "title"),
+            text(program, "title"),
             start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
             end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            program.get("place")?.takeUnless { it.isNull }?.let { label(program, "place") },
+            program.get("place")?.takeUnless { it.isNull }?.let { text(program, "place") },
         )
     }
 
@@ -124,7 +124,7 @@ class ProgramPromotionGateway(
     fun representativeContact(
         expoId: UUID,
         participantId: Long,
-    ): Pair<String?, String> = representative(expoId, participant(expoId, participantId)).let { phone(it) to label(it, "name") }
+    ): Pair<String?, String> = representative(expoId, participant(expoId, participantId)).let { phone(it) to text(it, "name") }
 
     private fun representative(
         expoId: UUID,
@@ -176,11 +176,16 @@ class ProgramPromotionGateway(
             invalid()
         }
 
+    private fun text(
+        node: JsonNode,
+        field: String,
+    ): String = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
+
     private fun label(
         node: JsonNode,
         field: String,
     ): String {
-        val value = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
+        val value = text(node, field)
         if (value.isBlank() || value.codePointCount(0, value.length) > 255 ||
             value.any {
                 Character.isISOControl(it) ||
