@@ -23,6 +23,7 @@ import team.startup.application.domain.application.repository.PromotionOfferRepo
 import team.startup.application.domain.application.service.ReconcileProgramSessionService
 import tools.jackson.databind.ObjectMapper
 import java.time.Clock
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -151,29 +152,36 @@ class PromotionOfferScheduler(
         waiting: Boolean,
         expire: () -> Unit,
     ): Boolean {
-        val now = clock.instant()
-        val expiresAt = offer.expiresAt
-        return when {
-            !waiting -> {
-                offers.close(offer.id, "VOIDED", null, voidReason = "TARGET_CLOSED").let { false }
-            }
-
-            offer.state == "SENT" && expiresAt != null && !now.isBefore(expiresAt) -> {
-                expire()
-                true
-            }
-
-            !now.isBefore(offer.hardDeadline) -> {
-                offers.close(offer.id, "VOIDED", null, voidReason = "HARD_DEADLINE").let { false }
-            }
-
-            else -> {
-                false
-            }
+        val action = sweepAction(offer, waiting, clock.instant())
+        when (action) {
+            SweepAction.VOID_TARGET_CLOSED -> offers.close(offer.id, "VOIDED", null, voidReason = "TARGET_CLOSED")
+            SweepAction.EXPIRE -> expire()
+            SweepAction.VOID_HARD_DEADLINE -> offers.close(offer.id, "VOIDED", null, voidReason = "HARD_DEADLINE")
+            SweepAction.NONE -> Unit
         }
+        return action == SweepAction.EXPIRE
     }
 
     private companion object {
         const val TOPIC = "application.promotion-offer.requested"
+    }
+}
+
+enum class SweepAction { VOID_TARGET_CLOSED, EXPIRE, VOID_HARD_DEADLINE, NONE }
+
+// expiresAt is capped at the hard deadline, so the two can coincide (#227). Then the hard cutoff wins: only the hold is
+// released and the waiting row is left alone, never read as a decline.
+fun sweepAction(
+    offer: PromotionOffer,
+    waiting: Boolean,
+    now: Instant,
+): SweepAction {
+    val expiresAt = offer.expiresAt
+    val expirable = offer.state == "SENT" && expiresAt != null && expiresAt.isBefore(offer.hardDeadline)
+    return when {
+        !waiting -> SweepAction.VOID_TARGET_CLOSED
+        expirable && !now.isBefore(expiresAt) -> SweepAction.EXPIRE
+        !now.isBefore(offer.hardDeadline) -> SweepAction.VOID_HARD_DEADLINE
+        else -> SweepAction.NONE
     }
 }
