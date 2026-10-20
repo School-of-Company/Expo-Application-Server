@@ -512,6 +512,7 @@ class PreregisterReservationRepository(
         )
 
     // The phone index from V8 keeps owner lookup cheap. Latest first; a party may wait for several sessions (#198).
+    // Withdrawal targets only these waitlisted rows; the owner lookup uses [pendingByPhone].
     fun waitlistedByPhone(
         expoId: UUID,
         phone: String,
@@ -520,6 +521,23 @@ class PreregisterReservationRepository(
             "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
                 "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
                 "AND queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq DESC",
+            { rs, _ -> reservation(rs) },
+            expoId,
+            phone,
+        )
+
+    // #252: [waitlistedByPhone] plus direct reservations that already hold the phone but have no User participant yet.
+    // Session and companion additions belong to a saved party and stay out. Without a queue position they follow the waitlisted rows.
+    fun pendingByPhone(
+        expoId: UUID,
+        phone: String,
+    ): List<PreregisterReservation> =
+        jdbc.query(
+            "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
+                "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND ((queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED')) " +
+                "OR (state = 'RESERVED' AND NOT session_addition AND companion_representative_id IS NULL)) " +
+                "ORDER BY queue_seq DESC NULLS LAST, session_id DESC",
             { rs, _ -> reservation(rs) },
             expoId,
             phone,

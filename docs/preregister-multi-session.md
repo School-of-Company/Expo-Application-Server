@@ -28,6 +28,9 @@
 - `GET /application/expos/{expoId}/my-applications/preregister-waitlists`: 회차별 대기 목록(최근 순, 없으면 `[]`). 항목 형식은 기존 단건과 같다.
 - 기존 `GET .../preregister-waitlist`, `POST .../preregister-waitlist/cancellation`은 그대로이며 선택 쿼리 `sessionId`를 받는다. 없으면 가장 최근 1건이다.
 - 참여 제안 목록의 사전등록 제안은 대기 예약마다 최신 1건이다.
+- 대기 없이 바로 좌석을 잡았지만 User 저장 전(재시도 중 또는 운영자 확인 대기)인 예약도 조회에 `PROCESSING`으로 나온다(#252). 이 예약은 번호를 막지만(409) 참가자가 없어 신청 목록에는 없다. 대기 순번이 없어 대기열을 거친 항목 뒤에 두고 `position`은 null이다. 회차 추가·동행자 추가 예약은 이미 일행 신청에 보이므로 넣지 않는다.
+- 항목의 `reviewRequired`는 `PROCESSING`이 운영자 확인(`needsReview`: `error_status` 있음, 무한 `next_attempt_at`)에 멈췄으면 true다. Client는 이때 운영 문의를 안내하고, 그 외 처리 중은 기존처럼 다시 조회하게 한다. 원인 코드·번호·폼·User 결과는 내려 주지 않는다.
+- 철회는 대기열을 거친 예약만 대상이다. 바로 잡은 예약은 `sessionId`로 지정해도 404이며 좌석을 풀지 않는다.
 
 ## Attendance 회차 통지 계약 (Expo-Attendance-Server#160)
 
