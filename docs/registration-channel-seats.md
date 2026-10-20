@@ -30,6 +30,7 @@ Application 초기 기준은 `origin/develop` `9b25487dda55cd143ee78a757dac68c0b
 
 - 정책 없는 회차: Expo가 승인 요청 없이 반영한 제목·시간·장소 변경. 신청 경로와 같은 기준이며 revision이 저장값보다 작으면 불일치다.
 - Expo V37 전환: 정원 분리·직업 채널이 없던 예전 정책을 `preRegistrationCapacity = capacity`, `onsiteCapacity = 0`으로 바꾼 정의. 신청 경로에도 같은 기준을 적용한다. 다른 분할이나 직업 채널이 있던 정의는 자동 전환하지 않고 운영 전환 계획을 따른다.
+- 시간 표기(#251): Expo는 변경 승인 요청과 현재 회차 페이지에 저장값 `yyyy-MM-ddTHH:mm`을, 연수 일괄 조회에 `yyyy-MM-dd HH:mm`을 준다. KST 같은 시각이면 같은 시간으로 보고, 다른 시각은 그대로 불일치다. 신청 경로와 정의 변경 승인에도 같은 기준을 적용한다.
 
 그 밖의 불일치는 목록 전체를 409로 거절한다(fail-closed). 관리자 current-sessions 409 본문은 원인 코드를 준다. 로컬 정의 불일치는 `{"status":409,"code":"PROGRAM_DEFINITION_MISMATCH","programType":"STANDARD","programId":99}`이고, Expo 페이지 넘김 중 정의 버전 변경은 `{"status":409,"code":"DEFINITION_VERSION_CHANGED"}`이며 첫 페이지부터 다시 읽는다. 참가자 후보 GET은 기존처럼 `APPLICATION_CONFLICT`다. 관리자 접수 목록·상세에는 `admissionRoute`를 추가한다. 기존 목록 순서·식별자·상태·인증과 `Cache-Control: no-store`를 유지한다.
 
