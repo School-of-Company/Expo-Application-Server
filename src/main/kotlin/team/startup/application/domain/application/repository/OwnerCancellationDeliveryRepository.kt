@@ -22,6 +22,7 @@ class OwnerCancellationDeliveryRepository(
         val operationId: UUID,
         val action: String,
         val cancellationRevision: Long? = null,
+        val sessionId: Long? = null,
     )
 
     fun lock(command: CancelOwnerApplicationCommand): AutoCloseable {
@@ -90,12 +91,15 @@ class OwnerCancellationDeliveryRepository(
     fun commit(
         operationId: UUID,
         cancellationRevision: Long,
+        sessionId: Long? = null,
     ) {
         require(cancellationRevision > 0)
         check(
             jdbc.update(
-                "UPDATE tb_owner_cancellation_delivery SET action = 'COMMIT', cancellation_revision = ? WHERE operation_id = ? AND action = 'ACQUIRING'",
+                "UPDATE tb_owner_cancellation_delivery SET action = 'COMMIT', cancellation_revision = ?, session_id = ? " +
+                    "WHERE operation_id = ? AND action = 'ACQUIRING'",
                 cancellationRevision,
+                sessionId,
                 operationId,
             ) ==
                 1,
@@ -140,5 +144,6 @@ class OwnerCancellationDeliveryRepository(
             rs.getObject("operation_id", UUID::class.java),
             rs.getString("action"),
             rs.getObject("cancellation_revision", Long::class.javaObjectType),
+            rs.getObject("session_id", Long::class.javaObjectType),
         )
 }

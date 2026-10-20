@@ -334,9 +334,10 @@ class RegistrationGateway(
                     val name = node.get("name")
                     val occupation = node.get("occupation")
                     val representative = node.get("representative")
+                    val school = node.get("school")
                     if (id == null || !id.isIntegralNumber || !id.canConvertToLong() || id.asLong() <= 0 ||
                         name == null || !name.isString || occupation == null || (!occupation.isNull && !occupation.isString) ||
-                        representative == null || !representative.isBoolean
+                        representative == null || !representative.isBoolean || (school != null && !school.isNull && !school.isString)
                     ) {
                         invalidManagedResponse()
                     }
@@ -346,6 +347,8 @@ class RegistrationGateway(
                         if (occupation.isNull) null else occupation.stringValue(),
                         representative.asBoolean(),
                         fieldRegistered(node),
+                        school?.takeIf { it.isString }?.stringValue(),
+                        school != null,
                     )
                 },
             )

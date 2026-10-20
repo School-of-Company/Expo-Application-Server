@@ -6,9 +6,11 @@ import org.springframework.transaction.annotation.Transactional
 import team.startup.application.domain.application.presentation.dto.ApplyPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.PreregisterApplicationReceipt
 import team.startup.application.domain.application.presentation.dto.targeted
+import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import team.startup.application.domain.application.service.ApplyPreregisterSessionService
 import tools.jackson.databind.ObjectMapper
+import java.time.Clock
 
 @Service
 class ApplyPreregisterSessionServiceImpl(
@@ -16,6 +18,8 @@ class ApplyPreregisterSessionServiceImpl(
     private val ledger: PreregisterSessionLedger,
     private val mapper: ObjectMapper,
     private val attendance: SessionAttendanceOutbox,
+    private val reservations: PreregisterReservationRepository,
+    private val clock: Clock,
 ) : ApplyPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: ApplyPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
@@ -48,6 +52,13 @@ class ApplyPreregisterSessionServiceImpl(
                 // #198: other sessions are allowed unless their times overlap this one.
                 if (repository.overlapping(command.expoId, command.sessionId, added, definition)) {
                     conflict("시간이 겹치는 회차에 활성 신청이 있습니다.")
+                }
+                // #223: 이 대표자 일행이 승급될 수 있는 대기·선점으로 잡은 다른 회차도 겹침으로 본다. 번호를 모르면 확정만 본다.
+                val phone = reservations.partyRegistration(command.expoId, command.representativeId)?.phoneNumber?.filter { it in '0'..'9' }
+                if (phone != null && added.isNotEmpty() &&
+                    reservations.overlappingPending(command.expoId, command.sessionId, phone, added, definition, clock.instant())
+                ) {
+                    conflict("시간이 겹치는 회차에 대기 중인 신청이 있습니다.")
                 }
                 val newCount = added.size
                 // This trusted-ID path carries no occupations, so it cannot take seats from a target session (#173).

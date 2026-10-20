@@ -47,9 +47,19 @@ class AttendanceCancellationAdapter(
         participantId: Long,
         operationId: UUID,
         revision: Long? = null,
+        // Null for whole-participant cancellation; Attendance then treats every session as cancelled.
+        sessionId: Long? = null,
     ) {
         require(revision == null || revision > 0)
-        send(expoId, participantId, operationId, "POST", revision?.let { mapper.writeValueAsString(mapOf("revision" to it)) })
+        require(sessionId == null || (revision != null && sessionId > 0))
+        val body =
+            revision?.let {
+                buildMap {
+                    put("revision", it)
+                    sessionId?.let { session -> put("sessionId", session) }
+                }
+            }
+        send(expoId, participantId, operationId, "POST", body?.let(mapper::writeValueAsString))
     }
 
     fun abort(

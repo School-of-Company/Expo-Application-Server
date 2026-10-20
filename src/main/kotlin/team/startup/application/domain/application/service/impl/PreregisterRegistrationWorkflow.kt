@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -32,7 +33,21 @@ class PreregisterRegistrationWorkflow(
     private val companions: PreregisterCompanionPolicy,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
+    private val retryLimit: ReservationRetryLimit,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    // #222: 확정되지 않은 실패가 상한까지 이어지면 좌석을 유지한 채 운영자 확인으로 넘기고, 그 순간 한 번만 경고한다.
+    // needsReview 뒤에는 errorStatus가 있어 이 경로에 다시 오지 않으므로 경고가 되풀이되지 않는다.
+    private fun retryOrReview(current: PreregisterReservation) {
+        if (retryLimit.exceeded(current)) {
+            reservations.needsReview(current, 502)
+            log.warn("Preregister reservation moved to review after retry limit: expoId={} requestId={}", current.expoId, current.requestId)
+        } else {
+            reservations.retry(current)
+        }
+    }
+
     private fun fingerprint(command: RegistrationCommand): String =
         mapper.writeValueAsString(command.copy(expoId = command.expoId.lowercase(), idempotencyKey = null))
 
@@ -192,8 +207,22 @@ class PreregisterRegistrationWorkflow(
                         if (waits || teacher < categories.first || other < categories.second) conflict("일행 전원을 수용할 수 없습니다.")
                     }
                     // 이미 일행에 있는 사람을 다시 보내면 User가 새로 만들지 않고 QR만 다시 보낸다. 미리 거절한다.
-                    val known = party.participants.map { it.name.trim() to it.occupation }.toSet()
-                    if (added.any { (it.path("name").asString().trim() to it.path("occupation").asString()) in known }) {
+                    // #225: User처럼 대표자를 빼고 동행자의 이름·구분·학교로 같은 사람을 가린다. 학교를 싣지 않는 옛 User 응답이면 이름·구분만 본다.
+                    val known = party.participants.filterNot { it.representative }
+                    if (added.any { candidate ->
+                            val school =
+                                candidate
+                                    .path("school")
+                                    .asString()
+                                    .trim()
+                                    .ifEmpty { null }
+                            known.any {
+                                it.name.trim() == candidate.path("name").asString().trim() &&
+                                    it.occupation == candidate.path("occupation").asString() &&
+                                    (!it.schoolReported || it.school == school)
+                            }
+                        }
+                    ) {
                         conflict("이미 일행에 있는 동행자입니다.")
                     }
                     val snapshot = requireNotNull(availability.snapshot)
@@ -305,6 +334,10 @@ class PreregisterRegistrationWorkflow(
                         conflict("이미 신청한 회차입니다.")
                     }
                     if (repository.overlapping(expoId, sessionId, participantIds, definition)) conflict("확정된 다른 회차와 시간이 겹칩니다.")
+                    // #223: 승급될 수 있는 다른 회차의 대기·선점도 겹침으로 본다. 나중에 승급이 겹침으로 거절되는 것을 막는다.
+                    if (reservations.overlappingPending(expoId, sessionId, phone, participantIds, definition, waitlist.now())) {
+                        conflict("대기 중인 다른 회차와 시간이 겹칩니다.")
+                    }
                     val categories =
                         attendees.map { PreregisterSeatCategory.of(it.occupation) }.let { seats ->
                             seats.count { it == PreregisterSeatCategory.TEACHER } to seats.count { it == PreregisterSeatCategory.OTHER }
@@ -472,7 +505,7 @@ class PreregisterRegistrationWorkflow(
                             } else if (ex is ParticipantIdsMismatchException) {
                                 reservations.needsReview(current, ex.statusCode.value())
                             } else {
-                                reservations.retry(current)
+                                retryOrReview(current)
                             }
                         }
                         false
@@ -492,7 +525,7 @@ class PreregisterRegistrationWorkflow(
                     val current = reservations.find(expoId, requestId, "") ?: return@executeWithoutResult
                     if (current.state == "RESERVED" && current.errorStatus == null) {
                         reservations.result(current, result)
-                        if (ex is ParticipantIdsMismatchException) reservations.needsReview(current, 502) else reservations.retry(current)
+                        if (ex is ParticipantIdsMismatchException) reservations.needsReview(current, 502) else retryOrReview(current)
                     }
                 }
                 throw ex

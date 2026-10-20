@@ -82,7 +82,10 @@ block cancellation.
 
 Existing guard acquire/abort routes keep their operation IDs. Preregistration
 `POST .../cancellation-guard/{operationId}/commit` receives positive
-`{ "revision": ... }`, matching the local cancellation DELETE. Application
+`{ "revision": ..., "sessionId": ... }`, matching the local cancellation DELETE.
+`sessionId` is the cancelled session (stored as `session_id` with the delivery)
+so the participant's other ACTIVE sessions stay admissible; it is omitted only for
+whole-participant cancellation and deliveries recorded before V35. Application
 outbox PUT uses `2 * outbox ID`; DELETE and purge compensation use
 `2 * outbox ID + 1`. Retries reuse the immutable revision.
 
