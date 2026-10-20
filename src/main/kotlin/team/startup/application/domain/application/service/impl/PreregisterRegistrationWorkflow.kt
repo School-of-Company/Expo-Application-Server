@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -32,7 +33,21 @@ class PreregisterRegistrationWorkflow(
     private val companions: PreregisterCompanionPolicy,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
+    private val retryLimit: ReservationRetryLimit,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    // #222: 확정되지 않은 실패가 상한까지 이어지면 좌석을 유지한 채 운영자 확인으로 넘기고, 그 순간 한 번만 경고한다.
+    // needsReview 뒤에는 errorStatus가 있어 이 경로에 다시 오지 않으므로 경고가 되풀이되지 않는다.
+    private fun retryOrReview(current: PreregisterReservation) {
+        if (retryLimit.exceeded(current)) {
+            reservations.needsReview(current, 502)
+            log.warn("Preregister reservation moved to review after retry limit: expoId={} requestId={}", current.expoId, current.requestId)
+        } else {
+            reservations.retry(current)
+        }
+    }
+
     private fun fingerprint(command: RegistrationCommand): String =
         mapper.writeValueAsString(command.copy(expoId = command.expoId.lowercase(), idempotencyKey = null))
 
@@ -472,7 +487,7 @@ class PreregisterRegistrationWorkflow(
                             } else if (ex is ParticipantIdsMismatchException) {
                                 reservations.needsReview(current, ex.statusCode.value())
                             } else {
-                                reservations.retry(current)
+                                retryOrReview(current)
                             }
                         }
                         false
@@ -492,7 +507,7 @@ class PreregisterRegistrationWorkflow(
                     val current = reservations.find(expoId, requestId, "") ?: return@executeWithoutResult
                     if (current.state == "RESERVED" && current.errorStatus == null) {
                         reservations.result(current, result)
-                        if (ex is ParticipantIdsMismatchException) reservations.needsReview(current, 502) else reservations.retry(current)
+                        if (ex is ParticipantIdsMismatchException) reservations.needsReview(current, 502) else retryOrReview(current)
                     }
                 }
                 throw ex
