@@ -32,6 +32,8 @@ class AdminPreregistrationReader(
         limit: Int,
         offset: Long = 0,
         keys: List<String>? = null,
+        // #284: 같은 읽기 스냅샷에서 보고용 원장 부가 정보를 함께 읽는다.
+        within: (List<AdminPreregistrationRow>) -> Unit = {},
     ): Pair<List<AdminPreregistrationRow>, Long> {
         val reservationOnly =
             query.status?.none { it == AdminPreregistrationStatus.CONFIRMED || it == AdminPreregistrationStatus.CANCELLED } == true
@@ -41,7 +43,7 @@ class AdminPreregistrationReader(
                 reads.execute {
                     sessions.readLock(expoId)
                     if (sessions.expoDeleted(expoId)) throw ResponseStatusException(HttpStatus.CONFLICT, "삭제된 행사입니다.")
-                    repository.query(expoId, query, candidates, limit, offset, keys)
+                    repository.query(expoId, query, candidates, limit, offset, keys).also { within(it.first) }
                 },
             )
         if (keys != null && total != keys.size.toLong()) {
