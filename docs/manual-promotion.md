@@ -26,7 +26,7 @@ Expo #143(브랜치 `feat/143-promotion-auto-end-manual-confirm`, 커밋 623cb73
 
 `POST /application/admin/expos/{expoId}/program-session-applications/{applicationId}/promotion`
 
-- 원본 `Authorization: Bearer` 관리자 JWT를 Expo `GET /internal/expo/{expoId}/admin-application-promote-access`로 매번 검증한다. 응답은 `permission=APPLICATION_PROMOTE`, `policyVersion=EXPO_ADMIN_APPLICATION_PROMOTE_V1`, `scope=EXPO_ADMIN`이어야 한다. `APPLICATION_READ`·`APPLICATION_CANCEL`로는 열리지 않는다. Expo 401/403/404는 그대로 전달한다.
+- 원본 `Authorization: Bearer` 관리자 JWT를 Expo `GET /internal/expo/{expoId}/admin-application-promote-access`로 매번 검증한다. 응답은 `permission=APPLICATION_PROMOTE`, `policyVersion=EXPO_ADMIN_APPLICATION_PROMOTE_V1`, `scope=EXPO_ADMIN`이어야 한다. `APPLICATION_READ`·`APPLICATION_CANCEL`로는 열리지 않는다. Expo 401/403/404는 그대로 전달한다. Expo가 행사 권한 행이 없다고 거절한 403(`수동 확정 권한이 없습니다.`)만 본문 `{"status":403,"code":"APPLICATION_PROMOTE_FORBIDDEN"}`로 구분한다(#267). 다른 401/403/404는 상태만 전달하고 Expo 문구·code를 싣지 않는다.
 - 200 `{"applicationId", "status":"CONFIRMED"}`, `Cache-Control: no-store`. 이미 확정된 신청은 같은 결과를 돌려주며, 이력을 새로 만들지 않는다.
 - 404는 신청이 없거나 다른 행사 신청인 경우다. 409 reason: `AUTO_PROMOTION_ACTIVE`, `PROMOTION_ENDED`, `NOT_WAITING`, `OFFER_ACTIVE`, `CAPACITY_CHANGED`, `TIME_CONFLICT`, `PREREGISTRATION_NOT_CONFIRMED`, `GROUP_ALREADY_APPLIED`, `TRAINEE_UNAVAILABLE`, 묶음 자격 사유 등. 프로그램 삭제·정의 변경 중이면 기존 409다. 잠금 경합·공급자 장애는 503이다. 실패해도 대기는 그대로 둔다.
 - 운영자가 고른 대기를 확정하며 FIFO 선두일 필요는 없다. 자동 승급과 같은 잠금(참가자 → 일정·묶음·프로그램) 아래에서 정원, 사전 좌석(#125), 채널 정원, 활성 제안 확보 좌석, 사전등록 확정, 시간 충돌, 연수자 연결·기존 묶음, 삭제·`closed`, 최종 마감을 다시 확인한다. User·Expo 호출 뒤에도 최종 마감을 한 번 더 확인한다.
