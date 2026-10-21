@@ -49,8 +49,9 @@ class AdminPreregistrationReader(
         if (keys != null && total != keys.size.toLong()) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "현재 행사의 사전등록 대상을 찾을 수 없습니다.")
         }
-        if (total > 5000 && limit == 5001) {
-            throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 5000행입니다. 검색 범위를 좁혀 주세요.")
+        // 전체 대상 호출은 상한+1을 limit으로 넘긴다: 관리자 targets 5001(5000행), 보고 원천 10001(10000행, #284).
+        if (limit > 5000 && total >= limit) {
+            throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 ${limit - 1}행입니다. 검색 범위를 좁혀 주세요.")
         }
         val details = participants.details(expoId, rows.mapNotNull { it.participantId }.distinct())
         val names = participants.names(expoId, rows.mapNotNull { it.cancellationActorUser?.participantId })

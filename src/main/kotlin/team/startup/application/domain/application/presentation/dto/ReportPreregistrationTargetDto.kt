@@ -28,9 +28,9 @@ data class ReportPreregistrationFilter(
     val query: AdminPreregistrationQuery get() = AdminPreregistrationQuery(sessionId, status, q)
 }
 
-@Schema(description = "접수대장 key 선택. 최대 5000건, 중복 금지")
+@Schema(description = "접수대장 key 선택. 최대 10000건, 중복 금지")
 data class SelectReportPreregistrationTargetsRequest(
-    @field:Size(min = 1, max = 5000)
+    @field:Size(min = 1, max = 10000)
     val keys: List<
         @Size(min = 1, max = 160)
         String,
@@ -41,7 +41,7 @@ data class SelectReportPreregistrationTargetsRequest(
     val isKeysUnique: Boolean get() = keys.distinct().size == keys.size
 }
 
-@Schema(description = "사전등록 전체 보고 대상 스냅샷 생성. 최대 5000행, 페이지 1–500", example = """{"filter":{},"limit":100}""")
+@Schema(description = "사전등록 전체 보고 대상 스냅샷 생성. 최대 10000행, 페이지 1–500", example = """{"filter":{},"limit":100}""")
 data class CreateReportPreregistrationSnapshotRequest(
     @field:Valid val filter: ReportPreregistrationFilter = ReportPreregistrationFilter(),
     @field:Min(1) @field:Max(500) val limit: Int = 100,

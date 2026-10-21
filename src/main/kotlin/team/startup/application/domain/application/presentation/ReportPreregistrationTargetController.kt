@@ -69,14 +69,14 @@ class ReportPreregistrationTargetController(
     @Operation(
         summary = "사전등록 동일 필터 전체 대상 스냅샷 생성",
         description =
-            "접수대장 sessionId/status/q와 같은 의미. 최대 5000행, 페이지 1–500, 15분 유지. " +
+            "접수대장 sessionId/status/q와 같은 의미. 최대 10000행, 페이지 1–500, 15분 유지. " +
                 "참가자×회차 APPLICATION 행과 User 미저장 예약 일행 RESERVATION 행을 구분합니다.",
     )
     @ApiResponses(
         value = [
             ApiResponse(responseCode = "200", description = "첫 페이지"),
             ApiResponse(responseCode = "409", description = "삭제된 행사"),
-            ApiResponse(responseCode = "422", description = "대상 5000행 상한 초과"),
+            ApiResponse(responseCode = "422", description = "대상 10000행 상한 초과"),
             ApiResponse(responseCode = "502", description = "User 참가자 누락 또는 잘못된 응답"),
             ApiResponse(responseCode = "503", description = "원천 조회 불가"),
         ],

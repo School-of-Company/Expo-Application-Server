@@ -290,6 +290,54 @@ class ReportPreregistrationTargetHttpTests {
         assertEquals(410, next(cursor).status)
     }
 
+    private fun bulk(
+        from: Int,
+        to: Int,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "SELECT ?, 'bulk-' || lpad(n::text, 5, '0'), 1, '{}', '{}', 1, 'WAITING', 100 + n FROM generate_series(?, ?) n",
+            expo,
+            from,
+            to,
+        )
+    }
+
+    @Test
+    fun `운영 최대 5200행과 10000행 경계는 허용하고 10001행은 저장 없이 거절하며 관리자 접수대장 5000 상한은 유지한다`() {
+        // 4회차 × (일반 1000 + 교원 300) = 5200행. 기존 5행 + 예약 5195행.
+        bulk(1, 5195)
+        assertEquals(5200, json(create())["totalElements"].asInt())
+        val ledger =
+            mvc
+                .perform(
+                    post("/application/admin/expos/$expo/preregistrations/targets")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"kind":"FILTERED","filter":{}}"""),
+                ).andReturn()
+                .response
+        assertEquals(422, ledger.status, ledger.contentAsString)
+        bulk(5196, 9995)
+        var page = json(create("""{"limit":500}"""))
+        assertEquals(10000, page["totalElements"].asInt())
+        val keys = items(page).map { it["key"].asString() }.toMutableList()
+        while (!page["nextCursor"].isNull) {
+            page = json(next(page["nextCursor"].asString()))
+            keys += items(page).map { it["key"].asString() }
+        }
+        assertEquals(10000, keys.size)
+        assertEquals(10000, keys.toSet().size)
+        val selected = json(send("${base()}/selection", mapper.writeValueAsString(mapOf("keys" to keys))))
+        assertEquals(10000, selected["totalElements"].asInt())
+        assertEquals(400, send("${base()}/selection", mapper.writeValueAsString(mapOf("keys" to keys + "extra"))).status)
+        val stored = jdbc.queryForObject("SELECT count(*) FROM tb_report_application_snapshot", Int::class.java)
+        bulk(9996, 9996)
+        assertEquals(422, create().status)
+        assertEquals(stored, jdbc.queryForObject("SELECT count(*) FROM tb_report_application_snapshot", Int::class.java))
+    }
+
     @Test
     fun `상한 초과 User 장애 삭제 행사는 부분 스냅샷 없이 실패한다`() {
         userStatus = 503
@@ -298,13 +346,6 @@ class ReportPreregistrationTargetHttpTests {
         userParticipants = listOf(1L)
         assertEquals(502, create().status)
         userParticipants = listOf(1L, 2L)
-        jdbc.update(
-            "INSERT INTO tb_preregister_reservation " +
-                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
-                "SELECT ?, 'bulk-' || n, 1, '{}', '{}', 1, 'WAITING', 100 + n FROM generate_series(1, 4996) n",
-            expo,
-        )
-        assertEquals(422, create().status)
         assertEquals(200, create("""{"filter":{"sessionId":2}}""").status)
         jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", expo)
         assertEquals(409, create().status)

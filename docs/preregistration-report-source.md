@@ -11,12 +11,12 @@ Report가 사전등록(PRE) 원장 XLSX를 만들 때 읽는 계약이다. 행·
 
 | 메서드 | 경로 | 요청 | 응답 |
 | --- | --- | --- | --- |
-| POST | `/selection` | `{"keys":[...]}` 접수대장 key 1–5000, 중복 금지 | `{items, totalElements}` |
+| POST | `/selection` | `{"keys":[...]}` 접수대장 key 1–10000, 중복 금지 | `{items, totalElements}` |
 | POST | (루트) | `{"filter":{"sessionId","status","q"},"limit":1–500(기본 100)}` | 스냅샷 첫 페이지 |
 | GET | (루트) `?cursor=` | 이전 `nextCursor`만 | 다음 페이지 |
 
 - 선택은 key가 하나라도 없거나 다른 행사·프로그램 UUID면 전체 404다. 필터 전체와 선택은 같은 reader와 같은 행을 쓴다.
-- 필터 전체는 최대 5000행이며 넘으면 422로 저장하지 않는다. 삭제된 행사 409, User 참가자 누락·잘못된 응답 502, User 장애 503.
+- 필터 전체는 최대 10000행(프로그램 원천과 같다. 관리자 접수대장 `/targets`는 5000행 그대로)이며 넘으면 422로 저장하지 않는다. 삭제된 행사 409, User 참가자 누락·잘못된 응답 502, User 장애 503.
   어느 실패도 빈 성공이나 부분 스냅샷으로 바꾸지 않는다.
 - 스냅샷 응답: `snapshotId, snapshotAt, expiresAt(15분), totalElements, items, nextCursor`. 만료 410, 다른 행사 404,
   잘못된·정렬되지 않은 cursor 400이다. V39 `source`로 구분하므로 프로그램 cursor로 사전등록 스냅샷을(반대도) 읽으면 404다.

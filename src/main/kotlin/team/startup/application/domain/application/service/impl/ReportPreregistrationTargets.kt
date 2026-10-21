@@ -27,7 +27,7 @@ class ReportPreregistrationTargets(
         lateinit var applications: Map<Long, ReportPreregistrationRepository.ApplicationExtra>
         lateinit var reservations: Map<String, ReportPreregistrationRepository.ReservationExtra>
         val (rows) =
-            reader.read(expoId, query, 5001, keys = keys) { rows ->
+            reader.read(expoId, query, 10001, keys = keys) { rows ->
                 sessions = repository.sessions(expoId, rows.map { it.sessionId }.toSet())
                 applications = repository.applications(expoId, rows.mapNotNull { it.applicationId })
                 reservations = repository.reservations(expoId, rows.mapNotNull { it.reservationId })
