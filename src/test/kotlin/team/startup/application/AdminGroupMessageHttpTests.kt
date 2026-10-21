@@ -251,6 +251,71 @@ class AdminGroupMessageHttpTests {
     }
 
     @Test
+    fun `sms application summary renders per application and links stay missing until a qr code contract exists`() {
+        val response = preview(selected(standard, training), "{이름}님\n{신청내역}")
+        assertEquals(201, response.status, response.contentAsString)
+        val targets = requests.last()["targets"]
+        assertEquals(
+            "대표님\n- 프로그램: 프로그램1\n- 일시: 10.12(월) 09:00~10:00\n- 신청 상태: 확정",
+            targets[0]["content"].stringValue(),
+        )
+        assertTrue(targets[1]["content"].stringValue().startsWith("연수님\n- 프로그램: 프로그램"), targets.toString())
+
+        val link = preview(selected(standard), "QR {URL}")
+        assertEquals(201, link.status, link.contentAsString)
+        assertEquals("TEMPLATE_DATA_MISSING", requests.last()["targets"][0]["missingReason"].stringValue())
+    }
+
+    @Test
+    fun `kakao application summary is sent only when mapped and fixed variables pass through to the client`() {
+        kakaoEnabled = true
+        val config =
+            mapper.readTree(
+                mvc
+                    .perform(get("$base/config").header("Authorization", "Bearer admin"))
+                    .andReturn()
+                    .response.contentAsString,
+            )
+        val templates = config["channels"]["KAKAO"]["templates"]
+        assertEquals("https://glink.kr/busy", templates[1]["fixedVariables"]["#{주차장URL}"].stringValue())
+        assertFalse(templates[0].has("fixedVariables"), templates.toString())
+
+        val summary = previewSource(selected(standard), mapOf("channel" to "KAKAO", "templateId" to "K7", "fallbackToSms" to false))
+        assertEquals(201, summary.status, summary.contentAsString)
+        val target = requests.last()["targets"][0]
+        assertEquals(
+            "- 프로그램: 프로그램1\n- 일시: 10.12(월) 09:00~10:00\n- 신청 상태: 확정",
+            target["templateVariables"]["applicationSummary"].stringValue(),
+        )
+        assertEquals(
+            "대표님\n${target["templateVariables"]["applicationSummary"].stringValue()}\n주차 https://glink.kr/busy",
+            target["content"].stringValue(),
+        )
+
+        // Notification처럼 한 번에 치환하므로 신청 값 안의 placeholder 모양 글자는 고정값으로 바뀌지 않는다.
+        jdbc.update(
+            "UPDATE tb_program_session_application SET definition_snapshot = " +
+                "jsonb_set(definition_snapshot, '{title}', to_jsonb(CAST(? AS text))) WHERE id = ?",
+            "강연 #{주차장URL}",
+            standard,
+        )
+        assertEquals(
+            201,
+            previewSource(selected(standard), mapOf("channel" to "KAKAO", "templateId" to "K7", "fallbackToSms" to false)).status,
+        )
+        val literal = requests.last()["targets"][0]["content"].stringValue()
+        assertTrue(literal.startsWith("대표님\n- 프로그램: 강연 #{주차장URL}\n"), literal)
+        assertTrue(literal.endsWith("주차 https://glink.kr/busy"), literal)
+
+        assertEquals(201, kakaoPreview(selected(standard), fallbackToSms = false).status)
+        assertFalse(requests.last()["targets"][0]["templateVariables"].has("applicationSummary"))
+
+        val link = previewSource(selected(standard), mapOf("channel" to "KAKAO", "templateId" to "K8", "fallbackToSms" to false))
+        assertEquals(201, link.status, link.contentAsString)
+        assertEquals("TEMPLATE_DATA_MISSING", requests.last()["targets"][0]["missingReason"].stringValue())
+    }
+
+    @Test
     fun `kakao expo name without a title stays missing and title changes invalidate the fingerprint`() {
         kakaoEnabled = true
         val first = mapper.readTree(kakaoPreview(selected(standard), fallbackToSms = false).contentAsString)
@@ -530,7 +595,12 @@ class AdminGroupMessageHttpTests {
             {"enabled":true,"templates":[{"id":"K6","name":"프로그램 참가 안내",
             "content":"[#{행사명}] #{이름}님 #{프로그램} #{일시} #{상태}",
             "variableMapping":{"expoName":"#{행사명}","name":"#{이름}","programName":"#{프로그램}","sessionName":"#{일시}","status":"#{상태}"},
-            "variables":["#{행사명}","#{이름}","#{프로그램}","#{일시}","#{상태}"]}]}
+            "variables":["#{행사명}","#{이름}","#{프로그램}","#{일시}","#{상태}"]},
+            {"id":"K7","name":"사전 안내","content":"#{이름}님\n#{신청내역}\n주차 #{주차장URL}",
+            "variableMapping":{"name":"#{이름}","applicationSummary":"#{신청내역}"},
+            "variables":["name","applicationSummary"],"fixedVariables":{"#{주차장URL}":"https://glink.kr/busy"}},
+            {"id":"K8","name":"대기자 안내","content":"#{이름}님 #{URL}",
+            "variableMapping":{"name":"#{이름}","applicationUrl":"#{URL}"},"variables":["name","applicationUrl"]}]}
             """.trimIndent()
         private const val JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         private val previewId = UUID.fromString("0190abcd-0000-7000-8000-000000000099")
