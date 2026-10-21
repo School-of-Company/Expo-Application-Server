@@ -95,7 +95,10 @@ class SessionAttendanceOutboxRepository(
         )
     }
 
-    /** #249: only a participant whose preregistration was cancelled here has an Attendance record to release. */
+    /**
+     * #249, #261: only a participant with preregistration history here has an Attendance record to release: a cancelled one, or
+     * confirmed sessions on other days (registration already rejected a session confirmed for today).
+     */
     fun appendFieldRegistered(
         expoId: UUID,
         participantId: Long,
@@ -103,7 +106,7 @@ class SessionAttendanceOutboxRepository(
         lockParticipant(expoId, participantId)
         jdbc.update(
             "INSERT INTO tb_session_attendance_outbox (expo_id, participant_id, field_registered) SELECT ?, ?, TRUE " +
-                "WHERE EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ? AND status = 'CANCELLED')",
+                "WHERE EXISTS(SELECT 1 FROM tb_preregister_application WHERE expo_id = ? AND participant_id = ?)",
             expoId,
             participantId,
             expoId,

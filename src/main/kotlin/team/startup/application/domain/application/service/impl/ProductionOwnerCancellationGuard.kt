@@ -12,6 +12,7 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.GetOwnerCancellationStatusCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.service.OwnerCancellationGuard
@@ -30,6 +31,7 @@ class ProductionOwnerCancellationGuard(
     private val clock: Clock,
     private val statuses: AttendanceCancellationStatusGateway,
     private val participants: AdminCancellationParticipantGateway,
+    private val programAttendances: AdminAttendanceGateway,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean = false,
 ) : OwnerCancellationGuard {
     override fun recover(command: CancelOwnerApplicationCommand) {
@@ -115,28 +117,30 @@ class ProductionOwnerCancellationGuard(
         )
     }
 
+    // #261: 관리자 프로그램 취소는 그 프로그램에 출석하지 않았으면 입장 여부와 취소 마감에 관계없이 허용한다. 입장자와 다른 프로그램
+    // 출석자를 막는 Attendance 취소 보호는 걸지 않는다.
+    // ponytail: 출석 확인과 로컬 취소 사이의 스캔은 막지 못한다. 막아야 하면 Attendance에 프로그램 단위 보호를 둔다.
     override fun acquireAdminProgram(
         command: CancelOwnerApplicationCommand,
         participantId: Long,
         programId: Long,
     ): OwnerCancellationGuard.Permit {
         require(command.type != OwnerApplicationType.PREREGISTER)
-        lateinit var before: AdminCancellationParticipantStatus
-        return guarded(
-            command,
-            participantId,
-            prepare = {
-                before = participants.status(command.expoId, participantId)
-                if (before.entered) throw ResponseStatusException(HttpStatus.CONFLICT, "이미 입장한 참가자입니다.")
-                before.linkedTraineeId to deadlines.program(command.expoId, command.type, programId)
-            },
-            acquire = { id ->
-                attendance.acquireAdmin(command.expoId, participantId, id)
-                if (participants.status(command.expoId, participantId) != before) {
-                    throw ResponseStatusException(HttpStatus.CONFLICT, "취소 보호 중 참가자 상태가 변경되었습니다.")
-                }
-            },
-        )
+        if (!attendanceEnabled) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "출석 취소 전달이 활성화되지 않았습니다.")
+        }
+        val status = participants.status(command.expoId, participantId)
+        val type = ProgramSessionType.valueOf(command.type.name)
+        val person = if (type == ProgramSessionType.TRAINING) status.linkedTraineeId else participantId
+        if (person != null && programAttendances.attended(type, programId, person)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "이 프로그램에 이미 출석한 참가자입니다.")
+        }
+        return object : OwnerCancellationGuard.Permit {
+            override val linkedTraineeId = status.linkedTraineeId
+            override val cancelEndedAt: Instant = Instant.MAX
+
+            override fun close() {}
+        }
     }
 
     // prepare checks the participant before the remote guard and returns (linkedTraineeId, cancelEndedAt).

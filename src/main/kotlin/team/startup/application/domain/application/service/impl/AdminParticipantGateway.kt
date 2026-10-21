@@ -78,6 +78,16 @@ class AdminParticipantGateway(
         return results
     }
 
+    /** #261: User가 FIELD로 저장한 참가자의 일행 대표자 ID(대표자 본인이면 자기 ID). 없거나 FIELD가 아니면 null이다. */
+    fun fieldRepresentative(
+        expoId: UUID,
+        participantId: Long,
+    ): Long? {
+        require(participantId > 0)
+        val participant = page(expoId, participantId - 1, size = 1).items.singleOrNull()?.takeIf { it.participantId == participantId }
+        return participant?.takeIf { it.applicationType == "FIELD" }?.let { it.representativeId ?: it.participantId }
+    }
+
     /**
      * Current User names for optional actor display. User answers all-or-nothing, so a missing ID (404) or an
      * upstream/contract failure returns null for the whole batch instead of failing the readable history.

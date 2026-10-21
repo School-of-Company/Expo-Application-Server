@@ -117,8 +117,12 @@ class CancelStudentGuardianApplicationServiceImpl(
                 if (!traineeIds.all(trainings::tryLockTrainee)) conflict("연수 신청 변경 중입니다.")
                 for ((entry, permit) in permits) {
                     val target = currentTargets.single { it.id == entry.id }
-                    if (!clock.instant().isBefore(permit.cancelEndedAt) ||
-                        !clock.instant().isBefore(requireNotNull(definition.policy).cancelEndedAt)
+                    // 관리자는 취소 마감과 관계없이 취소한다(#261). 출석 여부는 acquireAdminProgram이 본다.
+                    if (adminId == null &&
+                        (
+                            !clock.instant().isBefore(permit.cancelEndedAt) ||
+                                !clock.instant().isBefore(requireNotNull(definition.policy).cancelEndedAt)
+                        )
                     ) {
                         conflict("신청 취소 기간이 끝났습니다.")
                     }

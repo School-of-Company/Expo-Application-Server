@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -41,7 +42,10 @@ class CancelProgramSessionServiceImpl(
         val entry = requireNotNull(repository.entry(original.id))
         if (entry.status == "CANCELLED") return
         val now = waitlist.now()
-        if (!now.isBefore(requireNotNull(definition.policy).cancelEndedAt)) throw ProgramApplicationConflictException("프로그램 취소 기간이 끝났습니다.")
+        // 관리자 취소는 마감과 관계없다(#261). 출석 여부는 관리자 취소 서비스가 먼저 본다.
+        if (command.actorType != ApplicationActorType.ADMIN && !now.isBefore(requireNotNull(definition.policy).cancelEndedAt)) {
+            throw ProgramApplicationConflictException("프로그램 취소 기간이 끝났습니다.")
+        }
         if (entry.status == "CONFIRMED") {
             if (definition.programType == ProgramSessionType.STANDARD) {
                 jdbc.update(

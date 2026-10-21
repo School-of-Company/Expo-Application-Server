@@ -103,7 +103,7 @@ class SessionAttendanceOutboxTests {
     }
 
     @Test
-    fun `현장 재등록은 사전등록 취소 이력이 있는 참가자만 취소 다음 순서로 회차 없는 PUT을 보낸다`() {
+    fun `현장 재등록은 사전등록 이력이 있는 참가자만 취소 다음 순서로 회차 없는 PUT을 보낸다`() {
         jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?", EXPO)
         jdbc.update(
             "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}') ON CONFLICT DO NOTHING",
@@ -116,17 +116,24 @@ class SessionAttendanceOutboxTests {
             EXPO,
         )
         inTransaction { outbox.cancelled(EXPO, 42, 1) }
-        // 43은 사전등록 이력이 없고 44는 취소하지 않았다
+        // 43은 사전등록 이력이 없다. 44처럼 다른 날 회차가 확정으로 남아도 회차 제한을 빼도록 보낸다(#261)
         outbox.fieldRegistered(EXPO, listOf(42, 43, 44))
-        assertEquals(2, count())
+        assertEquals(3, count())
 
-        repeat(2) { assertTrue(dispatcher.dispatchNext()) }
+        repeat(3) { assertTrue(dispatcher.dispatchNext()) }
         assertFalse(dispatcher.dispatchNext())
         val path = "/internal/expos/$EXPO/participants/42/preregister-session"
         assertEquals(
             listOf(
                 Request("DELETE", "$path?revision=3&sessionId=1", "", TOKEN, null),
                 Request("PUT", "$path/field-registration", "{\"revision\":4}", TOKEN, "application/json"),
+                Request(
+                    "PUT",
+                    "/internal/expos/$EXPO/participants/44/preregister-session/field-registration",
+                    "{\"revision\":6}",
+                    TOKEN,
+                    "application/json",
+                ),
             ),
             requests.toList(),
         )
@@ -136,7 +143,7 @@ class SessionAttendanceOutboxTests {
         outbox.fieldRegistered(EXPO, listOf(42))
         jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", EXPO)
         assertTrue(dispatcher.dispatchNext())
-        assertEquals(listOf(Request("DELETE", "$path?revision=7", "", TOKEN, null)), requests.toList())
+        assertEquals(listOf(Request("DELETE", "$path?revision=9", "", TOKEN, null)), requests.toList())
         assertEquals(0, count())
         jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?", EXPO)
     }

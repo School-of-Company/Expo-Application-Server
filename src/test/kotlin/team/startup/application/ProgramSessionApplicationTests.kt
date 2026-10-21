@@ -1412,6 +1412,95 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `onsite admission requires a confirmed preregistration but not an overlapping session time`() {
+        // #261: 오전 회차 확정자도 오후 프로그램에 현장 신청한다. 사전 신청과 일행 화면의 사전 판정은 시간 겹침을 그대로 본다.
+        capacity = 2
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1$ONSITE_OPEN"
+        jdbc.update(
+            "UPDATE tb_preregister_session_state SET definition = " +
+                "'{\"startedAt\":\"2030-01-01T00:00:00Z\",\"endedAt\":\"2030-01-01T01:00:00Z\"}'",
+        )
+        assertEquals(
+            "SESSION_TIME_MISMATCH",
+            assertThrows(ResponseStatusException::class.java) { service.execute(command()) }.reason,
+        )
+        for ((onsite, reason) in listOf(false to "SESSION_TIME_MISMATCH", true to null)) {
+            mvc
+                .perform(
+                    get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants?onsite=$onsite")
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                ).andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[0].eligible").value(reason == null))
+                .andExpect(
+                    if (reason == null) {
+                        jsonPath("$.participants[0].ineligibleReason").doesNotExist()
+                    } else {
+                        jsonPath("$.participants[0].ineligibleReason").value(reason)
+                    },
+                )
+        }
+        assertEquals("ONSITE", column("admission_route", onsiteService.execute(command()).applicationId))
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 2")
+        assertEquals(
+            "PREREGISTRATION_NOT_CONFIRMED",
+            assertThrows(ResponseStatusException::class.java) { onsiteService.execute(command(participant = 2)) }.reason,
+        )
+    }
+
+    @Test
+    fun `onsite admission replaces the applicant's own pre waiting in the group and keeps it on rejection`() {
+        // #261: 같은 묶음의 다른 시간대(겹치게 둔) 프로그램 2에 사전 대기 중인 참가자 2가 프로그램 1에 현장 신청한다.
+        capacity = 2
+        waitingCapacity = 1
+        admissionCapacities = "\"preRegistrationCapacity\":1,\"onsiteCapacity\":1$ONSITE_OPEN"
+        windows = mapOf(("STANDARD" to 2L) to ("2030-01-01T11:30:00" to "2030-01-01T12:30:00"))
+        managedIds = listOf(1, 2, 3)
+        addParticipant(3)
+        service.execute(command(program = 2))
+        val waiting = service.execute(command(program = 2, participant = 2))
+        assertEquals("WAITING", waiting.status)
+        for ((onsite, reason) in listOf(false to "GROUP_ALREADY_APPLIED", true to null)) {
+            mvc
+                .perform(
+                    get("/application/expos/$EXPO/program-sessions/STANDARD/1/participants?onsite=$onsite")
+                        .cookie(Cookie("PARTICIPANT_SESSION", "session")),
+                ).andExpect(status().isOk)
+                .andExpect(jsonPath("$.participants[1].eligible").value(reason == null))
+                .andExpect(
+                    if (reason == null) {
+                        jsonPath("$.participants[1].ineligibleReason").doesNotExist()
+                    } else {
+                        jsonPath("$.participants[1].ineligibleReason").value(reason)
+                    },
+                )
+        }
+        val other = onsiteService.execute(command(participant = 3, key = "other"))
+        assertThrows(ProgramApplicationConflictException::class.java) {
+            onsiteService.execute(command(participant = 2, key = "onsite"))
+        }
+        assertEquals("WAITING", column("status", waiting.applicationId))
+        cancel(other.applicationId)
+        val onsite = onsiteService.execute(command(participant = 2, key = "onsite"))
+        assertEquals("CONFIRMED", onsite.status)
+        assertEquals("ONSITE", column("admission_route", onsite.applicationId))
+        assertEquals("CANCELLED", column("status", waiting.applicationId))
+        assertEquals(
+            "SYSTEM",
+            jdbc.queryForObject(
+                "SELECT actor_type FROM tb_program_session_history WHERE application_id = ? AND status = 'CANCELLED'",
+                String::class.java,
+                waiting.applicationId,
+            ),
+        )
+        // 사전 신청은 대기를 바꾸지 않고 같은 묶음 활성 신청으로 거절한다.
+        val pre =
+            assertThrows(ProgramApplicationConflictException::class.java) {
+                service.execute(command(program = 2, participant = 2, key = "pre"))
+            }
+        assertEquals("GROUP_ALREADY_APPLIED", pre.ineligibleReason?.name)
+    }
+
+    @Test
     fun `legacy group membership and malformed answers cannot create a second application`() {
         jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (1, 2)")
         assertThrows(ProgramApplicationConflictException::class.java) { service.execute(command()) }

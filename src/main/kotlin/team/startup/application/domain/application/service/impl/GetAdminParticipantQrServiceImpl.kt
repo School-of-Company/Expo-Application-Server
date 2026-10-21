@@ -17,6 +17,7 @@ import java.util.UUID
 class GetAdminParticipantQrServiceImpl(
     private val gateway: RegistrationGateway,
     private val repository: ManagedParticipantRepository,
+    private val participants: AdminParticipantGateway,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     transactionManager: PlatformTransactionManager,
 ) : GetAdminParticipantQrService {
@@ -28,12 +29,14 @@ class GetAdminParticipantQrServiceImpl(
         participantId: Long,
     ): ParticipantQrResponse {
         // Attendance checks the party against this representative; an ambiguous ledger is never guessed.
-        val representative =
-            requireNotNull(reads.execute { repository.confirmedRepresentatives(expoId, participantId) }).singleOrNull()
-                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
+        val confirmed = requireNotNull(reads.execute { repository.confirmedRepresentatives(expoId, participantId) })
+        // #261: 확정 사전등록이 없으면 User가 FIELD로 저장한 참가자만 User 일행의 대표자로 조회한다.
+        val fieldRepresentative = if (confirmed.isEmpty()) participants.fieldRepresentative(expoId, participantId) else null
+        val field = fieldRepresentative != null
+        val representative = confirmed.singleOrNull() ?: fieldRepresentative ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         if (!attendanceEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val response = gateway.participantQr(expoId, participantId, representative)
-        if (!requireNotNull(reads.execute { repository.qrAvailable(expoId, participantId, representative) })) {
+        if (!requireNotNull(reads.execute { repository.qrAvailable(expoId, participantId, representative, field) })) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND)
         }
         return response
