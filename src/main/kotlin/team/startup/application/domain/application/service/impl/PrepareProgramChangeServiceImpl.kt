@@ -5,6 +5,8 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.exception.SessionChangeConflictCode
+import team.startup.application.domain.application.exception.SessionChangeConflictException
 import team.startup.application.domain.application.presentation.dto.PrepareProgramChangeCommand
 import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
@@ -13,6 +15,7 @@ import team.startup.application.domain.application.repository.PromotionOfferRepo
 import team.startup.application.domain.application.repository.StandardProgramApplicationRepository
 import team.startup.application.domain.application.repository.TrainingProgramApplicationRepository
 import team.startup.application.domain.application.service.PrepareProgramChangeService
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
 
@@ -83,41 +86,52 @@ class PrepareProgramChangeServiceImpl(
             // Seats held by active participation offers (#144) cannot be removed by reconfiguration either.
             val offered = ledger.offeredSeats(old)
             val waiting = repository.waitingCount(old)
-            val oldGuardian = old.policy?.guardianPolicy
-            val nextGuardian = next?.policy?.guardianPolicy
-            // #270: filling guardianSchoolValue into a legacy policy only narrows future applications.
-            val backfill =
-                oldGuardian != null && oldGuardian.guardianSchoolValue == null &&
-                    nextGuardian?.copy(guardianSchoolValue = null) == oldGuardian
-            if ((active > 0 || confirmed > 0) && next != null && nextGuardian != oldGuardian && !backfill) conflict()
-            if ((next == null && (active > 0 || confirmed > 0)) ||
-                (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
-                (next?.policy != null && (next.policy.capacity < confirmed + offered || next.policy.waitingCapacity < waiting))
+            val history = active > 0 || confirmed > 0
+            // #268: with history the times, group and channel layout stay locked; other policy fields, including the
+            // guardian policy, may change. Rows admitted before a guardian policy change are not revalidated on promotion.
+            if (history &&
+                (next == null || next.groupId != old.groupId || next.policy == null)
             ) {
-                conflict()
+                conflict(SessionChangeConflictCode.STRUCTURE_LOCKED_BY_HISTORY)
+            }
+            if (history && next != null &&
+                !(ExpoProgramTime.same(next.startedAt, old.startedAt) && ExpoProgramTime.same(next.endedAt, old.endedAt))
+            ) {
+                conflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY)
+            }
+            next?.policy?.let { policy ->
+                if (policy.capacity < confirmed + offered) conflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT)
+                if (policy.waitingCapacity < waiting) conflict(SessionChangeConflictCode.BELOW_WAITING_COUNT)
             }
             // Existing applications are never reclassified: with any history the channel layout is frozen,
             // and each channel may only shrink down to its own confirmed and waiting rows.
             next?.policy?.let { policy ->
                 if (old.policy?.hasAdmissionCapacities() == true && !policy.hasAdmissionCapacities()) conflict()
                 if (policy.hasAdmissionCapacities()) {
+                    if (old.policy?.hasAdmissionCapacities() != true &&
+                        waiting > 0
+                    ) {
+                        conflict(SessionChangeConflictCode.STRUCTURE_LOCKED_BY_HISTORY)
+                    }
                     val unknown = ledger.unknownAdmissionCount(old)
                     if (requireNotNull(
                             policy.preRegistrationCapacity,
                         ) < ledger.admissionConfirmedCount(old, "PRE_REGISTRATION") + unknown + offered ||
-                        requireNotNull(policy.onsiteCapacity) < ledger.admissionConfirmedCount(old, "ONSITE") + unknown ||
-                        (old.policy?.hasAdmissionCapacities() != true && waiting > 0)
+                        requireNotNull(policy.onsiteCapacity) < ledger.admissionConfirmedCount(old, "ONSITE") + unknown
                     ) {
-                        conflict()
+                        conflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT)
                     }
                 }
-                if ((active > 0 || confirmed > 0) && policy.channelLayout() != old.policy?.channelLayout()) conflict()
-                if (policy.channels.orEmpty().any {
-                        it.capacity < repository.confirmedCount(old, it.name) + offers.programHeld(old, it.name) ||
-                            it.waitingCapacity < repository.waitingCount(old, it.name)
-                    }
+                if (history &&
+                    policy.channelLayout() != old.policy?.channelLayout()
                 ) {
-                    conflict()
+                    conflict(SessionChangeConflictCode.STRUCTURE_LOCKED_BY_HISTORY)
+                }
+                policy.channels.orEmpty().forEach {
+                    if (it.capacity < repository.confirmedCount(old, it.name) + offers.programHeld(old, it.name)) {
+                        conflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT)
+                    }
+                    if (it.waitingCapacity < repository.waitingCount(old, it.name)) conflict(SessionChangeConflictCode.BELOW_WAITING_COUNT)
                 }
             }
             repository.stage(old, next, command.changeId)
@@ -125,17 +139,12 @@ class PrepareProgramChangeServiceImpl(
                 if (old.programType.name == "STANDARD") standards.markDeleted(old.id) else trainings.markDeleted(old.id)
             }
         }
-        for (mutation in mutations) {
-            val old = requireNotNull(mutation.previous)
-            val next = mutation.definition ?: continue
-            if (next.startedAt != old.startedAt || next.endedAt != old.endedAt) {
-                if (ledger.activeParticipants(old).any { ledger.hasTimeConflict(next, it) }) conflict()
-            }
-        }
         repository.saveChange(command.expoId, command.changeId, payload)
     }
 
     private fun conflict(): Nothing = throw ProgramApplicationConflictException("활성 신청 또는 정원 때문에 프로그램을 변경할 수 없습니다.")
+
+    private fun conflict(code: SessionChangeConflictCode): Nothing = throw SessionChangeConflictException(code)
 
     private fun badRequest(): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, "잘못된 프로그램 변경 정의입니다.")
 }

@@ -54,22 +54,6 @@ class ProgramSessionApplicationRepository(
         jdbc.queryForObject("SELECT CAST($function(46, hashtext(?)) AS text)", String::class.java, UUID.fromString(expoId).toString())
     }
 
-    fun activeParticipants(definition: ProgramSessionDefinition): List<Long> =
-        jdbc.query(
-            "SELECT DISTINCT participant_id FROM tb_program_session_application " +
-                "WHERE expo_id = ? AND program_type = ? AND program_id = ? AND status IN ('CONFIRMED', 'WAITING') " +
-                "UNION SELECT l.participant_id FROM tb_legacy_trainee_attribution l " +
-                "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
-                "WHERE l.expo_id = ? AND ? = 'TRAINING' AND t.training_program_id = ?",
-            { rs, _ -> rs.getLong(1) },
-            UUID.fromString(definition.expoId),
-            definition.programType.name,
-            definition.id,
-            UUID.fromString(definition.expoId),
-            definition.programType.name,
-            definition.id,
-        )
-
     fun hasTimeConflict(
         definition: ProgramSessionDefinition,
         participantId: Long,
