@@ -44,7 +44,7 @@ class GetProgramParticipantsServiceImpl(
                 waitlist.checkDefinition(definition)
                 ProgramParticipantsResponse(
                     party.representativeId != null,
-                    party.participants.map { participant ->
+                    party.participants.mapNotNull { participant ->
                         // 신청 경로와 같이 현장 신청은 같은 묶음의 본인 사전 대기를 취소할 행으로 보고 판정에서 뺀다(#261).
                         val replaced =
                             if (command.onsite) {
@@ -81,6 +81,13 @@ class GetProgramParticipantsServiceImpl(
                                     null
                                 }
                             }
+                        // #293: 확정 사전등록·현장 등록·이 묶음의 활성 신청이 모두 없는 참가자(전체 취소)는 선택 목록에서 뺀다. 신청 POST는 그대로 다시 판정한다.
+                        if (preregister == ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED &&
+                            !participant.fieldRegistered &&
+                            !ledger.activeInGroup(command.owner.expoId, command.type, definition.groupId, participant.participantId)
+                        ) {
+                            return@mapNotNull null
+                        }
                         val reason =
                             when {
                                 preregister != null -> {

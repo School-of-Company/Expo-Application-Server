@@ -172,7 +172,9 @@ class ManagedParticipantHttpTests {
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.participants[0].eligible").value(false))
             .andExpect(jsonPath("$.participants[0].ineligibleReason").value("SESSION_TIME_MISMATCH"))
+            .andExpect(jsonPath("$.participants[2].participant.participantId").value(4))
             .andExpect(jsonPath("$.participants[2].ineligibleReason").value("PREREGISTRATION_NOT_CONFIRMED"))
+            .andExpect(jsonPath("$.participants.length()").value(4))
     }
 
     @Test
@@ -188,7 +190,9 @@ class ManagedParticipantHttpTests {
                 .andExpect(jsonPath("$.participants[2].eligible").value(false))
                 .andExpect(jsonPath("$.participants[0].ineligibleReason").isEmpty)
                 .andExpect(jsonPath("$.participants[1].ineligibleReason").value("OCCUPATION_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.participants[2].participant.participantId").value(4))
                 .andExpect(jsonPath("$.participants[2].ineligibleReason").value("PREREGISTRATION_NOT_CONFIRMED"))
+                .andExpect(jsonPath("$.participants[?(@.participant.participantId == 3)]").isEmpty)
                 .andExpect(jsonPath("$.participants[0].participant.code").doesNotExist())
                 .andExpect(jsonPath("$.participants[0].participant.phoneNumber").doesNotExist())
                 .andReturn()
@@ -248,6 +252,60 @@ class ManagedParticipantHttpTests {
             .perform(get(participantsPath).cookie(cookie))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.participants[0].eligible").value(true))
+    }
+
+    @Test
+    fun `fully cancelled participants leave the picker and return after a new confirmed preregistration`() {
+        // #293: 3은 사전등록 취소, 4는 사전등록 없는 FIELD, 5는 사전등록 취소 뒤 FIELD다.
+        fun ids(
+            type: String,
+            onsite: Boolean,
+        ) = ObjectMapper()
+            .readTree(
+                mvc
+                    .perform(get(participantsPath.replace("STANDARD", type) + "?onsite=$onsite").cookie(cookie))
+                    .andExpect(status().isOk)
+                    .andReturn()
+                    .response.contentAsString,
+            ).path("participants")
+            .let { node -> (0 until node.size()).map(node::get) }
+            .map { it.path("participant").path("participantId").asLong() to it.path("eligible").asBoolean() }
+        for (type in listOf("STANDARD", "TRAINING")) {
+            for (onsite in listOf(false, true)) {
+                setup()
+                assertEquals(listOf(1L, 2L, 4L, 5L), ids(type, onsite).map { it.first }, "$type onsite=$onsite")
+                // 현장 조회는 FIELD 참가자를 신청 가능으로 둔다.
+                assertEquals(listOf(onsite, onsite), ids(type, onsite).filter { it.first >= 4 }.map { it.second })
+                jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 2")
+                assertEquals(listOf(1L, 4L, 5L), ids(type, onsite).map { it.first })
+                jdbc.update(
+                    "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                        "VALUES (?, 1, 1, 2, 'CONFIRMED'), (?, 1, 1, 3, 'CONFIRMED')",
+                    expo,
+                    expo,
+                )
+                assertEquals(listOf(1L, 2L, 3L, 4L, 5L), ids(type, onsite).map { it.first })
+            }
+        }
+    }
+
+    @Test
+    fun `participant without confirmed preregistration stays visible while applied in the group`() {
+        mvc
+            .perform(
+                post("/application/expos/$expo/program-sessions/STANDARD/1/applications")
+                    .with(csrf())
+                    .cookie(cookie)
+                    .header("Idempotency-Key", "active-then-cancelled")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":1,"formVersion":1,"answers":{}}"""),
+            ).andExpect(status().isCreated)
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 1")
+        mvc
+            .perform(get(participantsPath).cookie(cookie))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.participants[0].participant.participantId").value(1))
+            .andExpect(jsonPath("$.participants[0].ineligibleReason").value("PREREGISTRATION_NOT_CONFIRMED"))
     }
 
     @Test
