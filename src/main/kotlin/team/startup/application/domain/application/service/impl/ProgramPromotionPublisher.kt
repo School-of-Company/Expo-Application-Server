@@ -6,6 +6,7 @@ import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.StringSerializer
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
@@ -47,7 +48,7 @@ class ProgramPromotionKafkaConfig {
 @ConditionalOnProperty(name = ["application.promotions.enabled"], havingValue = "true")
 class ProgramPromotionPublisher(
     private val repository: ProgramPromotionRepository,
-    private val producer: Producer<String, String>,
+    @Qualifier("promotionProducer") private val producer: Producer<String, String>,
     private val mapper: ObjectMapper,
     private val policy: ProgramPromotionPolicy,
 ) {
