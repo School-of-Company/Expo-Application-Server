@@ -46,9 +46,15 @@ class AdminGroupMessageTargetResolver(
 
                 AdminGroupMessageChannel.KAKAO -> {
                     requireNotNull(kakaoTemplate).variableMapping.run {
-                        listOf(name, programName, sessionName, location, status).any { it != null }
+                        listOf(name, programName, sessionName, location, status, applicationUrl, applicationSummary).any { it != null }
                     }
                 }
+            }
+        // 매핑·본문이 쓸 때만 보낸다. 쓰지 않는 기존 템플릿은 Notification #101 배포 전에도 그대로 동작한다.
+        val summaryUsed =
+            when (source.channel) {
+                AdminGroupMessageChannel.SMS -> requireNotNull(source.body).contains("{신청내역}")
+                AdminGroupMessageChannel.KAKAO -> requireNotNull(kakaoTemplate).variableMapping.applicationSummary != null
             }
         val seenPhones = mutableSetOf<String>()
         val targets =
@@ -56,7 +62,7 @@ class AdminGroupMessageTargetResolver(
                 val participant = participants.getValue(row.participantId)
                 val representative = representatives.getValue(participant.representativeId ?: participant.participantId)
                 val phone = normalizePhone(representative.phoneNumber)
-                val variables = variables(row, participant.name, expoName)
+                val variables = variables(row, participant.name, expoName, summaryUsed)
                 val missing =
                     when {
                         phone == null -> {
@@ -134,6 +140,7 @@ class AdminGroupMessageTargetResolver(
         row: AdminApplicationRow,
         name: String,
         expoName: String?,
+        summaryUsed: Boolean,
     ): AdminGroupMessageTemplateVariables {
         fun text(name: String): String? =
             row.definition
@@ -143,13 +150,22 @@ class AdminGroupMessageTargetResolver(
                 ?.takeIf { it.isNotBlank() }
         val startedAt = text("startedAt")
         val endedAt = text("endedAt")
+        val programName = text("title")
+        val sessionName = startedAt?.let { sessionTime(it, endedAt) }
+        val status = statusLabel(row.status)
         return AdminGroupMessageTemplateVariables(
             expoName = expoName,
             name = name,
-            programName = text("title"),
-            sessionName = startedAt?.let { sessionTime(it, endedAt) },
+            programName = programName,
+            sessionName = sessionName,
             location = text("place"),
-            status = statusLabel(row.status),
+            status = status,
+            applicationSummary =
+                if (summaryUsed && programName != null && sessionName != null) {
+                    "- 프로그램: $programName\n- 일시: $sessionName\n- 신청 상태: $status".takeIf { it.length <= MAX_SUMMARY_LENGTH }
+                } else {
+                    null
+                },
         )
     }
 
@@ -183,7 +199,10 @@ class AdminGroupMessageTargetResolver(
             (body.contains("{프로그램}") && variables.programName == null) ||
             (body.contains("{일시}") && variables.sessionName == null) ||
             (body.contains("{장소}") && variables.location == null) ||
-            (body.contains("{상태}") && statusLabel(status).isBlank())
+            (body.contains("{상태}") && statusLabel(status).isBlank()) ||
+            (body.contains("{신청내역}") && variables.applicationSummary == null) ||
+            // ponytail: QR code 공급 계약(User 일괄 조회)이 정해지기 전까지 링크는 늘 없는 값이다. 연수 신청도 일반 참가자 QR이라 같다.
+            body.contains("{URL}")
 
     private fun missingKakaoValue(
         template: AdminGroupMessageTemplate,
@@ -194,7 +213,9 @@ class AdminGroupMessageTargetResolver(
             (template.variableMapping.programName != null && variables.programName == null) ||
             (template.variableMapping.sessionName != null && variables.sessionName == null) ||
             (template.variableMapping.location != null && variables.location == null) ||
-            (template.variableMapping.status != null && variables.status == null)
+            (template.variableMapping.status != null && variables.status == null) ||
+            (template.variableMapping.applicationSummary != null && variables.applicationSummary == null) ||
+            template.variableMapping.applicationUrl != null
 
     private fun render(
         source: AdminGroupMessageSource,
@@ -210,20 +231,24 @@ class AdminGroupMessageTargetResolver(
                     .replace("{일시}", variables.sessionName.orEmpty())
                     .replace("{장소}", variables.location.orEmpty())
                     .replace("{상태}", statusLabel(status))
+                    .replace("{신청내역}", variables.applicationSummary.orEmpty())
             }
 
             AdminGroupMessageChannel.KAKAO -> {
                 val template = requireNotNull(kakaoTemplate)
-                listOf(
-                    template.variableMapping.expoName to variables.expoName,
-                    template.variableMapping.name to variables.name,
-                    template.variableMapping.programName to variables.programName,
-                    template.variableMapping.sessionName to variables.sessionName,
-                    template.variableMapping.location to variables.location,
-                    template.variableMapping.status to variables.status,
-                ).fold(template.content) { content, (placeholder, value) ->
-                    if (placeholder == null) content else content.replace(placeholder, requireNotNull(value))
-                }
+                // Notification #101 비교와 같게: 고정값 위에 매핑 값을 덮고 `#{…}`를 한 번에 치환한다(치환한 값은 다시 보지 않는다).
+                val values =
+                    template.fixedVariables.orEmpty() +
+                        listOf(
+                            template.variableMapping.expoName to variables.expoName,
+                            template.variableMapping.name to variables.name,
+                            template.variableMapping.programName to variables.programName,
+                            template.variableMapping.sessionName to variables.sessionName,
+                            template.variableMapping.location to variables.location,
+                            template.variableMapping.status to variables.status,
+                            template.variableMapping.applicationSummary to variables.applicationSummary,
+                        ).mapNotNull { (placeholder, value) -> placeholder?.let { it to requireNotNull(value) } }
+                KAKAO_PLACEHOLDER.replace(template.content) { values[it.value] ?: it.value }
             }
         }
 
@@ -284,6 +309,7 @@ class AdminGroupMessageTargetResolver(
             add(target.templateVariables?.sessionName)
             add(target.templateVariables?.location)
             add(target.templateVariables?.status)
+            add(target.templateVariables?.applicationSummary)
             add(target.missingReason)
         }
         return HexFormat.of().formatHex(digest.digest())
@@ -291,6 +317,8 @@ class AdminGroupMessageTargetResolver(
 
     private companion object {
         const val MAX_TARGETS = 5_000
-        val PLACEHOLDERS = listOf("{이름}", "{프로그램}", "{일시}", "{장소}", "{상태}")
+        const val MAX_SUMMARY_LENGTH = 500
+        val KAKAO_PLACEHOLDER = Regex("#\\{[^{}]+}")
+        val PLACEHOLDERS = listOf("{이름}", "{프로그램}", "{일시}", "{장소}", "{상태}", "{URL}", "{신청내역}")
     }
 }

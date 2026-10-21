@@ -164,7 +164,7 @@ class OwnerApplicationController(
         summary = "내 일행의 다른 사전등록 회차 추가",
         description =
             "참가자 세션과 CSRF 토큰이 필요합니다(#199). 이미 신청한 일행에서 이 회차에 갈 참가자를 고르면 처음 신청 답변을 다시 써서 " +
-                "일반 신청과 같은 정원·대기 규칙으로 받습니다. 대표자는 빠져도 되지만 학생만으로는 안 됩니다. " +
+                "일반 신청과 같은 정원·대기 규칙으로 받습니다. 대표자는 빠져도 되고 학생만 참석해도 됩니다(#287). " +
                 "User에 다시 저장하지 않으므로 QR과 문자는 그대로입니다. 신청 뒤 사전등록 폼이 바뀌었으면 409 FORM_CHANGED로 다시 입력을 요구합니다. " +
                 "같은 Idempotency-Key로 다시 보내면 같은 추가를 이어서 처리합니다.",
         responses = [
@@ -173,7 +173,7 @@ class OwnerApplicationController(
             ApiResponse(
                 responseCode = "400",
                 description =
-                    "형식 오류, 같은 참석자 중복, 일행에 없는 참가자, 학생만 참석({status:400, code:STUDENTS_ONLY}, #271), " +
+                    "형식 오류, 같은 참석자 중복, 일행에 없는 참가자, " +
                         "직업 없는 대상별 정원 회차 참석자",
             ),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
@@ -291,7 +291,7 @@ class OwnerApplicationController(
 
 // 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199),
 // 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209), 동행자가 남은 대표자 사전등록 취소 409에 COMPANIONS_ACTIVE code를(#257),
-// 동행자 추가 차단(companionAddBlockedReason과 같은 code)과 학생만 고른 회차 추가 400 STUDENTS_ONLY에 code를(#271) 싣는다.
+// 동행자 추가 차단에 companionAddBlockedReason과 같은 code를(#271) 싣는다.
 // 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
 class OwnerApplicationSessionExceptionHandler {
