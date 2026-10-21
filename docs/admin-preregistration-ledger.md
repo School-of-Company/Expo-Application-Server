@@ -131,6 +131,8 @@ ProblemDetail `{"status":403,"code":"APPLICATION_CANCEL_FORBIDDEN","detail":"신
 
 ### Report: 사전등록 탭의 선택/검색 내보내기 계약
 
+Application 쪽 원천은 #284에서 `preregistration-report-source.md`로 제공한다. `/targets` 응답의 `reportSupported=false`는 그대로다.
+
 - PREREGISTRATION source와 행사별 APPLICATION BIGINT/RESERVATION requestId를 구분해 수용한다.
 - 이 문서의 필터·행/인원 단위를 유지하고, 확정/취소 User 원천과 User 미저장 대기 스냅샷 열을 정의한다.
 - PENDING 포함 여부, 개인정보 열/다운로드 권한, 불변 snapshot 및 최대 크기/페이지 소비를 합의한다.

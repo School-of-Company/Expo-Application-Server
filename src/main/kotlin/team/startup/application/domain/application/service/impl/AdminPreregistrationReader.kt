@@ -32,6 +32,8 @@ class AdminPreregistrationReader(
         limit: Int,
         offset: Long = 0,
         keys: List<String>? = null,
+        // #284: 같은 읽기 스냅샷에서 보고용 원장 부가 정보를 함께 읽는다.
+        within: (List<AdminPreregistrationRow>) -> Unit = {},
     ): Pair<List<AdminPreregistrationRow>, Long> {
         val reservationOnly =
             query.status?.none { it == AdminPreregistrationStatus.CONFIRMED || it == AdminPreregistrationStatus.CANCELLED } == true
@@ -41,14 +43,15 @@ class AdminPreregistrationReader(
                 reads.execute {
                     sessions.readLock(expoId)
                     if (sessions.expoDeleted(expoId)) throw ResponseStatusException(HttpStatus.CONFLICT, "삭제된 행사입니다.")
-                    repository.query(expoId, query, candidates, limit, offset, keys)
+                    repository.query(expoId, query, candidates, limit, offset, keys).also { within(it.first) }
                 },
             )
         if (keys != null && total != keys.size.toLong()) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, "현재 행사의 사전등록 대상을 찾을 수 없습니다.")
         }
-        if (total > 5000 && limit == 5001) {
-            throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 5000행입니다. 검색 범위를 좁혀 주세요.")
+        // 전체 대상 호출은 상한+1을 limit으로 넘긴다: 관리자 targets 5001(5000행), 보고 원천 10001(10000행, #284).
+        if (limit > 5000 && total >= limit) {
+            throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 ${limit - 1}행입니다. 검색 범위를 좁혀 주세요.")
         }
         val details = participants.details(expoId, rows.mapNotNull { it.participantId }.distinct())
         val names = participants.names(expoId, rows.mapNotNull { it.cancellationActorUser?.participantId })
