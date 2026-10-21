@@ -442,6 +442,14 @@ class PreregisterSessionRepository(
         actorId: Long? = null,
     ) {
         jdbc.update("UPDATE tb_preregister_application SET status = ? WHERE id = ?", status, id)
+        // #297: 취소가 확정되면 현장등록 참가자의 입장 QR을 닫는 표시를 같은 트랜잭션에서 남긴다.
+        if (status == "CANCELLED") {
+            jdbc.update(
+                "INSERT INTO tb_field_qr_revoked (expo_id, participant_id) " +
+                    "SELECT expo_id, participant_id FROM tb_preregister_application WHERE id = ? ON CONFLICT DO NOTHING",
+                id,
+            )
+        }
         transition(id, actorType, actorParticipantId, actorId)
     }
 
@@ -517,6 +525,7 @@ class PreregisterSessionRepository(
             "tb_preregister_application",
             "tb_preregister_session_change",
             "tb_preregister_session_state",
+            "tb_field_qr_revoked",
         ).forEach {
             jdbc.update("DELETE FROM $it WHERE expo_id = ?", expoId)
         }

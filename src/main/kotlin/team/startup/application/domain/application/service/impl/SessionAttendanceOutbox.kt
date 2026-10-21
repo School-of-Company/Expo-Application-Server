@@ -3,12 +3,14 @@ package team.startup.application.domain.application.service.impl
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import team.startup.application.domain.application.repository.ManagedParticipantRepository
 import team.startup.application.domain.application.repository.SessionAttendanceOutboxRepository
 import java.util.UUID
 
 @Component
 class SessionAttendanceOutbox(
     private val repository: SessionAttendanceOutboxRepository,
+    private val managed: ManagedParticipantRepository,
 ) {
     @Transactional(propagation = Propagation.MANDATORY)
     fun confirmed(
@@ -38,5 +40,7 @@ class SessionAttendanceOutbox(
         participantIds: List<Long>,
     ) {
         participantIds.forEach { repository.appendFieldRegistered(expoId, it) }
+        // #297: 취소 뒤 현장 재등록이면 입장 QR을 다시 연다.
+        managed.restoreFieldQr(expoId, participantIds)
     }
 }
