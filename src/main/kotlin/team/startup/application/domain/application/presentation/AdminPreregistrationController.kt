@@ -2,10 +2,13 @@ package team.startup.application.domain.application.presentation
 
 import io.swagger.v3.oas.annotations.Operation
 import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import org.springframework.http.CacheControl
 import org.springframework.http.HttpStatus
+import org.springframework.http.ProblemDetail
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.ModelAttribute
 import org.springframework.web.bind.annotation.PathVariable
@@ -15,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationCancellationRequest
 import team.startup.application.domain.application.presentation.dto.AdminPreregistrationCancellationResult
@@ -115,4 +119,18 @@ class AdminPreregistrationController(
     }
 
     private fun <T : Any> response(body: T): ResponseEntity<T> = ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body)
+}
+
+// #267: 권한 거절 사유만 code로 싣는다. 다른 오류는 ResponseStatusExceptionResolver와 같이 sendError로 기본 오류 응답에 맡긴다.
+@RestControllerAdvice(assignableTypes = [AdminPreregistrationController::class])
+class AdminPreregistrationExceptionHandler {
+    @ExceptionHandler(ResponseStatusException::class)
+    fun expected(
+        exception: ResponseStatusException,
+        response: HttpServletResponse,
+    ): ResponseEntity<ProblemDetail>? =
+        adminAccessDenial(exception) ?: run {
+            response.sendError(exception.statusCode.value(), exception.reason)
+            null
+        }
 }

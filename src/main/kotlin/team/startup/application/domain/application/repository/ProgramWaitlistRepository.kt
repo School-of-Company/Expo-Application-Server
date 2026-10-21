@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.repository
 
+import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.stereotype.Repository
@@ -21,6 +22,8 @@ class ProgramWaitlistRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     data class Entry(
         val id: UUID,
         val participantId: Long,
@@ -150,10 +153,41 @@ class ProgramWaitlistRepository(
                 // 신청(lockDefinition)과 같이 정책 없는 회차는 Expo가 승인 요청 없이 바꾼 제목·시간·장소를 받아들인다.
                 val policyless = pending == null && current.policy == null && remote.policy == null && remote.revision >= current.revision
                 if (deleted || (!policyless && listOfNotNull(current, pending).none { remote.matchesApproved(it) })) {
+                    log.warn(
+                        "Program definition mismatch: expoId={} {} {} deleted={} differsFromCurrent={} differsFromPending={}",
+                        definition.expoId,
+                        definition.programType,
+                        definition.id,
+                        deleted,
+                        differingFields(remote, current),
+                        pending?.let { differingFields(remote, it) },
+                    )
                     throw ProgramDefinitionMismatchException(definition.programType, definition.id)
                 }
             }
     }
+
+    // #273: 409 원인을 DB 없이 진단하도록 값은 빼고 다른 필드 이름만 남긴다. 시간은 matchesApproved와 같은 시각 기준이다.
+    private fun differingFields(
+        remote: ProgramSessionDefinition,
+        approved: ProgramSessionDefinition,
+    ): List<String> =
+        differingFields(mapper.valueToTree(remote.withComparableTimes()), mapper.valueToTree(approved.withComparableTimes()), "")
+
+    private fun differingFields(
+        remote: JsonNode,
+        approved: JsonNode,
+        prefix: String,
+    ): List<String> =
+        (remote.propertyNames() + approved.propertyNames()).distinct().sorted().flatMap { name ->
+            val left = remote.path(name)
+            val right = approved.path(name)
+            when {
+                left == right -> emptyList()
+                left.isObject && right.isObject -> differingFields(left, right, "$prefix$name.")
+                else -> listOf("$prefix$name")
+            }
+        }
 
     /**
      * Expo V37은 기존 정책을 승인 요청 없이 "전체 정원 = 사전 정원, 현장 0"으로 바꿨다.

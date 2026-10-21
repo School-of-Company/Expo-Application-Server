@@ -244,10 +244,10 @@ class PreregisterSessionPersistenceTests {
     }
 
     @Test
-    fun `cancelled history forbids definition change and deletion`() {
+    fun `cancelled history forbids time change and deletion`() {
         val receipt = apply.execute(command(1))
         cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, receipt.map { it.id }))
-        assertConflict { prepare.execute(change(definition.copy(title = "Other", revision = 2))) }
+        assertConflict { prepare.execute(change(definition.copy(endedAt = definition.endedAt.plusSeconds(3600), revision = 2))) }
         assertConflict {
             prepare.execute(
                 PreparePreregisterSessionChangeCommand(
@@ -342,8 +342,8 @@ class PreregisterSessionPersistenceTests {
         publish(grown)
         assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
         assertEquals(grown, repository.definition(expoId, 1))
-        // Other definition changes stay blocked, even together with a capacity change.
-        assertConflict { prepare.execute(change(grown.copy(capacity = 7, title = "Other", revision = 3))) }
+        // #268: time changes stay blocked, even together with a capacity change.
+        assertConflict { prepare.execute(change(grown.copy(capacity = 7, endedAt = grown.endedAt.plusSeconds(3600), revision = 3))) }
     }
 
     @Test
@@ -567,7 +567,7 @@ class PreregisterSessionPersistenceTests {
                 pool.submit<Boolean> {
                     assertTrue(start.await(10, TimeUnit.SECONDS))
                     try {
-                        prepare.execute(change(definition.copy(title = "Other", revision = 2)))
+                        prepare.execute(change(definition.copy(endedAt = definition.endedAt.plusSeconds(3600), revision = 2)))
                         true
                     } catch (
                         exception: ResponseStatusException,

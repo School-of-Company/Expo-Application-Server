@@ -16,6 +16,12 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramGuardianPolicy
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason.GRADE_INVALID
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason.GUARDIAN_LINK_INVALID
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason.GUARDIAN_REQUIRED
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED
+import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason.SCHOOL_TYPE_MISMATCH
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionPolicy
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
@@ -106,7 +112,7 @@ class StudentGuardianEligibilityAdapterTests {
     fun setup() {
         questions = """[
           {"id":101,"title":"Renamed school","formType":"DROPDOWN","requiredStatus":true,"dynamicFormType":"DEFAULT",
-           "jsonData":{"primary":"Unrelated label","other":"Other"},"otherJson":null},
+           "jsonData":{"primary":"Unrelated label","other":"Other","guardian":"Guardian"},"otherJson":null},
           {"id":102,"title":"Renamed grade","formType":"DROPDOWN","requiredStatus":true,"dynamicFormType":"DEFAULT",
            "jsonData":{${(1..6).joinToString { "\"g$it\":\"label $it\"" }}},
            "otherJson":{"hasEtc":false,"conditional":{"parentIndex":0,"triggerValue":"primary"}}}
@@ -198,8 +204,8 @@ class StudentGuardianEligibilityAdapterTests {
     @Test
     fun `all six grades are distinguished and missing or forged grade never defaults to lower grade`() {
         (1..3).forEach { adapter.validate(query(student = answers("g$it"))) }
-        (4..6).forEach { forbidden { adapter.validate(query(student = answers("g$it"))) } }
-        forbidden { adapter.validate(query(student = mapper.readTree("""{"101":"other"}"""))) }
+        (4..6).forEach { forbidden(GRADE_INVALID) { adapter.validate(query(student = answers("g$it"))) } }
+        forbidden(SCHOOL_TYPE_MISMATCH) { adapter.validate(query(student = mapper.readTree("""{"101":"other"}"""))) }
         assertThrows(ResponseStatusException::class.java) { adapter.validate(query(student = mapper.readTree("""{"101":"primary"}"""))) }
         assertThrows(ResponseStatusException::class.java) { adapter.validate(query(student = answers("1학년"))) }
     }
@@ -207,12 +213,15 @@ class StudentGuardianEligibilityAdapterTests {
     @Test
     fun `representative status does not grant guardian eligibility and children cannot act as parents`() {
         roles[3] = "TEACHER"
-        forbidden { adapter.validate(query()) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(query()) }
         roles[3] = "ELEMENTARY_STUDENT"
-        forbidden { adapter.validate(query()) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(query()) }
         roles[3] = "PARENT"
         roles[1] = "PARENT"
-        forbidden { adapter.validate(query()) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(query()) }
+        roles[1] = "ELEMENTARY_STUDENT"
+        definition = definition.copy(policy = requireNotNull(definition.policy).copy(allowedOccupations = setOf("ELEMENTARY_STUDENT")))
+        forbidden(OCCUPATION_NOT_ALLOWED) { adapter.validate(query()) }
     }
 
     @Test
@@ -232,7 +241,7 @@ class StudentGuardianEligibilityAdapterTests {
         }
         roleResponse = null
         roles.remove(3)
-        forbidden { adapter.validate(query()) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(query()) }
         roleStatus = 503
         assertThrows(ResponseStatusException::class.java) { adapter.validate(query()) }
     }
@@ -245,10 +254,10 @@ class StudentGuardianEligibilityAdapterTests {
         adapter.validate(promotion)
         assertEquals(3, savedReads)
         roles[3] = "TEACHER"
-        forbidden { adapter.validate(promotion) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(promotion) }
         roles[3] = "PARENT"
         saved[1] = StudentGuardianSubmission(1, 1, answers("g4"))
-        forbidden { adapter.validate(promotion) }
+        forbidden(GRADE_INVALID) { adapter.validate(promotion) }
         saved[1] = original.submissions.first()
         formVersion = 2
         assertThrows(ProgramApplicationConflictException::class.java) { adapter.validate(promotion) }
@@ -260,15 +269,15 @@ class StudentGuardianEligibilityAdapterTests {
         adapter.validate(query().copy(reusedGuardianIds = setOf(3), submissions = query().submissions.filter { it.participantId != 3L }))
         assertEquals(1, savedReads)
         saved.clear()
-        forbidden { adapter.validate(query().copy(reusedGuardianIds = setOf(3))) }
+        forbidden(GUARDIAN_LINK_INVALID) { adapter.validate(query().copy(reusedGuardianIds = setOf(3))) }
     }
 
     @Test
     fun `single lower grade and standalone parent are blocked but upper grades and policy OFF keep single route`() {
-        assertThrows(ProgramApplicationConflictException::class.java) { adapter.validateSingle(single("g1"), definition, roles[1]) }
+        conflict(GUARDIAN_REQUIRED) { adapter.validateSingle(single("g1"), definition, roles[1]) }
         (4..6).forEach { adapter.validateSingle(single("g$it"), definition, roles[1]) }
         roles[1] = "PARENT"
-        assertThrows(ProgramApplicationConflictException::class.java) { adapter.validateSingle(single("g4"), definition, roles[1]) }
+        conflict(GUARDIAN_LINK_INVALID) { adapter.validateSingle(single("g4"), definition, roles[1]) }
         definition = definition.copy(policy = requireNotNull(definition.policy).copy(guardianPolicy = null))
         adapter.validateSingle(single("g1"), definition, roles[1])
         assertThrows(ProgramApplicationConflictException::class.java) { adapter.validate(query()) }
@@ -276,34 +285,76 @@ class StudentGuardianEligibilityAdapterTests {
 
     @Test
     fun `elementary occupation cannot hide grade by selecting another school type`() {
-        forbidden { adapter.validateSingle(single("g1").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, roles[1]) }
+        forbidden(SCHOOL_TYPE_MISMATCH) {
+            adapter.validateSingle(single("g1").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, roles[1])
+        }
     }
 
     @Test
     fun `another occupation cannot bypass guardian rules with elementary answers`() {
-        forbidden { adapter.validateSingle(single("g1"), definition, "GENERAL") }
+        forbidden(SCHOOL_TYPE_MISMATCH) { adapter.validateSingle(single("g1"), definition, "GENERAL") }
         adapter.validateSingle(single("g1").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, "GENERAL")
     }
 
-    private fun query(student: tools.jackson.databind.JsonNode = answers("g1")) =
-        StudentGuardianEligibilityQuery(
-            definition,
-            setOf(1, 2, 3),
-            listOf(StudentGuardianLink(1, 3), StudentGuardianLink(2, 3)),
-            StudentGuardianValidationPhase.SUBMISSION,
-            submissions =
-                listOf(
-                    StudentGuardianSubmission(1, 1, student),
-                    StudentGuardianSubmission(2, 1, answers("g3")),
-                    StudentGuardianSubmission(3, 1, mapper.readTree("""{"101":"other"}""")),
-                ),
-        )
+    @Test
+    fun `guardian school value requires parents to choose it and blocks single applicants from choosing it`() {
+        definition =
+            definition.copy(
+                policy = requireNotNull(definition.policy).copy(guardianPolicy = guardian.copy(guardianSchoolValue = "guardian")),
+            )
+        forbidden(SCHOOL_TYPE_MISMATCH) { adapter.validate(query()) }
+        adapter.validate(query(guardianAnswer = "guardian"))
+        forbidden(SCHOOL_TYPE_MISMATCH) {
+            adapter.validateSingle(single("g4").copy(answers = mapper.readTree("""{"101":"guardian"}""")), definition, "GENERAL")
+        }
+        adapter.validateSingle(single("g4").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, "GENERAL")
+    }
+
+    @Test
+    fun `guardian school value must be a distinct existing school option`() {
+        assertTrue(guardian.valid())
+        assertTrue(!guardian.copy(guardianSchoolValue = " ").valid())
+        assertTrue(!guardian.copy(guardianSchoolValue = "primary").valid())
+        definition =
+            definition.copy(
+                policy = requireNotNull(definition.policy).copy(guardianPolicy = guardian.copy(guardianSchoolValue = "missing")),
+            )
+        assertEquals(502, assertThrows(ResponseStatusException::class.java) { adapter.validate(query()) }.statusCode.value())
+    }
+
+    private fun query(
+        student: tools.jackson.databind.JsonNode = answers("g1"),
+        guardianAnswer: String = "other",
+    ) = StudentGuardianEligibilityQuery(
+        definition,
+        setOf(1, 2, 3),
+        listOf(StudentGuardianLink(1, 3), StudentGuardianLink(2, 3)),
+        StudentGuardianValidationPhase.SUBMISSION,
+        submissions =
+            listOf(
+                StudentGuardianSubmission(1, 1, student),
+                StudentGuardianSubmission(2, 1, answers("g3")),
+                StudentGuardianSubmission(3, 1, mapper.readTree("""{"101":"$guardianAnswer"}""")),
+            ),
+    )
 
     private fun answers(grade: String) = mapper.readTree("""{"101":"primary","102":"$grade"}""")
 
     private fun single(grade: String) = ApplyProgramSessionCommand(expo, definition.programType, 1, 1, 1, answers(grade), "session", "key")
 
-    private fun forbidden(block: () -> Unit) {
-        assertEquals(403, assertThrows(ResponseStatusException::class.java, block).statusCode.value())
+    // 403 사유는 핸들러가 enum 이름으로 읽는 reason에 싣는다(#271).
+    private fun forbidden(
+        reason: ProgramIneligibleReason,
+        block: () -> Unit,
+    ) {
+        val ex = assertThrows(ResponseStatusException::class.java, block)
+        assertEquals(403 to reason.name, ex.statusCode.value() to ex.reason)
+    }
+
+    private fun conflict(
+        reason: ProgramIneligibleReason,
+        block: () -> Unit,
+    ) {
+        assertEquals(reason, assertThrows(ProgramApplicationConflictException::class.java, block).ineligibleReason)
     }
 }

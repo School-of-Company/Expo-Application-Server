@@ -41,7 +41,7 @@ V28 트리거가 신청 원장의 실제 상태 변화에서 `pg_notify('applica
 | `tb_promotion_offer` | 추가, 좌석을 잡는 상태와 끝난 상태 사이의 변경 |
 
 - PostgreSQL NOTIFY는 커밋된 트랜잭션만 전달하고 롤백되면 버린다. 같은 트랜잭션의 같은 행사 신호는 한 번으로 합쳐진다. 상태가 바뀌지 않는 재시도는 신호를 만들지 않는다.
-- 각 Application 인스턴스가 한 DB 연결로 같은 채널을 LISTEN 한다. 변경을 처리한 인스턴스와 구독 인스턴스가 달라도 전달된다. 이 연결은 Hikari 풀에서 하나를 계속 쓴다.
+- 각 Application 인스턴스가 한 DB 연결로 같은 채널을 LISTEN 한다. 변경을 처리한 인스턴스와 구독 인스턴스가 달라도 전달된다. 이 연결은 Hikari 풀(`maximum-pool-size` 15)에서 하나를 계속 쓰므로 켜면 요청이 쓸 수 있는 연결이 하나 줄어든다.
 - 기존 legacy 표(`tb_standard_program_application`, `tb_training_program_application`)만 바꾸는 내부 API는 행사 ID가 없어 신호를 보내지 않는다. 관리자 대시보드는 신청 원장을 읽는다.
 
 ## 연결 관리
@@ -62,6 +62,17 @@ V28 트리거가 신청 원장의 실제 상태 변화에서 `pg_notify('applica
 | `APPLICATION_ADMIN_EVENTS_HEARTBEAT_INTERVAL` | `PT25S` |
 
 꺼져 있으면 구독 경로가 없고(`404`) LISTEN 연결도 만들지 않는다. 트리거는 항상 신호를 보내지만 듣는 연결이 없으면 버려진다.
+
+이 값은 Config Server가 아니라 서버 호스트의 실행 환경(deploy.sh·환경 파일)에서 정해진다. 켜졌는지는 토큰 없이 Application에 직접(Gateway를 거치지 않고) 확인한다. Gateway는 JWT 없는 `/application/admin/**`을 먼저 막으므로 이 판별에 쓸 수 없다.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "http://<application-host>:<port>/application/admin/expos/<expoId>/events"
+```
+
+- `404`: 꺼짐(`APPLICATION_ADMIN_EVENTS_ENABLED`가 `true`가 아님).
+- `401`: 켜짐. 구독 서비스가 Expo 권한 조회 전에 Authorization 없음을 거절한다.
+
+켜진 상태에서 관리자 JWT로 받은 `404`는 Expo `/internal/expo/{expoId}/admin-access`가 돌려준 `404`를 그대로 전달한 것이다. 관리자 원장 조회도 같은 검증을 쓰므로, 같은 관리자·행사로 원장 GET이 성공했다면 그 경우가 아니다.
 
 ## 운영 전 확인
 

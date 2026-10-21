@@ -3,6 +3,8 @@ package team.startup.application.domain.application.service.impl
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import team.startup.application.domain.application.exception.SessionChangeConflictCode
+import team.startup.application.domain.application.exception.SessionChangeConflictException
 import team.startup.application.domain.application.presentation.dto.PreparePreregisterSessionChangeCommand
 import team.startup.application.domain.application.presentation.dto.PreregisterChangeOperation
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
@@ -38,7 +40,7 @@ class PreparePreregisterSessionChangeServiceImpl(
             if (replay(command)) return@executeWithoutResult
             val current = ledger.current(command.expoId, command.sessionId, observation)
             if (current.revision == Long.MAX_VALUE || command.nextRevision != current.revision + 1) conflict("회차 버전이 일치하지 않습니다.")
-            var capacityOnly = false
+            var nonTimeOnly = false
             val definitionChanged =
                 when (request.operation) {
                     PreregisterChangeOperation.DELETE -> {
@@ -58,22 +60,23 @@ class PreparePreregisterSessionChangeServiceImpl(
                             !current.copy(closed = next.closed, revision = next.revision).sameAs(next) ||
                                 (current.waitingCapacity == null && request.definitionChanged)
                         if (changed != request.definitionChanged) badSessionRequest("정의 변경 여부가 일치하지 않습니다.")
-                        // An unadopted waiting capacity stays unapplied on reconcile, so only seat capacities matter here (#173).
-                        capacityOnly =
-                            current.copy(
-                                closed = next.closed,
-                                revision = next.revision,
-                                capacity = next.capacity,
-                                teacherCapacity = next.teacherCapacity,
-                                nonTeacherCapacity = next.nonTeacherCapacity,
-                                waitingCapacity = if (current.waitingCapacity == null) next.waitingCapacity else current.waitingCapacity,
-                            ) == next
-                        if (capacityOnly && changed) capacityFits(command, next)
+                        // #268: with history only the times stay locked; an unadopted waiting capacity stays unapplied on reconcile.
+                        nonTimeOnly =
+                            current.startedAt == next.startedAt && current.endedAt == next.endedAt &&
+                            current.cancelEndedAt == next.cancelEndedAt &&
+                            (current.waitingCapacity == null || next.waitingCapacity != null)
+                        if (nonTimeOnly && changed) capacityFits(command, current, next)
                         changed
                     }
                 }
-            if (definitionChanged && !capacityOnly && repository.history(command.expoId, command.sessionId)) {
-                conflict("신청 이력이 있는 회차입니다.")
+            if (definitionChanged && !nonTimeOnly && repository.history(command.expoId, command.sessionId)) {
+                conflict(
+                    if (request.operation == PreregisterChangeOperation.DELETE) {
+                        SessionChangeConflictCode.STRUCTURE_LOCKED_BY_HISTORY
+                    } else {
+                        SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY
+                    },
+                )
             }
             repository.prepare(command.expoId, command.sessionId, command.nextRevision, request)
         }
@@ -81,16 +84,30 @@ class PreparePreregisterSessionChangeServiceImpl(
 
     // #173: capacities may change after applications only while they still hold every confirmed and reserved seat.
     // Unknown seats count against both categories, and target sessions take no waiting party.
+    // #268: an adopted waiting capacity may not drop below the waiting applicants; their order never changes.
     private fun capacityFits(
         command: PreparePreregisterSessionChangeCommand,
+        current: PreregisterSessionDefinition,
         next: PreregisterSessionDefinition,
     ) {
-        if (next.capacity < repository.occupied(command.expoId, command.sessionId)) conflict("사용 중인 좌석보다 정원을 줄일 수 없습니다.")
+        if (next.capacity <
+            repository.occupied(command.expoId, command.sessionId)
+        ) {
+            conflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT)
+        }
+        val waiting = reservations.waitingApplicants(command.expoId, command.sessionId)
+        if (current.waitingCapacity != null &&
+            requireNotNull(next.waitingCapacity) < waiting
+        ) {
+            conflict(SessionChangeConflictCode.BELOW_WAITING_COUNT)
+        }
         if (!next.targeted) return
-        if (reservations.waitingApplicants(command.expoId, command.sessionId) > 0) conflict("대기 일행이 있는 회차는 대상별 정원으로 바꿀 수 없습니다.")
+        if (waiting > 0) conflict(SessionChangeConflictCode.STRUCTURE_LOCKED_BY_HISTORY)
         val (teacher, other) = PreregisterSeatCategory.remaining(next, repository.seatUsage(command.expoId, command.sessionId))
-        if (teacher < 0 || other < 0) conflict("사용 중인 대상별 좌석보다 정원을 줄일 수 없습니다.")
+        if (teacher < 0 || other < 0) conflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT)
     }
+
+    private fun conflict(code: SessionChangeConflictCode): Nothing = throw SessionChangeConflictException(code)
 
     private fun replay(command: PreparePreregisterSessionChangeCommand): Boolean {
         val saved = repository.change(command.expoId, command.sessionId, command.nextRevision) ?: return false

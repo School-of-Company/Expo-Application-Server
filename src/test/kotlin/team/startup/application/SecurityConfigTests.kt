@@ -75,6 +75,14 @@ class SecurityConfigTests {
     }
 
     @Test
+    fun `관리자 신청 현황 SSE는 기본값에서 인증 전에 404다`() {
+        // 켜져 있으면 Authorization 없는 요청은 401이다(AdminDataChangeHttpTests). 운영 판별 근거(docs/admin-data-change-events.md).
+        val path = "/application/admin/expos/0199c000-0000-7000-8000-000000000001/events"
+        mockMvc.perform(get(path)).andExpect(status().isNotFound)
+        mockMvc.perform(get(path).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+    }
+
+    @Test
     fun `health와 prometheus는 인증 없이 GET 할 수 있다`() {
         mockMvc.perform(get("/actuator/health")).andExpect(status().isOk)
         mockMvc.perform(get("/actuator/health/db")).andExpect(status().isOk)

@@ -136,18 +136,26 @@ class StudentGuardianEligibilityHttpTests {
 
     @Test
     fun `invalid linked grade or guardian role leaves no partial rows`() {
-        batch(grade = "g4", expected = 403)
+        assertEquals("GRADE_INVALID", batch(grade = "g4", expected = 403)["ineligibleReason"].asString())
         assertEquals(0L, count("tb_program_session_application"))
         parentRole = "TEACHER"
-        batch(expected = 403)
+        assertEquals("GUARDIAN_LINK_INVALID", batch(expected = 403)["ineligibleReason"].asString())
         assertEquals(0L, count("tb_program_guardian_batch"))
         assertEquals(0L, count("tb_standard_program_application"))
     }
 
     @Test
     fun `single endpoint rejects lower grades and parents while upper grade still works`() {
-        single(1, """{"101":"primary","102":"g1"}""", 409)
-        single(3, """{"101":"other"}""", 409)
+        // #271: 응답 code는 그대로 두고 ineligibleReason으로 사유를 구분한다.
+        assertEquals(
+            mapper.readTree("""{"status":409,"code":"APPLICATION_CONFLICT","ineligibleReason":"GUARDIAN_REQUIRED"}"""),
+            single(1, """{"101":"primary","102":"g1"}""", 409),
+        )
+        assertEquals("GUARDIAN_LINK_INVALID", single(3, """{"101":"other"}""", 409)["ineligibleReason"].asString())
+        assertEquals(
+            mapper.readTree("""{"status":403,"code":"PARTICIPANT_INELIGIBLE","ineligibleReason":"SCHOOL_TYPE_MISMATCH"}"""),
+            single(1, """{"101":"other"}""", 403),
+        )
         assertEquals(0L, count("tb_program_session_application"))
         single(1, """{"101":"primary","102":"g4"}""", 201)
     }
@@ -158,23 +166,42 @@ class StudentGuardianEligibilityHttpTests {
         single(3, """{"101":"other"}""", 201)
     }
 
+    // #268: 이력이 있어도 보호자 정책을 끌 수 있고, 이미 판정된 묶음의 좌석은 그대로다.
     @Test
-    fun `active batch prevents guardian policy removal through both change routes`() {
+    fun `active batch keeps its seats when the guardian policy is removed`() {
         batch()
         val previous = mapper.readTree(definition("STANDARD"))
         val next = previous.deepCopy().asObject()
         next.put("revision", 2)
         next.path("policy").asObject().remove("guardianPolicy")
-        listOf("", "/guardian-policy").forEach { suffix ->
-            mvc
-                .perform(
-                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}$suffix")
-                        .header("X-Internal-Token", "test-token")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
-                ).andExpect(status().isConflict)
-        }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}/guardian-policy")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
         assertEquals(3, applicationsWithStatus("CONFIRMED"))
+    }
+
+    @Test
+    fun `active batch allows backfilling only the guardian school value of a legacy policy`() {
+        batch()
+        val previous = mapper.readTree(definition("STANDARD"))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", 2)
+        next
+            .path("policy")
+            .path("guardianPolicy")
+            .asObject()
+            .put("guardianSchoolValue", "other")
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}/guardian-policy")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
     }
 
     private fun batch(
@@ -208,7 +235,7 @@ class StudentGuardianEligibilityHttpTests {
         id: Int,
         answers: String,
         expected: Int,
-    ) {
+    ): JsonNode =
         mvc
             .perform(
                 post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications")
@@ -218,7 +245,11 @@ class StudentGuardianEligibilityHttpTests {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content("""{"participantId":$id,"formVersion":1,"answers":$answers}"""),
             ).andExpect(status().`is`(expected))
-    }
+            .andReturn()
+            .response
+            .contentAsString
+            .ifBlank { "{}" }
+            .let(mapper::readTree)
 
     private fun reconcile() {
         mvc

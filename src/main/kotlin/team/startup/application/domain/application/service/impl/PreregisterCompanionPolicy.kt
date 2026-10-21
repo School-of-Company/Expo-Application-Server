@@ -2,6 +2,7 @@ package team.startup.application.domain.application.service.impl
 
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
+import org.springframework.http.HttpStatusCode
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
@@ -41,6 +42,8 @@ data class CompanionAvailability(
     val waitRoom: Int = 0,
     /** 판정에 쓴 회차 정의. 대상별 정원 회차(#173)는 추가할 동행자의 구분별로 다시 검사한다. */
     val definition: PreregisterSessionDefinition? = null,
+    /** 추가할 수 있지만 [remaining]보다 많이 보냈을 때의 거절 code. [message]와 같은 원인이다. */
+    val overflowReason: String = "",
 ) {
     /** [count]명을 지금 확정할지(false) 대기로 받을지(true). 둘 다 안 되면 null이다. */
     fun waits(count: Int): Boolean? =
@@ -52,8 +55,18 @@ data class CompanionAvailability(
 
     val addable: Boolean get() = blockedReason.isEmpty()
 
-    fun require(): CompanionAvailability = if (addable) this else throw ResponseStatusException(status, message)
+    fun require(): CompanionAvailability = if (addable) this else throw OwnerApplicationRejectedException(status, blockedReason, message)
 }
+
+/**
+ * 내 신청 화면이 문구를 고를 code를 싣는 거절(#271). 응답 본문은 `{status, code}`이고 [code]는 조회의
+ * `companionAddBlockedReason`과 같은 이름을 쓴다. [message]는 로그에만 남는다.
+ */
+class OwnerApplicationRejectedException(
+    status: HttpStatusCode,
+    val code: String,
+    message: String,
+) : ResponseStatusException(status, message)
 
 /**
  * 확정된 사전등록 대표자 일행에 동행자를 더할 수 있는지(#169). 내 신청 조회와 추가 API가 같은 규칙을 쓴다.
@@ -157,6 +170,7 @@ class PreregisterCompanionPolicy(
         return CompanionAvailability(
             minOf(slots, room),
             "",
+            overflowReason = if (slots <= room) "COMPANION_LIMIT_REACHED" else "SEATS_UNAVAILABLE",
             message =
                 if (slots <= room) {
                     "동행자는 최대 ${minOf(limit, CompanionAnswers.MAX_PARTY - 1)}명까지 입력할 수 있습니다."

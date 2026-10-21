@@ -194,7 +194,9 @@ class PreregisterRegistrationWorkflow(
                         added.map { it.path("occupation").asString() },
                     )
                     val availability = companions.evaluate(expoId, party, applicationId, observation, persist = true).require()
-                    if (added.size > availability.remaining) conflict(availability.message)
+                    if (added.size > availability.remaining) {
+                        throw OwnerApplicationRejectedException(HttpStatus.CONFLICT, availability.overflowReason, availability.message)
+                    }
                     val waits = availability.waits(added.size) ?: conflict("일행 전원을 수용할 수 없습니다.")
                     val categories =
                         added.map { PreregisterSeatCategory.of(it.path("occupation").asString()) }.let { seats ->
@@ -301,7 +303,9 @@ class PreregisterRegistrationWorkflow(
                 party.participants.find { it.participantId == id } ?: badSessionRequest("일행에 없는 참가자입니다.")
             }
         // Q1: 대표자는 빠져도 되지만 학생만으로는 회차에 갈 수 없다.
-        if (attendees.all { it.occupation in CompanionAnswers.students }) badSessionRequest("학생이 아닌 참석자가 1명 이상 있어야 합니다.")
+        if (attendees.all { it.occupation in CompanionAnswers.students }) {
+            throw OwnerApplicationRejectedException(HttpStatus.BAD_REQUEST, "STUDENTS_ONLY", "학생이 아닌 참석자가 1명 이상 있어야 합니다.")
+        }
         val observation = companions.observe(expoId, sessionId)
         val fingerprint =
             mapper.writeValueAsString(

@@ -23,6 +23,12 @@ object ExpoProgramTime {
             LocalDateTime.parse(value, format).atZone(seoul).toOffsetDateTime()
         }
 
+    // #251: 표기만 다른 같은 시각은 같은 시각이다. 읽을 수 없는 값은 문자열로 비교한다.
+    fun same(
+        a: String?,
+        b: String?,
+    ): Boolean = a == b || (a != null && b != null && runCatching { parse(a).isEqual(parse(b)) }.getOrDefault(false))
+
     // 안내 문자 `{일시}`: 같은 날 `10.31(토) 09:30~12:30`, 다른 날 `10.31(토) 09:30 ~ 11.01(일) 16:00`, 시작만 `10.31(토) 09:30`
     fun display(
         startedAt: String,
