@@ -76,7 +76,7 @@ class RegistrationWorkflow(
         if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
             badRequest("박람회 등록 기간이 아닙니다.")
         }
-        // #261: 사전등록 이력이 있는 번호의 현장등록. 그날 회차 확정이면 받은 QR로 입장하게 거절하고, 아니면 User가 FIELD로 바꾼다.
+        // #261: 사전등록 이력이 있는 번호의 현장등록. 그날 회차 확정이면 받은 QR로 입장하게 거절하고, 아니면 applicationType FIELD 저장으로 User가 기존 PRE 대표자를 FIELD로 바꾼다.
         val reregistration =
             if (participantType == "STANDARD" && applicationType == "FIELD") {
                 reservations.preregisteredOn(UUID.fromString(expoId), request.phoneNumber.filter { it in '0'..'9' }, today)
@@ -178,7 +178,6 @@ class RegistrationWorkflow(
                 form?.id,
                 questions,
                 region,
-                fieldReregistration = true.takeIf { reregistration == false },
             )
         if (sessionRegistration) {
             return preregistration.register(authenticatedCommand, registration, 1 + companionKeys.size).pendingOrNull()

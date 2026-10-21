@@ -598,7 +598,7 @@ class RegistrationHttpTests {
     }
 
     @Test
-    fun `사전등록 이력이 있는 번호의 현장등록은 오늘 회차 확정이면 409로 거절하고 아니면 FIELD 전환을 요청한다`() {
+    fun `사전등록 이력이 있는 번호의 현장등록은 오늘 회차 확정이면 409로 거절하고 아니면 기존 FIELD 등록 요청을 보낸다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
         `when`(gateway.expoPeriod(EXPO_5)).thenReturn(ExpoPeriod(today.toString(), today.plusDays(1).toString()))
         `when`(gateway.form(EXPO_5, "STANDARD", "FIELD", false)).thenReturn(
@@ -630,24 +630,21 @@ class RegistrationHttpTests {
             EXPO_5,
         )
 
-        fun registration(
-            requestId: String,
-            fieldReregistration: Boolean?,
-        ) = ParticipantRegistration(
-            EXPO_5,
-            "홍길동",
-            "01012345678",
-            "{}",
-            true,
-            "FIELD",
-            null,
-            null,
-            null,
-            requestId,
-            FORM_ID,
-            emptyList(),
-            fieldReregistration = fieldReregistration,
-        )
+        fun registration(requestId: String) =
+            ParticipantRegistration(
+                EXPO_5,
+                "홍길동",
+                "01012345678",
+                "{}",
+                true,
+                "FIELD",
+                null,
+                null,
+                null,
+                requestId,
+                FORM_ID,
+                emptyList(),
+            )
 
         fun submit(requestId: String) =
             mockMvc.perform(
@@ -660,17 +657,16 @@ class RegistrationHttpTests {
             .andExpect(status().isConflict)
             .andExpect(jsonPath("$.code").value("ALREADY_PREREGISTERED_TODAY"))
             .andExpect(jsonPath("$.message").value("이미 사전등록하셨습니다. 받으신 QR로 입장해 주세요."))
-        verify(gateway, never()).participant("STANDARD", registration("today", true))
-        verify(gateway, never()).participant("STANDARD", registration("today", null))
+        verify(gateway, never()).participant("STANDARD", registration("today"))
         for ((requestId, update) in listOf(
             "other-day" to "UPDATE tb_preregister_application SET session_id = 2 WHERE participant_id = 35",
             "all-cancelled" to "UPDATE tb_preregister_application SET status = 'CANCELLED'",
         )) {
             jdbc.update(update)
-            `when`(gateway.participant("STANDARD", registration(requestId, true)))
+            `when`(gateway.participant("STANDARD", registration(requestId)))
                 .thenReturn(ParticipantRegistrationResult(35, "01012345678", listOf(35), createdIds = emptyList()))
             submit(requestId).andExpect(status().isCreated)
-            verify(gateway).participant("STANDARD", registration(requestId, true))
+            verify(gateway).participant("STANDARD", registration(requestId))
             // 다른 날 확정 회차가 남아도 Attendance에 현장 재등록을 알려 그 회차 제한을 뺀다.
             assertEquals(
                 listOf(35L),

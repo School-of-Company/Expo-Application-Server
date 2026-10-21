@@ -183,7 +183,7 @@ class RegistrationController(
         summary = "일반 현장 등록",
         description =
             "사전등록 이력이 있는 번호도 오늘(KST) 시작하는 회차의 확정이 없으면(다른 날 회차만 확정 또는 모두 취소) 받고, " +
-                "User에 FIELD 전환(fieldReregistration)을 요청합니다.",
+                "기존 FIELD 등록 요청으로 User가 PRE 대표자를 FIELD로 바꿉니다.",
         responses = [
             ApiResponse(responseCode = "201", description = "등록 완료"),
             ApiResponse(responseCode = "400", description = "입력 검증 또는 등록·폼 규칙 위반"),
