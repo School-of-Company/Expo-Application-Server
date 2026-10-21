@@ -78,19 +78,20 @@ class AdminExpoGateway(
     fun requireCancelAccess(
         expoId: UUID,
         authorization: String?,
-    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "cancel", "APPLICATION_CANCEL")
+    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "cancel", "APPLICATION_CANCEL", "APPLICATION_CANCEL_FORBIDDEN")
 
     // Expo #143: a separate per-expo grant; APPLICATION_READ or APPLICATION_CANCEL never implies it (#172).
     fun requirePromoteAccess(
         expoId: UUID,
         authorization: String?,
-    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "promote", "APPLICATION_PROMOTE")
+    ): AdminExpoAccess = requireExpoAdmin(expoId, authorization, "promote", "APPLICATION_PROMOTE", "APPLICATION_PROMOTE_FORBIDDEN")
 
     private fun requireExpoAdmin(
         expoId: UUID,
         authorization: String?,
         action: String,
         permission: String,
+        denial: String,
     ): AdminExpoAccess {
         if (authorization == null || !authorization.startsWith("Bearer ") || authorization.removePrefix("Bearer ").isBlank()) {
             throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.")
@@ -100,6 +101,7 @@ class AdminExpoGateway(
                 "/internal/expo/$expoId/admin-application-$action-access",
                 authorization = authorization,
                 propagatedStatuses = setOf(401, 403, 404),
+                reasons = mapOf((403 to ACCESS_DENIALS.getValue(denial)) to denial),
             )
         return http.valid {
             require(tree["adminId"]?.isIntegralNumber == true && tree["adminId"].canConvertToLong())
@@ -187,5 +189,14 @@ class AdminExpoGateway(
             require(refs.distinct().size == refs.size)
             result
         }
+    }
+
+    companion object {
+        // #267: Expo의 행사 권한 행 없음 403 문구(code 없음)만 사유 코드로 바꾼다. 응답 문구도 이 고정값만 쓴다.
+        val ACCESS_DENIALS =
+            mapOf(
+                "APPLICATION_CANCEL_FORBIDDEN" to "신청 취소 권한이 없습니다.",
+                "APPLICATION_PROMOTE_FORBIDDEN" to "수동 확정 권한이 없습니다.",
+            )
     }
 }

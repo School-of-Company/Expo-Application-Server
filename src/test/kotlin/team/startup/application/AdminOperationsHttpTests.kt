@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -26,6 +27,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -191,6 +193,53 @@ class AdminOperationsHttpTests {
         assertEquals(404, cancel(route = path.replace(application.toString(), other.toString())).status)
         assertFalse(calls.any { it.startsWith("USER") || it.startsWith("PUT") })
         assertEquals("CONFIRMED", status())
+    }
+
+    private fun denied(
+        route: String,
+        body: String? = null,
+    ) = mvc
+        .perform(
+            post(route).header("Authorization", "Bearer original-admin-jwt").apply {
+                body?.let { contentType(MediaType.APPLICATION_JSON).content(it) }
+            },
+        ).andReturn()
+        .response
+
+    // #267: Expo가 행사 권한 행이 없다고 거절한 403만 허용한 코드와 문구로 전달하고, 다른 원천 문구는 싣지 않는다.
+    @Test
+    fun `행사 권한이 없는 관리자 취소와 수동 확정 403은 허용한 사유 코드만 전달한다`() {
+        val preregistration = "/application/admin/expos/$expo/preregistrations/cancellation"
+        val keys = """{"keys":["APPLICATION:$expo:1"]}"""
+        accessStatus = 403
+        accessBody = """{"status":403,"message":"신청 취소 권한이 없습니다."}"""
+        for ((route, body) in listOf(path to null, preregistration to keys)) {
+            val response = denied(route, body)
+            assertEquals(403, response.status)
+            val json = mapper.readTree(response.getContentAsString(StandardCharsets.UTF_8))
+            assertEquals("APPLICATION_CANCEL_FORBIDDEN", json["code"].asString())
+            assertEquals("신청 취소 권한이 없습니다.", json["detail"].asString())
+        }
+        accessBody = """{"status":403,"message":"수동 확정 권한이 없습니다."}"""
+        val promotion = denied("/application/admin/expos/$expo/program-session-applications/$waiting/promotion")
+        assertEquals(403, promotion.status)
+        assertEquals("APPLICATION_PROMOTE_FORBIDDEN", mapper.readTree(promotion.contentAsString)["code"].asString())
+        for ((code, message) in listOf(
+            403 to "수동 확정 권한이 없습니다.",
+            403 to "접근 권한이 없습니다.",
+            401 to "internal-detail",
+            404 to "박람회를 찾지 못 했습니다.",
+        )) {
+            accessStatus = code
+            accessBody = """{"status":$code,"message":"$message","code":"APPLICATION_CANCEL_FORBIDDEN"}"""
+            val response = denied(path)
+            assertEquals(code, response.status)
+            val text = response.getContentAsString(StandardCharsets.UTF_8)
+            assertFalse(text.contains(message) || text.contains("FORBIDDEN"), text)
+            assertEquals(code, denied(preregistration, keys).status)
+        }
+        assertEquals("CONFIRMED", status())
+        assertEquals("WAITING", status(waiting))
     }
 
     @Test
@@ -546,7 +595,8 @@ class AdminOperationsHttpTests {
                     var code = 200
                     val body =
                         when {
-                            path.endsWith("/admin-access") || path.endsWith("/admin-application-cancel-access") -> {
+                            path.endsWith("/admin-access") || path.endsWith("/admin-application-cancel-access") ||
+                                path.endsWith("/admin-application-promote-access") -> {
                                 assertEquals("expo-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
                                 calls.add("ACCESS $auth $path")
                                 code = accessStatus

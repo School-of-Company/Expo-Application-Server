@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.service.impl.AdminExpoGateway
 
 @RestControllerAdvice(
     assignableTypes = [
@@ -26,7 +27,7 @@ class AdminGroupMessageExceptionHandler {
 
     @ExceptionHandler(ResponseStatusException::class)
     fun expected(exception: ResponseStatusException): ResponseEntity<ProblemDetail> =
-        error(exception.statusCode.value(), exception.reason ?: "Admin group message request failed")
+        adminAccessDenial(exception) ?: error(exception.statusCode.value(), exception.reason ?: "Admin group message request failed")
 
     @ExceptionHandler(
         MethodArgumentNotValidException::class,
@@ -46,4 +47,13 @@ class AdminGroupMessageExceptionHandler {
             .status(status)
             .header("Cache-Control", "no-store")
             .body(ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(status), detail))
+}
+
+// #267: 관리자 권한 거절 사유 코드면 ProblemDetail에 code와 고정 문구를 싣는다. 아니면 null로 호출자의 기존 응답을 유지한다.
+fun adminAccessDenial(exception: ResponseStatusException): ResponseEntity<ProblemDetail>? {
+    val detail = AdminExpoGateway.ACCESS_DENIALS[exception.reason] ?: return null
+    return ResponseEntity
+        .status(exception.statusCode)
+        .header("Cache-Control", "no-store")
+        .body(ProblemDetail.forStatusAndDetail(exception.statusCode, detail).apply { setProperty("code", exception.reason) })
 }

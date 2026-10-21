@@ -22,6 +22,7 @@ internal class AdminSourceHttp(
         body: Any? = null,
         authorization: String? = null,
         propagatedStatuses: Set<Int> = emptySet(),
+        reasons: Map<Pair<Int, String>, String> = emptyMap(),
     ): JsonNode {
         if (url.isBlank() || token.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "관리자 원천 연동이 설정되지 않았습니다.")
         val response =
@@ -45,7 +46,11 @@ internal class AdminSourceHttp(
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "관리자 원천을 조회할 수 없습니다.")
             }
         val status = response.statusCode()
-        if (status in propagatedStatuses) throw ResponseStatusException(HttpStatus.valueOf(status), "관리자 원천이 요청을 거부했습니다.")
+        if (status in propagatedStatuses) {
+            // #267: only an allowlisted (status, source message) becomes a reason; any other source text stays hidden.
+            val message = runCatching { mapper.readTree(response.body()).path("message").stringValue() }.getOrNull()
+            throw ResponseStatusException(HttpStatus.valueOf(status), reasons[status to message] ?: "관리자 원천이 요청을 거부했습니다.")
+        }
         if (status in 500..599) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "관리자 원천이 응답하지 않습니다.")
         if (status != 200) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리자 원천 응답 상태가 올바르지 않습니다.")
         return valid { mapper.readTree(response.body()) }

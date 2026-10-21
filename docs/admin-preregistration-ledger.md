@@ -97,6 +97,9 @@ APPLICATION_CANCEL, Attendance 관리자 acquire/abort, 마감·입장·스캔 �
 
 `POST /application/admin/expos/{expoId}/preregistrations/cancellation`은 목록 key를 그대로 받는다.
 `/targets`와 달리 Expo `APPLICATION_CANCEL`(프로그램 관리자 취소와 같은 권한)을 검증한다.
+Expo가 행사 권한 행이 없다고 거절한 403(`신청 취소 권한이 없습니다.`)만 이 경로와 프로그램 관리자 취소 모두
+ProblemDetail `{"status":403,"code":"APPLICATION_CANCEL_FORBIDDEN","detail":"신청 취소 권한이 없습니다."}`로 구분한다(#267).
+다른 Expo 401/403/404는 상태와 기존 본문만 유지하고 Expo 문구·code를 싣지 않는다.
 
 - `APPLICATION` key: 같은 회차·같은 대표자 소속 한 일행만, 최대 5건. 대표자와 동행자를 함께 보낼 수 있다.
   기존 `CancelPreregisterSessionService`를 그대로 쓰므로 Attendance 관리자 acquire/abort, 입장·취소 마감·활성 프로그램 신청·
