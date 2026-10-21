@@ -48,6 +48,18 @@ Expo PR #127과 Application #127은 배포 전 내부 정의 조회·변경 승�
 
 카카오 대상의 `templateVariables`는 `expoName`, `name`, `programName`, `sessionName`, `location`, `status`다. `expoName`은 템플릿 `variableMapping.expoName`이 있을 때만 Expo `GET /internal/expo/{expoId}`의 현재 `title`로 채우고, 제목이 비어 있으면 대상별 `TEMPLATE_DATA_MISSING`이다. `status`는 SMS `{상태}`와 같은 `확정`/`대기`/`취소`다. 매핑된 변수에 값이 없으면 `TEMPLATE_DATA_MISSING`이고, 두 변수는 fingerprint에 포함된다.
 
+받는 사람별 링크·신청 내역(#289, [Notification #101](https://github.com/School-of-Company/Expo-Notification-Server/issues/101))은 카카오 `variableMapping.applicationUrl`·`applicationSummary`와 SMS `{URL}`·`{신청내역}`이다. `applicationSummary`는 신청 행마다 다음 세 줄이며(최대 500자), 프로그램이나 일시가 없거나 500자를 넘으면 `TEMPLATE_DATA_MISSING`이다. 이 값은 템플릿이 매핑하거나 SMS 본문이 쓸 때만 `templateVariables`에 싣는다. 그래서 쓰지 않는 기존 템플릿은 Notification #101 배포 전에도 그대로 보낸다.
+
+```
+- 프로그램: 프로그램명
+- 일시: 10.31(토) 09:30~12:30
+- 신청 상태: 확정
+```
+
+`applicationUrl`은 Notification 등록 완료 문자의 STANDARD QR 링크(`sms.qrUrlTemplate`: `https://<Client 도메인>/qr?expoId={expoId}&type=STANDARD&id={id}&code={code}`)와 같은 형식으로, 신청 행 참가자 본인의 링크다. Application에는 참가자 `code`와 Client 도메인이 없고, User는 참가자 한 명씩만 code를 내준다. 그래서 code 공급 계약(User 일괄 조회)이 정해지기 전까지는 값을 만들지 않는다. 연수(TRAINING) 신청도 원장에는 일반 참가자 `participantId`가 있고 연수 출석도 그 참가자 QR로 찍으므로 같은 STANDARD 링크를 쓴다. User가 참가자로부터 만든 연수자는 `phoneNumber`가 비어 있어 TRAINEE 링크(`traineeQrUrlTemplate`)를 만들 수 없다. 매핑된 템플릿과 `{URL}`을 쓴 SMS는 모든 대상이 `TEMPLATE_DATA_MISSING`이다. 구현할 때는 `APPLICATION_ADMIN_GROUP_MESSAGE_QR_URL_TEMPLATE`에 Notification과 같은 템플릿을 둔다.
+
+템플릿의 `fixedVariables`(모든 수신자에게 같은 값, 예 `#{주차장URL}`)는 `GET /config` 템플릿에 그대로 실어 Client에 전달한다. 카카오 `content`는 Notification #101의 비교와 같게 만든다. `fixedVariables` 위에 매핑 값을 덮은 뒤 본문의 `#{…}`를 한 번에 치환하며, 치환한 값 안의 `#{…}` 모양 글자는 다시 치환하지 않는다.
+
 `fallbackToSms: true`는 KAKAO에서만 받는다. 카톡을 받을 수 없는 번호(미가입·채널 차단)에는 Notification이 같은 문구를 문자로 대체 발송한다. SMS에 `true`를 보내면 `400`이다. Application은 받은 값을 Notification에 그대로 전달하며 값은 fingerprint에 포함된다. Notification이 `expoName`·`status`와 KAKAO `fallbackToSms: true`를 받도록 바뀐 뒤([Notification #55](https://github.com/School-of-Company/Expo-Notification-Server/issues/55))에 배포한다.
 
 Application은 전화번호와 문구를 저장하지 않는다. Notification 미리보기와 작업이 멱등 상태, 성공/실패/결과 불명, 재시도 금지를 소유한다. 서비스 간 경로에는 각 서비스의 `X-Internal-Token`이 필요하다. 송신 토큰은 `APPLICATION_ADMIN_GROUP_MESSAGE_{EXPO,USER,NOTIFICATION}_INTERNAL_TOKEN`으로 대상마다 따로 설정하며 각각 Expo `EXPO_INTERNAL_TOKEN`, User `INTERNAL_TOKEN`, Notification `ADMIN_GROUP_MESSAGING_INTERNAL_TOKEN`과 같아야 한다. `APPLICATION_INTERNAL_TOKEN`으로 대체하지 않으며, URL이 설정된 대상의 토큰이 비어 있으면 기동이 실패한다.

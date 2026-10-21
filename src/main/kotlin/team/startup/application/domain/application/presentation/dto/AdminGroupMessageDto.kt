@@ -85,6 +85,7 @@ data class AdminGroupMessageTemplateVariables(
     val sessionName: String?,
     val location: String?,
     val status: String?,
+    val applicationSummary: String? = null,
 )
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -122,6 +123,8 @@ data class AdminGroupMessageTemplate(
     val content: String,
     val variableMapping: AdminGroupMessageTemplateVariableMapping,
     val variables: List<String>,
+    // Notification이 모든 수신자에게 같은 값으로 채운다(Notification #101). Client에 그대로 전달한다.
+    @field:JsonInclude(JsonInclude.Include.NON_NULL) val fixedVariables: Map<String, String>? = null,
 )
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -132,6 +135,8 @@ data class AdminGroupMessageTemplateVariableMapping(
     val sessionName: String? = null,
     val location: String? = null,
     val status: String? = null,
+    val applicationUrl: String? = null,
+    val applicationSummary: String? = null,
 )
 
 data class AdminGroupMessagePreview(
