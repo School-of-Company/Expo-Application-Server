@@ -9,8 +9,11 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.system.CapturedOutput
+import org.springframework.boot.test.system.OutputCaptureExtension
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
@@ -21,6 +24,7 @@ import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionTemplate
@@ -35,6 +39,7 @@ import team.startup.application.domain.application.repository.AdminApplicationQu
 import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
 import team.startup.application.domain.application.service.impl.AdminParticipantGateway
 import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.node.ObjectNode
 import java.net.InetSocketAddress
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -1373,6 +1378,62 @@ class AdminApplicationHttpTests {
         page["items"][0].asObject().put("startedAt", "2026-10-12T08:00")
         expoBody = page.toString()
         assertEquals("PROGRAM_DEFINITION_MISMATCH", mapper.readTree(read("/current-sessions").contentAsString)["code"].asString())
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension::class)
+    fun `policy session changed through Expo approval keeps current sessions readable`(output: CapturedOutput) {
+        // #273: 신청 경로에서 "yyyy-MM-dd HH:mm"으로 관찰된 정책 회차를 Expo 승인 요청으로 연속 변경해도 현재 회차 조회가 409가 되지 않는다.
+        storeDefinition(
+            99,
+            SESSION_99
+                .replace("\"policy\":null", "\"policy\":$LEGACY_POLICY")
+                .replace("2026-10-12T09:00", "2026-10-12 09:00")
+                .replace("2026-10-12T10:00", "2026-10-12 10:00"),
+        )
+        val page = expoPage()
+        val session = page["items"][0].asObject()
+        session.set("policy", mapper.readTree(LEGACY_POLICY))
+        val edits =
+            listOf<(ObjectNode) -> Unit>(
+                {
+                    it
+                        .put("title", "Renamed")
+                        .put("place", "Hall B")
+                        .put("startedAt", "2026-10-12T13:00")
+                        .put("endedAt", "2026-10-12T14:00")
+                },
+                {
+                    it["policy"]
+                        .asObject()
+                        .put("capacity", 7)
+                        .put("waitingCapacity", 2)
+                },
+            )
+        for (edit in edits) {
+            val previous = session.deepCopy()
+            edit(session)
+            session.put("revision", previous["revision"].asLong() + 1)
+            val prepared =
+                mvc
+                    .perform(
+                        put("/internal/expos/$expoId/program-changes/${UUID.randomUUID()}")
+                            .header("X-Internal-Token", "test-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""{"mutations":[{"previous":$previous,"definition":$session}]}"""),
+                    ).andReturn()
+                    .response
+            assertEquals(204, prepared.status, prepared.contentAsString)
+            expoBody = page.toString()
+            val response = read("/current-sessions")
+            assertEquals(200, response.status, response.contentAsString)
+        }
+
+        // 승인되지 않은 값은 계속 409이며, 로그에는 값 없이 어긋난 필드만 남는다.
+        session["policy"].asObject().put("capacity", 9)
+        expoBody = page.toString()
+        assertEquals("PROGRAM_DEFINITION_MISMATCH", mapper.readTree(read("/current-sessions").contentAsString)["code"].asString())
+        assertTrue(output.out.contains("differsFromPending=[policy.capacity]"), output.out)
     }
 
     @Test

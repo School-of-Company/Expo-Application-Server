@@ -34,6 +34,8 @@ Application 초기 기준은 `origin/develop` `9b25487dda55cd143ee78a757dac68c0b
 
 그 밖의 불일치는 목록 전체를 409로 거절한다(fail-closed). 관리자 current-sessions 409 본문은 원인 코드를 준다. 로컬 정의 불일치는 `{"status":409,"code":"PROGRAM_DEFINITION_MISMATCH","programType":"STANDARD","programId":99}`이고, Expo 페이지 넘김 중 정의 버전 변경은 `{"status":409,"code":"DEFINITION_VERSION_CHANGED"}`이며 첫 페이지부터 다시 읽는다. 참가자 후보 GET은 기존처럼 `APPLICATION_CONFLICT`다. 관리자 접수 목록·상세에는 `admissionRoute`를 추가한다. 기존 목록 순서·식별자·상태·인증과 `Cache-Control: no-store`를 유지한다.
 
+불일치 진단(#273): 로컬 정의 불일치마다 `Program definition mismatch: expoId=… <유형> <ID> deleted=… differsFromCurrent=[…] differsFromPending=[…]` WARN 로그를 남긴다. 값은 남기지 않고, 위 같은 정의 규칙을 적용한 뒤에도 다른 필드 이름(`policy.capacity`처럼 정책은 하위 필드까지)만 남긴다. 승인 변경(Expo `program-changes` 204)을 거친 Expo 정의는 pending과 같아 409가 나지 않는다. 그런데도 409가 계속되면 그 필드가 승인 경로 밖에서 바뀐 것이다. 저장 정의를 Expo 값으로 자동 덮어쓰거나 409를 무시하지 않는다. 필드와 이력을 확인한 뒤 운영 판단으로 정정한다.
+
 ```json
 {
   "preRegistration": {"capacity": 20, "confirmedCount": 12, "remaining": 7},
