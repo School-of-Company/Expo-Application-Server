@@ -331,6 +331,29 @@ class PreregisterReservationRepository(
             representativeId,
         )
 
+    /**
+     * 같은 전화번호(숫자만) 대표자 본인의 사전등록 이력(#261). 이력이 없으면 null, [day](KST)에 시작하는 회차의 확정이 있으면 true,
+     * 다른 날 회차만 확정이거나 모두 취소했으면 false다. 현장등록 재등록 판정에 쓴다.
+     */
+    fun preregisteredOn(
+        expoId: UUID,
+        phone: String,
+        day: java.time.LocalDate,
+    ): Boolean? =
+        jdbc.queryForObject(
+            "SELECT bool_or(a.status = 'CONFIRMED' AND " +
+                "((st.definition::jsonb ->> 'startedAt')::timestamptz AT TIME ZONE 'Asia/Seoul')::date = ?) " +
+                "FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id LEFT JOIN tb_preregister_session_state st " +
+                "ON st.expo_id = a.expo_id AND st.session_id = a.session_id " +
+                "WHERE a.expo_id = ? AND a.participant_id = a.representative_id " +
+                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+            Boolean::class.javaObjectType,
+            day,
+            expoId,
+            phone,
+        )
+
     /** 같은 전화번호(숫자만)로 이미 저장된 대표자 일행의 취소된 동행자. 대표자 재신청에서 쓴다. */
     fun cancelledCompanionsOfPhone(
         expoId: UUID,

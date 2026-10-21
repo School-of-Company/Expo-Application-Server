@@ -88,6 +88,13 @@ data class ParticipantRegistration(
      */
     @get:JsonInclude(JsonInclude.Include.NON_NULL)
     val replaceRepresentative: Boolean? = null,
+    /**
+     * 사전등록 이력(다른 날 회차만 확정 또는 모두 취소)이 있는 번호의 일반 현장등록을 이 서비스가 허용했을 때만 true(#261).
+     * User는 기존 대표자와 이번 제출의 동행자를 FIELD로 바꾸고 등록 정보를 이번 값으로 갱신한 뒤 QR 문자를 보낸다.
+     * null이면 싣지 않아 이 필드가 생기기 전 요청과 같다.
+     */
+    @get:JsonInclude(JsonInclude.Include.NON_NULL)
+    val fieldReregistration: Boolean? = null,
 )
 
 data class ManagedParticipantSelection(

@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.RegistrationController
+import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.RegisterStandardFieldServiceImpl
@@ -114,7 +115,13 @@ class RegistrationIntegrationContractTests {
                     org.mockito.ArgumentMatchers.anyInt(),
                 )
             val workflow =
-                RegistrationWorkflow(gateway, mapper, preregistration, org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java))
+                RegistrationWorkflow(
+                    gateway,
+                    mapper,
+                    preregistration,
+                    org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java),
+                    org.mockito.Mockito.mock(PreregisterReservationRepository::class.java),
+                )
             val mvc =
                 MockMvcBuilders
                     .standaloneSetup(
@@ -393,7 +400,13 @@ class RegistrationIntegrationContractTests {
                     org.mockito.ArgumentMatchers.anyInt(),
                 )
             val workflow =
-                RegistrationWorkflow(gateway, mapper, preregistration, org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java))
+                RegistrationWorkflow(
+                    gateway,
+                    mapper,
+                    preregistration,
+                    org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java),
+                    org.mockito.Mockito.mock(PreregisterReservationRepository::class.java),
+                )
             val controller =
                 RegistrationController(
                     RegisterTraineePreServiceImpl(workflow),

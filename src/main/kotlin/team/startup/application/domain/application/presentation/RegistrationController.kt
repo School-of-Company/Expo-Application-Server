@@ -26,6 +26,7 @@ import team.startup.application.domain.application.service.RegisterTraineePreSer
 import team.startup.application.domain.application.service.RegistrationCommand
 import team.startup.application.domain.application.service.impl.OccupationNotOpenException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
+import team.startup.application.domain.application.service.impl.RegistrationWorkflow
 import team.startup.application.domain.application.service.impl.WaitlistWithdrawnException
 
 @Schema(description = "박람회 참가자 등록 요청")
@@ -65,6 +66,8 @@ private val conflictCodes =
             "승인되지 않은 회차 정의 변경입니다." to session,
             "박람회 삭제 또는 회차 변경 중입니다." to session,
             "삭제된 박람회입니다." to ("EXPO_DELETED" to "삭제된 박람회입니다."),
+            RegistrationWorkflow.PREREGISTERED_TODAY to
+                ("ALREADY_PREREGISTERED_TODAY" to "이미 사전등록하셨습니다. 받으신 QR로 입장해 주세요."),
         )
     }
 
@@ -178,12 +181,20 @@ class RegistrationController(
 
     @Operation(
         summary = "일반 현장 등록",
+        description =
+            "사전등록 이력이 있는 번호도 오늘(KST) 시작하는 회차의 확정이 없으면(다른 날 회차만 확정 또는 모두 취소) 받고, " +
+                "User에 FIELD 전환(fieldReregistration)을 요청합니다.",
         responses = [
             ApiResponse(responseCode = "201", description = "등록 완료"),
             ApiResponse(responseCode = "400", description = "입력 검증 또는 등록·폼 규칙 위반"),
             ApiResponse(responseCode = "401", description = "등록 비활성 시 인증 필요 또는 참가자 세션 인증 실패"),
             ApiResponse(responseCode = "404", description = "박람회, 폼 또는 회차 없음"),
-            ApiResponse(responseCode = "409", description = "중복 등록, 정원 또는 공급자 상태 충돌"),
+            ApiResponse(
+                responseCode = "409",
+                description =
+                    "{status:409, code, message}. code: ALREADY_PREREGISTERED_TODAY(오늘 회차에 확정된 사전등록이 있음), " +
+                        "PARTY_LIMIT_EXCEEDED, 그 밖은 CONFLICT",
+            ),
             ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류"),
             ApiResponse(responseCode = "503", description = "등록 비활성 또는 공급자 연동 불가"),
         ],
