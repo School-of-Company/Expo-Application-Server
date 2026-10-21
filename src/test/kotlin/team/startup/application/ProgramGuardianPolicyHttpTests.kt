@@ -44,6 +44,7 @@ class ProgramGuardianPolicyHttpTests {
             .perform(get(path).header("X-Internal-Token", "test-token"))
             .andExpect(status().isNoContent)
             .andExpect(header().string("X-Program-Guardian-Policy-Version", "1"))
+            .andExpect(header().string("X-Program-Guardian-School-Value-Version", "1"))
         verifyNoInteractions(prepare)
     }
 

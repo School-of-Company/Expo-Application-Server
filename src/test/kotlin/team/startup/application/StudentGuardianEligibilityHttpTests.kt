@@ -177,6 +177,26 @@ class StudentGuardianEligibilityHttpTests {
         assertEquals(3, applicationsWithStatus("CONFIRMED"))
     }
 
+    @Test
+    fun `active batch allows backfilling only the guardian school value of a legacy policy`() {
+        batch()
+        val previous = mapper.readTree(definition("STANDARD"))
+        val next = previous.deepCopy().asObject()
+        next.put("revision", 2)
+        next
+            .path("policy")
+            .path("guardianPolicy")
+            .asObject()
+            .put("guardianSchoolValue", "other")
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}/guardian-policy")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
+    }
+
     private fun batch(
         type: ProgramSessionType = ProgramSessionType.STANDARD,
         students: List<Int> = listOf(1, 2),

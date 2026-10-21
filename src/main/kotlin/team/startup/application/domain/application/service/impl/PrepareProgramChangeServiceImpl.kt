@@ -83,7 +83,13 @@ class PrepareProgramChangeServiceImpl(
             // Seats held by active participation offers (#144) cannot be removed by reconfiguration either.
             val offered = ledger.offeredSeats(old)
             val waiting = repository.waitingCount(old)
-            if ((active > 0 || confirmed > 0) && next != null && next.policy?.guardianPolicy != old.policy?.guardianPolicy) conflict()
+            val oldGuardian = old.policy?.guardianPolicy
+            val nextGuardian = next?.policy?.guardianPolicy
+            // #270: filling guardianSchoolValue into a legacy policy only narrows future applications.
+            val backfill =
+                oldGuardian != null && oldGuardian.guardianSchoolValue == null &&
+                    nextGuardian?.copy(guardianSchoolValue = null) == oldGuardian
+            if ((active > 0 || confirmed > 0) && next != null && nextGuardian != oldGuardian && !backfill) conflict()
             if ((next == null && (active > 0 || confirmed > 0)) ||
                 (next != null && (next.groupId != old.groupId || next.policy == null) && (active > 0 || confirmed > 0)) ||
                 (next?.policy != null && (next.policy.capacity < confirmed + offered || next.policy.waitingCapacity < waiting))
