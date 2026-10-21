@@ -185,22 +185,17 @@ class RegistrationWorkflow(
         val participant = gateway.participant(participantType, registration)
         if (participantType == "STANDARD") {
             val field = applicationType == "FIELD"
-            if (field) attendance.fieldRegistered(UUID.fromString(expoId), reregistered(participant, companionKeys.size))
+            if (field) attendance.fieldRegistered(UUID.fromString(expoId), fieldRegistered(participant))
             participant.groupParticipantIds.forEach { gateway.countStandard(expoId, it) }
         }
         return null
     }
 
-    // #249: User returns the same IDs for resubmitted companions but not which answer is which, so existing companions count as
-    // re-registered only when this submission resubmits all of them. Created companions have no cancelled history.
-    private fun reregistered(
-        result: ParticipantRegistrationResult,
-        submittedCompanions: Int,
-    ): List<Long> {
-        val created = result.createdIds ?: return listOf(result.participantId)
-        val existing = result.groupParticipantIds - result.participantId - created.toSet()
-        return listOf(result.participantId) + existing.takeIf { submittedCompanions - created.size == it.size }.orEmpty()
-    }
+    // #275: User names who became FIELD by this request; an older User response without it leaves only the representative.
+    // ponytail: the representative stays in even when User omits it, as before, so a retry after a lost outbox insert still
+    // releases it; Attendance's field-registration PUT is idempotent and the outbox only queues participants with history here.
+    private fun fieldRegistered(result: ParticipantRegistrationResult): List<Long> =
+        (listOf(result.participantId) + result.fieldParticipantIds.orEmpty()).distinct()
 
     // Null keeps the existing 201 contract for confirmed registrations.
     private fun PreregisterRegistrationReceipt?.pendingOrNull() = this?.takeIf { it.status != "CONFIRMED" }

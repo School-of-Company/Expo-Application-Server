@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.RegistrationController
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
+import team.startup.application.domain.application.service.impl.ParticipantIdsMismatchException
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.RegisterStandardFieldServiceImpl
@@ -292,6 +293,36 @@ class RegistrationIntegrationContractTests {
                 assertEquals(listOf("/internal/participant-sessions/resolve"), requests)
                 requests.clear()
             }
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `User 등록 응답의 fieldParticipantIds는 그대로 읽고 없으면 null이며 일행 밖 ID는 확인이 필요하다`() {
+        var body = ""
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/internal/standard-participants") { exchange ->
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(201, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val gateway = RegistrationGateway(jacksonObjectMapper(), url, url, url, "expo-token", "form-token", "user-token")
+            val registration =
+                ParticipantRegistration("expo", "홍길동", "01012345678", "{}", true, "FIELD", null, null, null, "key", null, null)
+            // User CreateStandardParticipantResDto 형태: createdIds는 직렬화되지 않는다
+            val prefix = """{"participantId":35,"phoneNumber":"01012345678","participantIds":[35,36,37],"groupParticipantIds":[35,36,37]"""
+            body = "$prefix,\"fieldParticipantIds\":[36]}"
+            assertEquals(listOf(36L), gateway.participant("STANDARD", registration).fieldParticipantIds)
+            body = "$prefix,\"fieldParticipantIds\":[]}"
+            assertEquals(emptyList(), gateway.participant("STANDARD", registration).fieldParticipantIds)
+            body = "$prefix}"
+            assertEquals(null, gateway.participant("STANDARD", registration).fieldParticipantIds)
+            body = "$prefix,\"fieldParticipantIds\":[38]}"
+            assertThrows<ParticipantIdsMismatchException> { gateway.participant("STANDARD", registration) }
         } finally {
             server.stop(0)
         }
