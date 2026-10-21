@@ -507,15 +507,29 @@ class ProgramSessionApplicationTests {
                     put("startedAt", "2030-01-02T09:00")
                     put("endedAt", "2030-01-02T10:00")
                 }
-            mvc
-                .perform(
-                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
-                        .header("X-Internal-Token", "test-token")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
-                ).andReturn()
-                .response
-                .let { assertEquals(204, it.status, it.contentAsString) }
+
+            fun propose(definition: tools.jackson.databind.JsonNode) =
+                mvc
+                    .perform(
+                        put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                            .header("X-Internal-Token", "test-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""{"mutations":[{"previous":$previous,"definition":$definition}]}"""),
+                    ).andReturn()
+                    .response
+            if (withApplicant) {
+                // #268: 확정자가 있으면 다른 시각은 잠그고, 같은 시각의 다른 표기는 시간 변경으로 보지 않는다.
+                assertEquals(409, propose(next).status)
+                val sameTime =
+                    previous.deepCopy().asObject().apply {
+                        put("revision", 2)
+                        put("startedAt", path("startedAt").stringValue().replace('T', ' '))
+                        put("endedAt", path("endedAt").stringValue().replace('T', ' '))
+                    }
+                propose(sameTime).let { assertEquals(204, it.status, it.contentAsString) }
+                continue
+            }
+            propose(next).let { assertEquals(204, it.status, it.contentAsString) }
             revision = 2
             windows = mapOf(("TRAINING" to 1L) to ("2030-01-02 09:00" to "2030-01-02 10:00"))
 
@@ -1130,6 +1144,53 @@ class ProgramSessionApplicationTests {
         reconcile()
         assertEquals(0L, count("tb_standard_program_application"))
         guardianPolicy = true
+        reconcile()
+        assertEquals(2L, count("tb_standard_program_application"))
+    }
+
+    // #268: 확정 인원이 있으면 시작·종료는 잠그고, 보호자 정책은 켤 수 있다. 켜기 전 대기자는 재검증 없이 승급한다.
+    @Test
+    fun `confirmed sessions lock times but accept a guardian policy and promote earlier waiting rows unchecked`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        val previous = mapper.readTree(definition("1", "STANDARD"))
+        val moved =
+            previous
+                .deepCopy()
+                .asObject()
+                .put("revision", 2)
+                .put("startedAt", "2030-01-02T11:00:00")
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$moved}]}"""),
+            ).andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("TIME_LOCKED_BY_HISTORY"))
+        val guardian = mapper.writeValueAsString(ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it }))
+        change { it.set("guardianPolicy", mapper.readTree(guardian)) }
+        admissionCapacities = "\"guardianPolicy\":$guardian"
+        reconcile()
+        cancel(confirmed.applicationId)
+        assertEquals("CONFIRMED", column("status", waiting.applicationId))
+    }
+
+    @Test
+    fun `waiting guardian batches admitted before a guardian policy change promote without revalidation`() {
+        enableGuardianPolicy(1, 3)
+        val before = ProgramGuardianPolicy(1, 101, "primary", 102, (1..6).associate { "g$it" to it })
+        admissionCapacities = "\"guardianPolicy\":${mapper.writeValueAsString(before)}"
+        assertTrue(batchService.execute(guardianBatch(1)).applications.all { it.application.status == "WAITING" })
+        val after = mapper.writeValueAsString(before.copy(formVersion = 2))
+        change {
+            it.put("capacity", 2)
+            it.set("guardianPolicy", mapper.readTree(after))
+        }
+        admissionCapacities = "\"guardianPolicy\":$after"
+        // 재검증하면 공급자가 503으로 막으므로, 승급은 검증을 건너뛴 경우에만 일어난다.
+        guardianPolicy = false
         reconcile()
         assertEquals(2L, count("tb_standard_program_application"))
     }

@@ -799,6 +799,57 @@ class PreregisterWaitlistHttpTests {
         waiting(submit("b", 1, "01000000002"), 1)
     }
 
+    // #268: 신청 이력이 있으면 시간 항목만 잠그고, 대기 정원·제목·장소는 현재 대기 인원 이상이면 받는다.
+    @Test
+    fun `sessions with only cancelled history accept non time edits and lock times`() {
+        assertEquals(201, submit("a", 1, "01000000001").status)
+        cancel(1)
+        assertEquals(204, prepare { it.put("waitingCapacity", 6) }.status)
+        waitingCapacity.set(6)
+        reconcile()
+        conflict(prepare { it.put("startedAt", "2030-01-01T00:30:00Z") }, "TIME_LOCKED_BY_HISTORY")
+        conflict(prepare { it.put("cancelEndedAt", "2029-12-31T00:00:00Z") }, "TIME_LOCKED_BY_HISTORY")
+        assertEquals(204, prepare { it.put("title", "Evening").put("place", "Hall") }.status)
+    }
+
+    @Test
+    fun `waiting capacity cannot drop below the waiting applicants`() {
+        assertEquals(201, submit("a", 1, "01000000001").status)
+        waiting(submit("b", 2, "01000000002"), 1)
+        conflict(prepare { it.put("waitingCapacity", 1) }, "BELOW_WAITING_COUNT")
+        assertEquals(204, prepare { it.put("waitingCapacity", 2) }.status)
+    }
+
+    private fun prepare(edit: (tools.jackson.databind.node.ObjectNode) -> Unit): MockHttpServletResponse {
+        val next = revision.get() + 1
+        val definition = (mapper.readTree(definition(1)) as tools.jackson.databind.node.ObjectNode).put("revision", next)
+        edit(definition)
+        val body = mapper.writeValueAsString(mapOf("operation" to "UPDATE", "definitionChanged" to true, "definition" to definition))
+        return mvc
+            .perform(
+                put("/internal/expos/$EXPO/preregister-sessions/1/changes/$next")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            ).andReturn()
+            .response
+    }
+
+    private fun conflict(
+        response: MockHttpServletResponse,
+        code: String,
+    ) {
+        assertEquals(409, response.status)
+        assertEquals(code, mapper.readTree(response.contentAsString)["code"].asString())
+    }
+
+    private fun reconcile() {
+        revision.incrementAndGet()
+        val reconciled =
+            mvc.perform(post("/internal/expos/$EXPO/preregister-sessions/1/reconciliation").header("X-Internal-Token", "test-token"))
+        assertEquals("true", reconciled.andReturn().response.contentAsString)
+    }
+
     companion object {
         private val EXPO = UUID.fromString("00000000-0000-0000-0000-000000000099")
         private val capacity = AtomicInteger(1)

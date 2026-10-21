@@ -158,22 +158,21 @@ class StudentGuardianEligibilityHttpTests {
         single(3, """{"101":"other"}""", 201)
     }
 
+    // #268: 이력이 있어도 보호자 정책을 끌 수 있고, 이미 판정된 묶음의 좌석은 그대로다.
     @Test
-    fun `active batch prevents guardian policy removal through both change routes`() {
+    fun `active batch keeps its seats when the guardian policy is removed`() {
         batch()
         val previous = mapper.readTree(definition("STANDARD"))
         val next = previous.deepCopy().asObject()
         next.put("revision", 2)
         next.path("policy").asObject().remove("guardianPolicy")
-        listOf("", "/guardian-policy").forEach { suffix ->
-            mvc
-                .perform(
-                    put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}$suffix")
-                        .header("X-Internal-Token", "test-token")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
-                ).andExpect(status().isConflict)
-        }
+        mvc
+            .perform(
+                put("/internal/expos/$EXPO/program-changes/${UUID.randomUUID()}/guardian-policy")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"mutations":[{"previous":$previous,"definition":$next}]}"""),
+            ).andExpect(status().isNoContent)
         assertEquals(3, applicationsWithStatus("CONFIRMED"))
     }
 

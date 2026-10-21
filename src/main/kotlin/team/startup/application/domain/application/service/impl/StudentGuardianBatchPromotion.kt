@@ -130,22 +130,25 @@ class StudentGuardianBatchPromotion(
         val trainees = mutableMapOf<Long, Long>()
         try {
             if (ids.any { ledger.hasTimeConflict(definition, it) }) return blocked("TIME_CONFLICT")
-            try {
-                provider.validate(
-                    StudentGuardianEligibilityQuery(
-                        definition,
-                        ids,
-                        links,
-                        StudentGuardianValidationPhase.PROMOTION,
-                        links.map { it.guardianId }.toSet() - members.map { it.participantId }.toSet(),
-                    ),
-                )
-            } catch (ex: ResponseStatusException) {
-                // 자격·폼 거부(4xx)는 재시도해도 같으므로 묶음을 내린다. 5xx·연결 실패만 선두를 보류한다(#146).
-                if (ex.statusCode.is4xxClientError) return cancel("ELIGIBILITY_${ex.statusCode.value()}")
-                return blocked("UNAVAILABLE")
-            } catch (_: ProgramApplicationConflictException) {
-                return cancel("ELIGIBILITY_CONFLICT")
+            // #268: 묶음은 신청 당시 정의의 보호자 정책으로 이미 판정됐다. 그 뒤 정책을 켜거나 바꿨으면 다시 검증하지 않는다.
+            if (batches.definition(head.id).policy?.guardianPolicy == policy.guardianPolicy) {
+                try {
+                    provider.validate(
+                        StudentGuardianEligibilityQuery(
+                            definition,
+                            ids,
+                            links,
+                            StudentGuardianValidationPhase.PROMOTION,
+                            links.map { it.guardianId }.toSet() - members.map { it.participantId }.toSet(),
+                        ),
+                    )
+                } catch (ex: ResponseStatusException) {
+                    // 자격·폼 거부(4xx)는 재시도해도 같으므로 묶음을 내린다. 5xx·연결 실패만 선두를 보류한다(#146).
+                    if (ex.statusCode.is4xxClientError) return cancel("ELIGIBILITY_${ex.statusCode.value()}")
+                    return blocked("UNAVAILABLE")
+                } catch (_: ProgramApplicationConflictException) {
+                    return cancel("ELIGIBILITY_CONFLICT")
+                }
             }
             if (ids.any { !batches.confirmedPreregister(head.key, it) }) return blocked("PREREGISTRATION_NOT_CONFIRMED")
             for (entry in members) {
