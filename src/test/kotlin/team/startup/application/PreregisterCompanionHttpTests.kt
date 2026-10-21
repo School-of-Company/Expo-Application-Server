@@ -68,6 +68,7 @@ class PreregisterCompanionHttpTests {
         )
         parties.clear()
         details.clear()
+        released.clear()
         reportSchool = false
         smsTries.clear()
         userRequests.clear()
@@ -526,6 +527,125 @@ class PreregisterCompanionHttpTests {
         assertEquals(400, add(id, companion("dup"), companion("dup")).status)
     }
 
+    @Test
+    fun `a companion who cancelled everything frees a party slot while their history and id stay`() {
+        // #262 dev 재현: 대표자+동행자 4명 중 한 명(여기서는 46)이 모든 신청을 취소하면 현재 일행은 4명이다.
+        fullPartyWithCancelled()
+        val representative = representativeItem()
+        assertTrue(representative["companionAddable"].asBoolean(), representative.toString())
+        assertEquals(1, representative["remainingCompanionSlots"].asInt())
+
+        val response = add(representative["applicationId"].asString(), companion("e"))
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(mapper.readTree("[46]"), userRequests.last()["releasedParticipantIds"])
+        assertEquals(listOf(42L, 43L, 44L, 45L, 47L), confirmedParticipants())
+        assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(representative["applicationId"].asString(), companion("f")).status)
+        // 취소 이력과 참가자 ID는 지우지 않는다.
+        assertEquals(
+            "CANCELLED",
+            jdbc.queryForObject("SELECT status FROM tb_preregister_application WHERE participant_id = 46", String::class.java),
+        )
+        // 해제된 옛 동행자는 다시 회차를 추가할 수 없다.
+        assertEquals(400, addSession(46).status)
+        assertEquals(listOf(42L, 43L, 44L, 45L, 47L), confirmedParticipants())
+    }
+
+    @Test
+    fun `a companion with an application left still counts toward the party limit`() {
+        fullPartyWithCancelled()
+        // 사전등록은 모두 취소했어도 프로그램 신청이 남아 있으면 현재 인원이다.
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (46, 1)")
+        val representative = representativeItem()
+        assertEquals("COMPANION_LIMIT_REACHED", representative["companionAddBlockedReason"].asString())
+        assertEquals(0, representative["remainingCompanionSlots"].asInt())
+        val sent = userRequests.size
+        assertEquals(409, add(representative["applicationId"].asString(), companion("e")).status)
+        assertEquals(sent, userRequests.size)
+    }
+
+    @Test
+    fun `a returning cancelled companion takes the free slot and blocks a new companion`() {
+        fullPartyWithCancelled()
+        val id = representativeItem()["applicationId"].asString()
+        val back = addSession(46)
+        assertEquals(201, back.status, back.contentAsString)
+        assertEquals(listOf(42L, 43L, 44L, 45L, 46L), confirmedParticipants())
+        assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
+        assertEquals(409, add(id, companion("e")).status)
+    }
+
+    @Test
+    fun `a cancelled companion cannot return while a companion addition is waiting`() {
+        fullPartyWithCancelled()
+        capacity.set(4)
+        storedDefinition("capacity", "4")
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals(202, add(id, companion("e")).status)
+        assertEquals(409, addSession(46).status)
+        assertEquals(listOf(42L, 43L, 44L, 45L), confirmedParticipants())
+    }
+
+    @Test
+    fun `concurrent addition and return of a cancelled companion keep the party at five`() {
+        listOf<(String) -> Int>(
+            { id -> add(id, companion("e")).status },
+            { id -> add(id, companion("f")).status },
+            { _ -> addSession(46).status },
+        ).let { operations -> listOf(operations[0] to operations[1], operations[0] to operations[2]) }
+            .forEach { (first, second) ->
+                reset()
+                fullPartyWithCancelled()
+                val id = representativeItem()["applicationId"].asString()
+                val start = CountDownLatch(1)
+                val pool = Executors.newFixedThreadPool(2)
+                try {
+                    val results =
+                        listOf(first, second).map { operation ->
+                            pool.submit<Int> {
+                                start.await(10, TimeUnit.SECONDS)
+                                operation(id)
+                            }
+                        }
+                    start.countDown()
+                    val statuses = results.map { it.get(30, TimeUnit.SECONDS) }
+                    assertEquals(1, statuses.count { it == 201 }, "$statuses")
+                } finally {
+                    pool.shutdownNow()
+                }
+                assertEquals(5, confirmedParticipants().size, "${confirmedParticipants()}")
+                assertEquals(
+                    0,
+                    jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE state = 'RESERVED'", Int::class.java),
+                )
+            }
+    }
+
+    // 대표자 42와 동행자 43~46을 등록하고 46의 사전등록을 모두 취소한다.
+    private fun fullPartyWithCancelled() {
+        capacity.set(10)
+        assertEquals(201, register(PHONE, null, companions = listOf("a", "b", "c", "d")).status)
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE participant_id = 46")
+    }
+
+    private fun confirmedParticipants(): List<Long> =
+        jdbc
+            .queryForList(
+                "SELECT DISTINCT participant_id FROM tb_preregister_application WHERE status = 'CONFIRMED' ORDER BY participant_id",
+                Long::class.java,
+            ).filterNotNull()
+
+    private fun addSession(vararg participantIds: Long): MockHttpServletResponse =
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/my-applications/preregister-sessions")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(mapper.writeValueAsString(mapOf("sessionId" to 1, "participantIds" to participantIds.toList()))),
+            ).andReturn()
+            .response
+
     private fun register(
         phone: String,
         companion: String?,
@@ -628,6 +748,9 @@ class PreregisterCompanionHttpTests {
         // 번호별 User 일행: (참가자 ID, 이름). 첫 항목이 대표자다.
         private val parties = ConcurrentHashMap<String, MutableList<Pair<Long, String>>>()
 
+        // User가 해제(released)해 managed 목록에서 뺀 동행자 ID.
+        private val released = ConcurrentHashMap.newKeySet<Long>()
+
         // 동행자 ID별 (구분, 학교). 없으면 GENERAL이고 학교가 없다.
         private val details = ConcurrentHashMap<Long, Pair<String, String?>>()
 
@@ -654,6 +777,11 @@ class PreregisterCompanionHttpTests {
             val phone = request["phoneNumber"].asString()
             val companions: JsonNode = json.readTree(request["informationJson"].asString()).path("companions")
             val people = companions.toList()
+            // User 계약: releasedParticipantIds는 managed 목록에서 빠지고, 같은 사람을 다시 신청하면 되살아난다.
+            request.path("releasedParticipantIds").forEach { released.add(it.asLong()) }
+            parties[phone].orEmpty().filter { person -> people.any { it["name"].asString() == person.second } }.forEach {
+                released.remove(it.first)
+            }
             val party = parties[phone]
             if (party == null) {
                 val created =
@@ -720,7 +848,14 @@ class PreregisterCompanionHttpTests {
                             }
 
                             path == "/internal/standard-participants/managed" -> {
-                                val party = parties[json.readTree(requestBody)["phoneNumber"].asString()].orEmpty()
+                                val party =
+                                    parties[
+                                        json
+                                            .readTree(
+                                                requestBody,
+                                            )["phoneNumber"]
+                                            .asString(),
+                                    ].orEmpty().filterNot { it.first in released }
                                 val people =
                                     party.mapIndexed { index, (id, name) ->
                                         val (occupation, school) = details[id] ?: ("GENERAL" to null)
@@ -730,6 +865,14 @@ class PreregisterCompanionHttpTests {
                                             """"representative":${index == 0},"applicationType":"PRE"$schoolField}"""
                                     }
                                 200 to """{"registered":${party.isNotEmpty()},"participants":[${people.joinToString(",")}]}"""
+                            }
+
+                            path == "/internal/standard-participants/details" -> {
+                                val ids = json.readTree(requestBody)["participantIds"].toList().map { it.asLong() }
+                                200 to
+                                    ids.joinToString(",", "[", "]") {
+                                        """{"participantId":$it,"occupation":"${details[it]?.first ?: "GENERAL"}"}"""
+                                    }
                             }
 
                             path.contains("cancellation-status") -> {

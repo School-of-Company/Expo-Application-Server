@@ -335,6 +335,18 @@ class PreregisterRegistrationWorkflow(
                     ) {
                         conflict("이미 신청한 회차입니다.")
                     }
+                    // #262: 모든 신청을 취소한 동행자가 돌아오면 다시 현재 인원에 든다. 처리 중인 동행자 추가와 겹치거나 5명을 넘기면 받지 않는다.
+                    val cancelled = reservations.cancelledCompanions(expoId, representativeId).toSet()
+                    val returning = participantIds.count { it in cancelled }
+                    if (returning > 0 &&
+                        (
+                            reservations.companionAdditionInProgress(expoId, representativeId) ||
+                                reservations.activePartySize(expoId, representativeId, party.participants.map { it.participantId }) +
+                                returning > CompanionAnswers.MAX_PARTY
+                        )
+                    ) {
+                        conflict("일행은 대표자를 포함해 최대 ${CompanionAnswers.MAX_PARTY}명까지입니다.")
+                    }
                     if (repository.overlapping(expoId, sessionId, participantIds, definition)) conflict("확정된 다른 회차와 시간이 겹칩니다.")
                     // #223: 승급될 수 있는 다른 회차의 대기·선점도 겹침으로 본다. 나중에 승급이 겹침으로 거절되는 것을 막는다.
                     if (reservations.overlappingPending(expoId, sessionId, phone, participantIds, definition, waitlist.now())) {
