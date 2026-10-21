@@ -512,7 +512,7 @@ class RegistrationHttpTests {
     }
 
     @Test
-    fun `사전등록을 취소한 일행의 현장 재등록은 다시 등록한 것이 확실한 참가자만 Attendance 해제 대상으로 남긴다`() {
+    fun `사전등록을 취소한 일행의 현장 재등록은 User가 이번에 FIELD로 만든 참가자만 Attendance 해제 대상으로 남긴다`() {
         val today = LocalDate.now(ZoneId.of("Asia/Seoul")).toString()
         `when`(gateway.expoPeriod(EXPO_5)).thenReturn(ExpoPeriod(today, today))
         val fields = listOf(RegistrationField(9, "함께 오는 사람", "COMPANION", mapper.readTree("{}"), null, "DEFAULT"))
@@ -577,23 +577,24 @@ class RegistrationHttpTests {
             return ids.filterNotNull()
         }
 
-        // 대표자만 다시 등록하면 User가 일행 전원에게 QR을 다시 보내도 동행자는 계속 막는다
-        assertEquals(
-            listOf(35L),
-            register("field-alone", 0, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37), createdIds = emptyList())),
-        )
-        // 기존 동행자를 모두 다시 적으면 일행 전원을 푼다
-        assertEquals(
-            listOf(35L, 36L, 37L),
-            register("field-all", 2, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37), createdIds = emptyList())),
-        )
-        // 기존 동행자 중 일부만 다시 적으면 누구인지 알 수 없어 대표자만 푼다. 새 동행자 38은 취소 이력이 없다
-        assertEquals(
-            listOf(35L),
-            register("field-some", 2, ParticipantRegistrationResult(35, "01012345678", listOf(38), listOf(35, 36, 37, 38), listOf(38))),
-        )
-        // 옛 User 응답처럼 새로 만든 참가자를 알 수 없으면 대표자만 푼다
-        assertEquals(listOf(35L), register("field-legacy", 2, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37))))
+        // User가 실제로 보내는 형태(createdIds 없음)에 #275 fieldParticipantIds만 더한다.
+        fun user(
+            fieldParticipantIds: List<Long>?,
+            group: List<Long> = listOf(35, 36, 37),
+        ) = ParticipantRegistrationResult(35, "01012345678", group, fieldParticipantIds = fieldParticipantIds)
+
+        // 대표자와 기존 동행자의 최초 동시 현장 전환
+        assertEquals(listOf(35L, 36L, 37L), register("field-all", 2, user(listOf(35, 36, 37))))
+        // 대표자가 이미 FIELD이고 동행자 36만 다시 적었다. 다시 적지 않은 취소 동행자 37은 계속 막는다
+        assertEquals(listOf(35L, 36L), register("field-again", 1, user(listOf(36))))
+        // 새 FIELD 동행자 38은 이 서비스에 사전등록 이력이 없어 Attendance에 풀 기록이 없다
+        assertEquals(listOf(35L), register("field-new", 1, user(listOf(38), listOf(35, 36, 37, 38))))
+        // 같은 키 재시도는 User가 처음 목록을 돌려줘 같은 행을 다시 쌓는다(앞선 시도의 행이 빠졌어도 복구되고 Attendance PUT은 멱등이다)
+        repeat(2) { assertEquals(listOf(35L, 36L), register("field-retry", 1, user(listOf(36)))) }
+        // 새 키로 같은 내용을 다시 보내면 바뀐 사람이 없어 User가 빈 목록을 주므로 지금처럼 대표자 행 하나만 남는다
+        assertEquals(listOf(35L), register("field-resend", 1, user(emptyList())))
+        // 옛 User 응답처럼 fieldParticipantIds가 없으면 추정하지 않고 대표자만 푼다
+        assertEquals(listOf(35L), register("field-legacy", 2, user(null)))
         jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?::uuid", EXPO_5)
     }
 
@@ -664,7 +665,7 @@ class RegistrationHttpTests {
         )) {
             jdbc.update(update)
             `when`(gateway.participant("STANDARD", registration(requestId)))
-                .thenReturn(ParticipantRegistrationResult(35, "01012345678", listOf(35), createdIds = emptyList()))
+                .thenReturn(ParticipantRegistrationResult(35, "01012345678", listOf(35)))
             submit(requestId).andExpect(status().isCreated)
             verify(gateway).participant("STANDARD", registration(requestId))
             // 다른 날 확정 회차가 남아도 Attendance에 현장 재등록을 알려 그 회차 제한을 뺀다.

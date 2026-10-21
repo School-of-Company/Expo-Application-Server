@@ -102,6 +102,8 @@ data class ParticipantRegistrationResult(
     val groupParticipantIds: List<Long> = participantIds,
     /** 이번 요청으로 User가 새로 만든 참가자. 없으면 알 수 없다. */
     val createdIds: List<Long>? = null,
+    /** #275: 이번 요청으로 User가 FIELD로 만든 참가자. 같은 키 재시도는 처음 목록, 새 키 재전송은 빈 목록, 옛 User 응답이면 null이다. */
+    val fieldParticipantIds: List<Long>? = null,
 )
 
 data class TraineeRegistrationResult(
@@ -520,6 +522,7 @@ class RegistrationGateway(
                 result.groupParticipantIds.size !in 1..5 ||
                 result.groupParticipantIds.any { it <= 0 } ||
                 result.groupParticipantIds.distinct().size != result.groupParticipantIds.size ||
+                result.fieldParticipantIds?.let { !result.groupParticipantIds.containsAll(it) } == true ||
                 (
                     body.has("groupParticipantIds") &&
                         (
