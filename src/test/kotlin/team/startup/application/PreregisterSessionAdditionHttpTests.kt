@@ -123,7 +123,8 @@ class PreregisterSessionAdditionHttpTests {
     @Test
     fun `the representative may stay out but students alone cannot attend`() {
         assertEquals(201, register(companion("adult"), companion("kid", "ELEMENTARY_STUDENT")).status)
-        assertEquals(400, addSession(2, listOf(44)).status)
+        val studentsOnly = addSession(2, listOf(44))
+        assertEquals(mapper.readTree("""{"status":400,"code":"STUDENTS_ONLY"}"""), mapper.readTree(studentsOnly.contentAsString))
 
         val response = addSession(2, listOf(43, 44))
         assertEquals(201, response.status, response.contentAsString)

@@ -14,7 +14,12 @@ import team.startup.application.domain.application.presentation.dto.ProgramIneli
 data class ProgramSessionError(
     @field:Schema(description = "HTTP 오류 상태", example = "400") val status: Int,
     @field:Schema(description = "클라이언트가 처리할 오류 종류") val code: String,
-    @field:Schema(description = "참가자 신청 불가 사유. 제공되지 않는 오류에서는 null") val ineligibleReason: ProgramIneligibleReason? = null,
+    @field:Schema(
+        description =
+            "참가자 신청 불가 사유. 제공되지 않는 오류에서는 null. 보호자 동반 정책(#271)은 403 GRADE_INVALID·SCHOOL_TYPE_MISMATCH·" +
+                "GUARDIAN_LINK_INVALID·OCCUPATION_NOT_ALLOWED, 409 GUARDIAN_REQUIRED·GUARDIAN_LINK_INVALID",
+    )
+    val ineligibleReason: ProgramIneligibleReason? = null,
 )
 
 @RestControllerAdvice(
