@@ -25,7 +25,7 @@ HTTP 상태와 기존 `code`는 바꾸지 않고, 원인을 구분하는 값만 
 `OwnerApplicationSessionExceptionHandler`가 `OwnerApplicationRejectedException`을 `{status, code}`로 내린다. 다른 오류 본문은 그대로다.
 
 - 동행자 추가 `POST …/my-applications/PREREGISTER/{applicationId}/companions`: `PreregisterCompanionPolicy`의 차단 판정을 조회의 `companionAddBlockedReason`과 같은 code로 돌려준다. 일행 5명(대표자 포함)이나 폼 동행자 상한을 넘기면 409 `COMPANION_LIMIT_REACHED`, 남은 자리보다 많이 보내면 원인에 따라 `COMPANION_LIMIT_REACHED` 또는 `SEATS_UNAVAILABLE`이다. 다른 차단(`SESSION_CLOSED`, `NOT_REPRESENTATIVE_PREREGISTRATION` 404, `EXTERNAL_CONTRACT_REQUIRED` 503 등)도 상태는 그대로 code만 붙는다.
-- 다른 회차 추가 `POST …/my-applications/preregister-sessions`: 학생만 고르면 400 `STUDENTS_ONLY`.
+- 다른 회차 추가 `POST …/my-applications/preregister-sessions`: 학생만 골라도 받는다(#287). 이 경로에 거절 사유 code는 없다.
 
 ## 통합 지점
 
