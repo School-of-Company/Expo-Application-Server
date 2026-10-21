@@ -70,10 +70,10 @@ class StudentGuardianEligibilityAdapter(
             if (form.id != policy.formId || form.expoId != definition.expoId || form.purpose != "PROGRAM") invalidPolicy()
             if (version != guardian.formVersion || form.version != guardian.formVersion) conflict()
             validateReferences(guardian, form.questions)
-            if (id in guardians &&
-                answers.path(guardian.schoolTypeQuestionId.toString()).asString() == guardian.elementarySchoolValue
-            ) {
-                denied()
+            val school = answers.path(guardian.schoolTypeQuestionId.toString()).asString()
+            val expected = guardian.guardianSchoolValue
+            if (id in guardians && (school == guardian.elementarySchoolValue || (expected != null && school != expected))) {
+                schoolTypeMismatch()
             }
             val needsGuardian = needsGuardian(guardian, answers)
             if ((id in students) != needsGuardian) denied()
@@ -92,8 +92,9 @@ class StudentGuardianEligibilityAdapter(
         val form = forms.loadAndValidate(command.expoId, policy.formId, command.formVersion, command.answers)
         if (command.formVersion != guardian.formVersion || form.version != guardian.formVersion) conflict()
         validateReferences(guardian, form.questions)
-        val elementary = command.answers.path(guardian.schoolTypeQuestionId.toString()).asString() == guardian.elementarySchoolValue
-        if (elementary != (occupation == "ELEMENTARY_STUDENT")) denied()
+        val school = command.answers.path(guardian.schoolTypeQuestionId.toString()).asString()
+        if (school == guardian.guardianSchoolValue) schoolTypeMismatch()
+        if ((school == guardian.elementarySchoolValue) != (occupation == "ELEMENTARY_STUDENT")) denied()
         if (needsGuardian(guardian, command.answers)) conflict()
     }
 
@@ -139,6 +140,7 @@ class StudentGuardianEligibilityAdapter(
                 ?: listOfNotNull(condition.get("triggerValue"))
         if (school.path("formType").asString() != "DROPDOWN" || !school.path("requiredStatus").asBoolean() ||
             school.path("otherJson").hasNonNull("conditional") || !school.path("jsonData").has(policy.elementarySchoolValue) ||
+            policy.guardianSchoolValue?.let { !school.path("jsonData").has(it) } == true ||
             grade.path("formType").asString() != "DROPDOWN" || !grade.path("requiredStatus").asBoolean() ||
             grade
                 .path("jsonData")
@@ -155,6 +157,9 @@ class StudentGuardianEligibilityAdapter(
     }
 
     private fun denied(): Nothing = throw ResponseStatusException(HttpStatus.FORBIDDEN, "학생·보호자 자격 또는 학년이 올바르지 않습니다.")
+
+    // #271이 SCHOOL_TYPE_MISMATCH 사유 코드를 붙일 자리다.
+    private fun schoolTypeMismatch(): Nothing = denied()
 
     private fun badSubmission(): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, "신규 참가자의 폼 버전과 답변이 필요합니다.")
 

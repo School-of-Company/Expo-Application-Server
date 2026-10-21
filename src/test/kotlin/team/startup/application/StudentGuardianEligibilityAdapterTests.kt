@@ -106,7 +106,7 @@ class StudentGuardianEligibilityAdapterTests {
     fun setup() {
         questions = """[
           {"id":101,"title":"Renamed school","formType":"DROPDOWN","requiredStatus":true,"dynamicFormType":"DEFAULT",
-           "jsonData":{"primary":"Unrelated label","other":"Other"},"otherJson":null},
+           "jsonData":{"primary":"Unrelated label","other":"Other","guardian":"Guardian"},"otherJson":null},
           {"id":102,"title":"Renamed grade","formType":"DROPDOWN","requiredStatus":true,"dynamicFormType":"DEFAULT",
            "jsonData":{${(1..6).joinToString { "\"g$it\":\"label $it\"" }}},
            "otherJson":{"hasEtc":false,"conditional":{"parentIndex":0,"triggerValue":"primary"}}}
@@ -285,19 +285,45 @@ class StudentGuardianEligibilityAdapterTests {
         adapter.validateSingle(single("g1").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, "GENERAL")
     }
 
-    private fun query(student: tools.jackson.databind.JsonNode = answers("g1")) =
-        StudentGuardianEligibilityQuery(
-            definition,
-            setOf(1, 2, 3),
-            listOf(StudentGuardianLink(1, 3), StudentGuardianLink(2, 3)),
-            StudentGuardianValidationPhase.SUBMISSION,
-            submissions =
-                listOf(
-                    StudentGuardianSubmission(1, 1, student),
-                    StudentGuardianSubmission(2, 1, answers("g3")),
-                    StudentGuardianSubmission(3, 1, mapper.readTree("""{"101":"other"}""")),
-                ),
-        )
+    @Test
+    fun `guardian school value requires parents to choose it and blocks single applicants from choosing it`() {
+        definition =
+            definition.copy(
+                policy = requireNotNull(definition.policy).copy(guardianPolicy = guardian.copy(guardianSchoolValue = "guardian")),
+            )
+        forbidden { adapter.validate(query()) }
+        adapter.validate(query(guardianAnswer = "guardian"))
+        forbidden { adapter.validateSingle(single("g4").copy(answers = mapper.readTree("""{"101":"guardian"}""")), definition, "GENERAL") }
+        adapter.validateSingle(single("g4").copy(answers = mapper.readTree("""{"101":"other"}""")), definition, "GENERAL")
+    }
+
+    @Test
+    fun `guardian school value must be a distinct existing school option`() {
+        assertTrue(guardian.valid())
+        assertTrue(!guardian.copy(guardianSchoolValue = " ").valid())
+        assertTrue(!guardian.copy(guardianSchoolValue = "primary").valid())
+        definition =
+            definition.copy(
+                policy = requireNotNull(definition.policy).copy(guardianPolicy = guardian.copy(guardianSchoolValue = "missing")),
+            )
+        assertEquals(502, assertThrows(ResponseStatusException::class.java) { adapter.validate(query()) }.statusCode.value())
+    }
+
+    private fun query(
+        student: tools.jackson.databind.JsonNode = answers("g1"),
+        guardianAnswer: String = "other",
+    ) = StudentGuardianEligibilityQuery(
+        definition,
+        setOf(1, 2, 3),
+        listOf(StudentGuardianLink(1, 3), StudentGuardianLink(2, 3)),
+        StudentGuardianValidationPhase.SUBMISSION,
+        submissions =
+            listOf(
+                StudentGuardianSubmission(1, 1, student),
+                StudentGuardianSubmission(2, 1, answers("g3")),
+                StudentGuardianSubmission(3, 1, mapper.readTree("""{"101":"$guardianAnswer"}""")),
+            ),
+    )
 
     private fun answers(grade: String) = mapper.readTree("""{"101":"primary","102":"$grade"}""")
 

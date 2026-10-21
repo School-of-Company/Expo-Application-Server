@@ -43,6 +43,8 @@ class ProgramGuardianPolicyController(
         ResponseEntity
             .noContent()
             .header("X-Program-Guardian-Policy-Version", "1")
+            // Expo #189는 guardianSchoolValue를 이 신호가 있을 때만 보낸다. 구버전은 모르는 필드를 무시하고 승인한다.
+            .header("X-Program-Guardian-School-Value-Version", "1")
             .header(PROMOTION_POLICY_HEADER, "1")
             .build()
 }
