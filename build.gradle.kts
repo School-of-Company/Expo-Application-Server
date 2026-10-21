@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "team.startup"
-version = "0.17.0"
+version = "0.18.1"
 
 java {
     toolchain {
