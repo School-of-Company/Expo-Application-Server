@@ -25,6 +25,8 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.repository.PreregisterSessionRepository
+import team.startup.application.domain.application.service.impl.SessionAttendanceOutbox
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
 import java.util.UUID
@@ -41,9 +43,14 @@ class ManagedParticipantHttpTests {
 
     @Autowired private lateinit var jdbc: JdbcTemplate
 
+    @Autowired private lateinit var preregisters: PreregisterSessionRepository
+
+    @Autowired private lateinit var attendanceOutbox: SessionAttendanceOutbox
+
     @BeforeEach
     fun setup() {
         jdbc.execute("TRUNCATE tb_standard_program_application, tb_training_program_application, tb_program_session_application CASCADE")
+        jdbc.execute("TRUNCATE tb_field_qr_revoked")
         jdbc.execute("TRUNCATE tb_owner_cancellation_delivery, tb_preregister_application, tb_preregister_session_state CASCADE")
         jdbc.update(
             "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, '{\"startedAt\":\"2000-01-01T00:00:00Z\",\"endedAt\":\"2100-01-01T00:00:00Z\"}')",
@@ -366,6 +373,42 @@ class ManagedParticipantHttpTests {
         assertEquals(4, qrCalls.get())
         mvc.perform(get(adminQrPath(3)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
         assertEquals(4, qrCalls.get())
+    }
+
+    @Test
+    fun `field registered participant loses QR when preregistration is cancelled and regains it on field re-registration`() {
+        // #297: 4는 현장등록만 한 참가자라 QR이 열려 있다.
+        mvc.perform(get(qrPath(4)).cookie(cookie)).andExpect(status().isOk)
+        val applicationId =
+            requireNotNull(
+                jdbc.queryForObject(
+                    "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                        "VALUES (?, 1, 1, 4, 'CONFIRMED') RETURNING id",
+                    Long::class.java,
+                    expo,
+                ),
+            )
+        // 확정 사전등록은 취소 표시와 무관하게 QR이 열려 있다.
+        jdbc.update("INSERT INTO tb_field_qr_revoked (expo_id, participant_id) VALUES (?, 2), (?, 4)", expo, expo)
+        mvc.perform(get(qrPath(2)).cookie(cookie)).andExpect(status().isOk)
+        mvc.perform(get(qrPath(4)).cookie(cookie)).andExpect(status().isOk)
+        jdbc.update("TRUNCATE tb_field_qr_revoked")
+        qrCalls.set(0)
+        // 사전등록 취소가 확정되면 FIELD 참가자의 QR이 닫힌다(소유자·관리자 모두).
+        preregisters.status(applicationId, "CANCELLED")
+        mvc.perform(get(qrPath(4)).cookie(cookie)).andExpect(status().isNotFound)
+        mvc.perform(get(adminQrPath(4)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(0, qrCalls.get())
+        // 같은 참가자의 취소가 반복돼도 표시는 하나다.
+        preregisters.status(applicationId, "CANCELLED")
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_field_qr_revoked", Int::class.java))
+        // 현장 재등록 요청이 처리되면 다시 열린다.
+        attendanceOutbox.fieldRegistered(expo, listOf(4L))
+        mvc.perform(get(qrPath(4)).cookie(cookie)).andExpect(status().isOk)
+        mvc
+            .perform(get(adminQrPath(4)).header("Authorization", "Bearer admin"))
+            .andExpect(status().isOk)
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_field_qr_revoked", Int::class.java))
     }
 
     @Test
