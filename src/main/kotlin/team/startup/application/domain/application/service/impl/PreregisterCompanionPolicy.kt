@@ -125,9 +125,9 @@ class PreregisterCompanionPolicy(
         if (reservations.companionAdditionInProgress(expoId, representativeId)) {
             return blocked("ADDITION_IN_PROGRESS", "처리 중인 동행자 추가가 있습니다.")
         }
-        // User 일행(대표자 포함)은 취소된 동행자도 포함해 누적 5명까지다.
-        val companions = party.participants.size - 1
-        val slots = minOf(limit - companions, CompanionAnswers.MAX_PARTY - party.participants.size)
+        // #262: 일행(대표자 포함)은 현재 5명까지다. 모든 신청을 취소한 동행자는 이력과 ID를 남긴 채 빼고, 추가 저장 때 User에서 해제한다.
+        val active = reservations.activePartySize(expoId, representativeId, party.participants.map { it.participantId })
+        val slots = minOf(limit - (active - 1), CompanionAnswers.MAX_PARTY - active)
         if (slots <= 0) {
             return blocked("COMPANION_LIMIT_REACHED", "동행자는 최대 ${minOf(limit, CompanionAnswers.MAX_PARTY - 1)}명까지 입력할 수 있습니다.")
         }
