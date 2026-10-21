@@ -28,6 +28,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
+import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
 import team.startup.application.domain.application.service.impl.AdminCancellationParticipantGateway
 import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
 import team.startup.application.domain.application.service.impl.AttendanceCancellationStatusGateway
@@ -77,6 +78,8 @@ class ProductionOwnerCancellationGuardTests {
     @Volatile private var acquired = false
 
     @Volatile private var entered = false
+
+    @Volatile private var programAttendees = "[]"
 
     @BeforeEach
     fun start() {
@@ -138,6 +141,11 @@ class ProductionOwnerCancellationGuardTests {
                     path.endsWith("/participants/2/cancellation-status") -> {
                         code = statusCode
                         """{"participantId":2,"representative":$attendanceRepresentative,"entered":$entered,"programAttended":false,"traineeLinked":${traineeId != null},"linkedTraineeId":$traineeId,"guardState":null}"""
+                    }
+
+                    path.startsWith("/internal/program-attendances/") -> {
+                        requests.add(exchange.requestMethod to path)
+                        programAttendees
                     }
 
                     path.endsWith("preregister-sessions/7") -> {
@@ -219,6 +227,24 @@ class ProductionOwnerCancellationGuardTests {
         assertEquals(listOf("PUT", "DELETE"), requests.map { it.first })
         assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Long::class.java))
         failure(HttpStatus.SERVICE_UNAVAILABLE) { restarted(attendanceEnabled = false).acquireAdmin(COMMAND, 2, 7) }
+    }
+
+    @Test
+    fun `admin program acquire skips entry deadline and attendance guard and rejects only attendance of that program`() {
+        entered = true
+        deadline = NOW.toString()
+        val command = COMMAND.copy(type = OwnerApplicationType.STANDARD)
+        guard.acquireAdminProgram(command, 2, 7).use { permit ->
+            assertEquals(Instant.MAX, permit.cancelEndedAt)
+        }
+        assertEquals(listOf("GET" to "/internal/program-attendances/standard/7"), requests)
+        programAttendees = """[{"participantId":3,"entryTime":"09:00","leaveTime":null}]"""
+        guard.acquireAdminProgram(command, 2, 7).close()
+        programAttendees = """[{"participantId":2,"entryTime":"09:00","leaveTime":null}]"""
+        failure(HttpStatus.CONFLICT) { guard.acquireAdminProgram(command, 2, 7) }
+        assertTrue(requests.none { it.second.contains("cancellation-guard") })
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Long::class.java))
+        failure(HttpStatus.SERVICE_UNAVAILABLE) { restarted(attendanceEnabled = false).acquireAdminProgram(command, 2, 7) }
     }
 
     @Test
@@ -428,6 +454,7 @@ class ProductionOwnerCancellationGuardTests {
             Clock.fixed(NOW, ZoneOffset.UTC),
             AttendanceCancellationStatusGateway(mapper, base, "test-token"),
             AdminCancellationParticipantGateway(mapper, base, "test-token"),
+            AdminAttendanceGateway(mapper, base, "test-token"),
             attendanceEnabled,
         )
     }

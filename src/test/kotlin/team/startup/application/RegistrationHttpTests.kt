@@ -5,6 +5,7 @@ import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
@@ -20,6 +21,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
@@ -593,6 +595,91 @@ class RegistrationHttpTests {
         // 옛 User 응답처럼 새로 만든 참가자를 알 수 없으면 대표자만 푼다
         assertEquals(listOf(35L), register("field-legacy", 2, ParticipantRegistrationResult(35, "01012345678", listOf(35, 36, 37))))
         jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?::uuid", EXPO_5)
+    }
+
+    @Test
+    fun `사전등록 이력이 있는 번호의 현장등록은 오늘 회차 확정이면 409로 거절하고 아니면 기존 FIELD 등록 요청을 보낸다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_5)).thenReturn(ExpoPeriod(today.toString(), today.plusDays(1).toString()))
+        `when`(gateway.form(EXPO_5, "STANDARD", "FIELD", false)).thenReturn(
+            registrationForm(OffsetDateTime.now().minusDays(1).toString(), OffsetDateTime.now().plusDays(1).toString()),
+        )
+        listOf("tb_session_attendance_outbox", "tb_preregister_application", "tb_preregister_reservation", "tb_preregister_session_state")
+            .forEach { jdbc.update("DELETE FROM $it WHERE expo_id = ?::uuid", EXPO_5) }
+        // 회차 1은 오늘 00:00 KST, 회차 2는 내일 00:00 KST에 시작한다.
+        listOf(1L to today, 2L to today.plusDays(1)).forEach { (session, day) ->
+            val start = day.atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant()
+            jdbc.update(
+                "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?::uuid, ?, ?::jsonb)",
+                EXPO_5,
+                session,
+                """{"startedAt":"$start","endedAt":"${start.plusSeconds(7200)}"}""",
+            )
+        }
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation (expo_id, request_id, session_id, command, user_request, applicants, state) " +
+                "VALUES (?::uuid, 'pre-35', 1, '{}', '{\"phoneNumber\":\"010-1234-5678\"}', 2, 'COMPLETED')",
+            EXPO_5,
+        )
+        // 대표자 35는 오늘 회차에 확정, 동행자 36은 다른 날 회차에 확정돼 있다.
+        jdbc.update(
+            "INSERT INTO tb_preregister_application " +
+                "(expo_id, session_id, representative_id, participant_id, status, reservation_request_id) " +
+                "VALUES (?::uuid, 1, 35, 35, 'CONFIRMED', 'pre-35'), (?::uuid, 2, 35, 36, 'CONFIRMED', 'pre-35')",
+            EXPO_5,
+            EXPO_5,
+        )
+
+        fun registration(requestId: String) =
+            ParticipantRegistration(
+                EXPO_5,
+                "홍길동",
+                "01012345678",
+                "{}",
+                true,
+                "FIELD",
+                null,
+                null,
+                null,
+                requestId,
+                FORM_ID,
+                emptyList(),
+            )
+
+        fun submit(requestId: String) =
+            mockMvc.perform(
+                post("/application/field/standard/$EXPO_5")
+                    .header("Idempotency-Key", requestId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("{}")),
+            )
+        submit("today")
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("ALREADY_PREREGISTERED_TODAY"))
+            .andExpect(jsonPath("$.message").value("이미 사전등록하셨습니다. 받으신 QR로 입장해 주세요."))
+        verify(gateway, never()).participant("STANDARD", registration("today"))
+        for ((requestId, update) in listOf(
+            "other-day" to "UPDATE tb_preregister_application SET session_id = 2 WHERE participant_id = 35",
+            "all-cancelled" to "UPDATE tb_preregister_application SET status = 'CANCELLED'",
+        )) {
+            jdbc.update(update)
+            `when`(gateway.participant("STANDARD", registration(requestId)))
+                .thenReturn(ParticipantRegistrationResult(35, "01012345678", listOf(35), createdIds = emptyList()))
+            submit(requestId).andExpect(status().isCreated)
+            verify(gateway).participant("STANDARD", registration(requestId))
+            // 다른 날 확정 회차가 남아도 Attendance에 현장 재등록을 알려 그 회차 제한을 뺀다.
+            assertEquals(
+                listOf(35L),
+                jdbc.queryForList(
+                    "SELECT participant_id FROM tb_session_attendance_outbox WHERE expo_id = ?::uuid AND field_registered",
+                    Long::class.java,
+                    EXPO_5,
+                ),
+            )
+            jdbc.update("DELETE FROM tb_session_attendance_outbox WHERE expo_id = ?::uuid", EXPO_5)
+        }
+        listOf("tb_preregister_application", "tb_preregister_reservation", "tb_preregister_session_state")
+            .forEach { jdbc.update("DELETE FROM $it WHERE expo_id = ?::uuid", EXPO_5) }
     }
 
     @Test

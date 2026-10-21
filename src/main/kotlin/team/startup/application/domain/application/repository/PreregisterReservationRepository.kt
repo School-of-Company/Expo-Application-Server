@@ -316,6 +316,7 @@ class PreregisterReservationRepository(
     /**
      * 대표자의 동행자 중 원장에서 신청이 취소된 참가자 ID(#190). 대표자 본인과 다시 활성 신청이 생긴 사람,
      * 대기 중인 사람(취소가 아님)은 뺀다. 같은 박람회 잠금 안에서 부른다.
+     * #262: 프로그램 신청이 남았거나 처리 중·대기 중인 회차 추가에 든 사람도 취소가 아니다. 일행 인원과 User 해제가 같은 기준을 쓴다.
      */
     fun cancelledCompanions(
         expoId: UUID,
@@ -325,11 +326,59 @@ class PreregisterReservationRepository(
             "SELECT DISTINCT a.participant_id FROM tb_preregister_application a WHERE a.expo_id = ? AND a.representative_id = ? " +
                 "AND a.participant_id <> a.representative_id AND a.status = 'CANCELLED' " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
-                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') ORDER BY a.participant_id",
+                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.expo_id::text = a.expo_id::text " +
+                "AND p.participant_id = a.participant_id AND p.status <> 'CANCELLED') " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_standard_program_application s WHERE s.participant_id = a.participant_id) " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = a.expo_id AND r.session_addition " +
+                "AND r.state IN ('RESERVED', 'WAITING') AND r.result::jsonb -> 'participantIds' @> to_jsonb(a.participant_id)) " +
+                "ORDER BY a.participant_id",
             { rs, _ -> rs.getLong(1) },
             expoId,
             representativeId,
         )
+
+    /**
+     * 같은 전화번호(숫자만) 대표자 본인의 사전등록 이력(#261). 이력이 없으면 null, [day](KST)에 시작하는 회차의 확정이 있으면 true,
+     * 다른 날 회차만 확정이거나 모두 취소했으면 false다. 현장등록 재등록 판정에 쓴다.
+     */
+    fun preregisteredOn(
+        expoId: UUID,
+        phone: String,
+        day: java.time.LocalDate,
+    ): Boolean? =
+        jdbc.queryForObject(
+            "SELECT bool_or(a.status = 'CONFIRMED' AND " +
+                "((st.definition::jsonb ->> 'startedAt')::timestamptz AT TIME ZONE 'Asia/Seoul')::date = ?) " +
+                "FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
+                "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id LEFT JOIN tb_preregister_session_state st " +
+                "ON st.expo_id = a.expo_id AND st.session_id = a.session_id " +
+                "WHERE a.expo_id = ? AND a.participant_id = a.representative_id " +
+                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+            Boolean::class.javaObjectType,
+            day,
+            expoId,
+            phone,
+        )
+
+    /**
+     * 대표자를 포함한 현재 일행 인원(#262). User 일행과 원장의 이 대표자 신청자를 합치고 [cancelledCompanions]를 뺀다.
+     * 원장을 함께 보므로 잠금 밖에서 읽은 User 일행에 방금 더한 동행자가 없어도 센다. 같은 박람회 잠금 안에서 부른다.
+     */
+    fun activePartySize(
+        expoId: UUID,
+        representativeId: Long,
+        partyIds: Collection<Long>,
+    ): Int {
+        val ledger =
+            jdbc.query(
+                "SELECT DISTINCT participant_id FROM tb_preregister_application WHERE expo_id = ? AND representative_id = ?",
+                { rs, _ -> rs.getLong(1) },
+                expoId,
+                representativeId,
+            )
+        return (partyIds.toSet() + ledger - cancelledCompanions(expoId, representativeId).toSet()).size
+    }
 
     /** 같은 전화번호(숫자만)로 이미 저장된 대표자 일행의 취소된 동행자. 대표자 재신청에서 쓴다. */
     fun cancelledCompanionsOfPhone(

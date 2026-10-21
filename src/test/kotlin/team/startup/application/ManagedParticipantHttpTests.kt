@@ -286,7 +286,7 @@ class ManagedParticipantHttpTests {
     }
 
     @Test
-    fun `field registered participant without preregistration history gets owned QR`() {
+    fun `field registered participant gets owned and admin QR with or without preregistration history`() {
         mvc
             .perform(get(qrPath(4)).cookie(cookie))
             .andExpect(status().isOk)
@@ -294,23 +294,20 @@ class ManagedParticipantHttpTests {
             .andExpect(jsonPath("$.participantId").value(4))
             .andExpect(jsonPath("$.code").value("private-code"))
         assertEquals(1, qrCalls.get())
-        // 사전등록 취소 이력이 있는 현장등록(#249), 다른 대표자의 참가자, 관리자 QR은 그대로다
-        mvc.perform(get(qrPath(5)).cookie(cookie)).andExpect(status().isNotFound)
-        mvc.perform(get(qrPath(99)).cookie(cookie)).andExpect(status().isNotFound)
-        mvc.perform(get(adminQrPath(4)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
-        assertEquals(1, qrCalls.get())
-        duringQr = {
-            jdbc.update(
-                "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
-                    "VALUES (?, 1, 1, 4, 'CANCELLED')",
-                expo,
-            )
-        }
-        mvc
-            .perform(get(qrPath(4)).cookie(cookie))
-            .andExpect(status().isNotFound)
-            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("private-code"))))
+        // #261: 사전등록 취소 뒤 현장 재등록해 User가 FIELD로 바꾼 참가자도 같다. 입장 판정은 Attendance가 다시 한다.
+        mvc.perform(get(qrPath(5)).cookie(cookie)).andExpect(status().isOk)
         assertEquals(2, qrCalls.get())
+        mvc.perform(get(qrPath(99)).cookie(cookie)).andExpect(status().isNotFound)
+        // 관리자 QR은 확정 사전등록이 없으면 User 일행의 대표자로 FIELD 참가자만 조회한다.
+        for (id in listOf(4L, 5L)) {
+            mvc
+                .perform(get(adminQrPath(id)).header("Authorization", "Bearer admin"))
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.participantId").value(id))
+        }
+        assertEquals(4, qrCalls.get())
+        mvc.perform(get(adminQrPath(3)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
+        assertEquals(4, qrCalls.get())
     }
 
     @Test
@@ -472,6 +469,16 @@ class ManagedParticipantHttpTests {
                                 """{"expoId":"$expo","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
                             }
 
+                            path.endsWith("standard-participants/details") -> {
+                                val id = Regex("cursor=(\\d+)").find(exchange.requestURI.query)!!.groupValues[1].toLong() + 1
+                                val type = if (id == 4L || id == 5L) "FIELD" else "PRE"
+                                if (id in 2L..5L) {
+                                    """{"items":[{"participantId":$id,"name":"Person","phoneNumber":null,"notificationPhoneNumber":null,"occupation":"TEACHER","representativeId":1,"linkedTraineeId":null,"applicationType":"$type","information":{}}],"nextCursor":null}"""
+                                } else {
+                                    """{"items":[],"nextCursor":null}"""
+                                }
+                            }
+
                             path.endsWith("qr") -> {
                                 qrCalls.incrementAndGet()
                                 assertEquals("attendance-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
@@ -525,6 +532,7 @@ class ManagedParticipantHttpTests {
             registry.add("application.attendance.url") { "http://127.0.0.1:${server.address.port}" }
             registry.add("application.attendance.internal-token") { "attendance-token" }
             registry.add("application.registration.expo-internal-token") { "expo-token" }
+            registry.add("application.registration.user-internal-token") { "user-token" }
             registry.add("application.program-sessions.reconcile-delay") { 3600000 }
         }
     }

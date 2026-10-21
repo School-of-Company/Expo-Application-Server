@@ -4,6 +4,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
+import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.RegistrationCommand
 import tools.jackson.databind.ObjectMapper
 import java.time.Instant
@@ -19,6 +20,7 @@ class RegistrationWorkflow(
     private val mapper: ObjectMapper,
     private val preregistration: PreregisterRegistrationWorkflow,
     private val attendance: SessionAttendanceOutbox,
+    private val reservations: PreregisterReservationRepository,
 ) {
     private val occupations = CompanionAnswers.occupations
     private val regions = CompanionAnswers.regions
@@ -74,6 +76,14 @@ class RegistrationWorkflow(
         if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
             badRequest("박람회 등록 기간이 아닙니다.")
         }
+        // #261: 사전등록 이력이 있는 번호의 현장등록. 그날 회차 확정이면 받은 QR로 입장하게 거절하고, 아니면 applicationType FIELD 저장으로 User가 기존 PRE 대표자를 FIELD로 바꾼다.
+        val reregistration =
+            if (participantType == "STANDARD" && applicationType == "FIELD") {
+                reservations.preregisteredOn(UUID.fromString(expoId), request.phoneNumber.filter { it in '0'..'9' }, today)
+            } else {
+                null
+            }
+        if (reregistration == true) throw ResponseStatusException(HttpStatus.CONFLICT, PREREGISTERED_TODAY)
         // 일반 사전등록 신규 접수는 행사 시작일 00:00 KST에 닫는다(#171). 기존 예약의 멱등·복구는 위 resume이 먼저 처리한다.
         if (sessionRegistration && !today.isBefore(started)) {
             badRequest("사전 등록 기간이 아닙니다.")
@@ -196,4 +206,9 @@ class RegistrationWorkflow(
     private fun PreregisterRegistrationReceipt?.pendingOrNull() = this?.takeIf { it.status != "CONFIRMED" }
 
     private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+
+    companion object {
+        // RegistrationController가 이 사유를 409 ALREADY_PREREGISTERED_TODAY로 바꾼다.
+        const val PREREGISTERED_TODAY = "오늘 회차에 확정된 사전등록이 있습니다."
+    }
 }

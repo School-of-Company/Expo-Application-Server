@@ -23,7 +23,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionPolicy
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
-import team.startup.application.domain.application.service.impl.ProductionOwnerCancellationGuard
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
@@ -54,8 +53,6 @@ class AdminOperationsHttpTests {
 
     @Autowired private lateinit var mapper: ObjectMapper
 
-    @Autowired private lateinit var recovery: ProductionOwnerCancellationGuard
-
     private val expo = UUID.randomUUID()
     private val application = UUID.randomUUID()
     private val waiting = UUID.randomUUID()
@@ -71,10 +68,8 @@ class AdminOperationsHttpTests {
         userBody = null
         entered = false
         linkedTrainee = null
-        acquireStatus = 204
-        abortStatus = 204
-        afterAcquireEntered = false
-        afterAcquire = null
+        attendees = "[]"
+        attendanceStatus = 200
         messageStatus = 200
         messageBody = """{"items":[]}"""
         historyStatus = 200
@@ -127,9 +122,10 @@ class AdminOperationsHttpTests {
         owner: UUID = expo,
         type: String = "STANDARD",
         trainee: Long? = null,
+        route: String? = null,
     ) {
         jdbc.update(
-            "INSERT INTO tb_program_session_application (id, expo_id, program_type, program_id, group_id, participant_id, trainee_id, status, definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot) VALUES (?, ?, ?, 7, ?, ?, ?, ?, '{}', ?, 1, '[]', '{}')",
+            "INSERT INTO tb_program_session_application (id, expo_id, program_type, program_id, group_id, participant_id, trainee_id, status, definition_snapshot, form_id, form_version, questions_snapshot, answers_snapshot, admission_route) VALUES (?, ?, ?, 7, ?, ?, ?, ?, '{}', ?, 1, '[]', '{}', ?)",
             id,
             owner,
             type,
@@ -138,6 +134,7 @@ class AdminOperationsHttpTests {
             trainee,
             status,
             UUID.randomUUID(),
+            route,
         )
         jdbc.update("INSERT INTO tb_program_session_history (application_id, status) VALUES (?, ?)", id, status)
     }
@@ -197,7 +194,7 @@ class AdminOperationsHttpTests {
     }
 
     @Test
-    fun `확정 취소는 관리자 이력을 기록하고 대기를 승급한 뒤 abort로 보호를 푼다`() {
+    fun `확정 취소는 관리자 이력을 기록하고 대기를 승급하며 출석 보호를 걸지 않는다`() {
         val response = cancel()
         assertEquals(200, response.status)
         assertEquals("no-store", response.getHeader("Cache-Control"))
@@ -220,15 +217,11 @@ class AdminOperationsHttpTests {
                 application,
             ),
         )
-        assertTrue(calls.any { it.startsWith("PUT /internal/expos/$expo/participants/1/admin-cancellation-guard/") })
-        assertTrue(calls.any { it.startsWith("DELETE /internal/expos/$expo/participants/1/cancellation-guard/") })
-        assertFalse(calls.any { it.contains("/commit") })
-        val acquire = calls.single { it.startsWith("PUT") }.substringAfterLast('/')
-        assertEquals(acquire, calls.single { it.startsWith("DELETE") }.substringAfterLast('/'))
+        assertEquals(listOf("GET /internal/program-attendances/standard/7"), calls.filter { it.startsWith("GET") })
+        assertFalse(calls.any { it.contains("cancellation-guard") })
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
-        val before = calls.count { it.startsWith("PUT") }
         assertEquals(200, cancel().status)
-        assertEquals(before, calls.count { it.startsWith("PUT") })
+        assertEquals(1, calls.count { it.startsWith("GET") })
         accessStatus = 403
         assertEquals(403, cancel().status)
     }
@@ -265,24 +258,41 @@ class AdminOperationsHttpTests {
     }
 
     @Test
-    fun `취소 트랜잭션 실패는 기존 원장과 대기를 보존하고 보호를 해제한다`() {
+    fun `취소 트랜잭션 실패는 기존 원장과 대기를 보존한다`() {
         jdbc.update("UPDATE tb_program_session_state SET deleted = true WHERE expo_id = ?", expo)
         assertEquals(409, cancel().status)
         assertEquals("CONFIRMED", status())
         assertEquals("WAITING", status(waiting))
-        assertTrue(calls.any { it.startsWith("DELETE") })
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
     }
 
     @Test
-    fun `acquire 대기 중 마감이 지나면 현재 Expo 정책으로 취소를 막는다`() {
-        afterAcquire = {
-            definition = definition.copy(policy = definition.policy!!.copy(cancelEndedAt = Instant.now().minusSeconds(1)))
-            observe()
-        }
-        assertEquals(409, cancel().status)
-        assertEquals("CONFIRMED", status())
-        assertTrue(calls.any { it.startsWith("DELETE") })
+    fun `입장한 참가자의 현장 신청도 취소 마감 뒤 취소하고 좌석은 신청 경로의 풀로 돌아간다`() {
+        // 현장 1석(참가자 1), 사전 1석(참가자 3)이 차 있고 참가자 2가 사전 대기 중이다(#261).
+        definition =
+            definition.copy(
+                policy =
+                    definition.policy!!.copy(
+                        capacity = 2,
+                        preRegistrationCapacity = 1,
+                        onsiteCapacity = 1,
+                        cancelEndedAt = Instant.now().minusSeconds(1),
+                    ),
+            )
+        observe()
+        jdbc.update("DELETE FROM tb_program_session_history WHERE application_id = ?", application)
+        jdbc.update("DELETE FROM tb_program_session_application WHERE id = ?", application)
+        insert(application, 1, "CONFIRMED", route = "ONSITE")
+        val pre = UUID.randomUUID()
+        insert(pre, 3, "CONFIRMED", route = "PRE_REGISTRATION")
+        jdbc.update("INSERT INTO tb_standard_program_application (participant_id, standard_program_id) VALUES (3, 7)")
+        entered = true
+        assertEquals(200, cancel().status)
+        assertEquals("CANCELLED", status())
+        assertEquals("WAITING", status(waiting))
+        assertEquals(200, cancel(route = path.replace(application.toString(), pre.toString())).status)
+        assertEquals("CANCELLED", status(pre))
+        assertEquals("CONFIRMED", status(waiting))
     }
 
     @Test
@@ -294,15 +304,19 @@ class AdminOperationsHttpTests {
     }
 
     @Test
-    fun `입장 출석 기한과 User 실패는 취소 없이 실패 폐쇄한다`() {
+    fun `그 프로그램 출석과 원천 실패만 관리자 취소를 막는다`() {
         entered = true
+        attendees = """[{"participantId":1,"entryTime":"09:00","leaveTime":null}]"""
         assertEquals(409, cancel().status)
-        entered = false
-        definition = definition.copy(policy = definition.policy!!.copy(cancelEndedAt = Instant.now().minusSeconds(1)))
-        observe()
-        assertEquals(409, cancel().status)
-        definition = definition.copy(policy = definition.policy!!.copy(cancelEndedAt = Instant.now().plusSeconds(3600)))
-        observe()
+        attendees = "[]"
+        for (code in listOf(503, 404)) {
+            attendanceStatus = code
+            assertEquals(if (code == 503) 503 else 502, cancel().status)
+        }
+        attendanceStatus = 200
+        attendees = """[{"traineeId":1}]"""
+        assertEquals(502, cancel().status)
+        attendees = "[]"
         for (code in listOf(404, 401, 503)) {
             userStatus = code
             assertEquals(if (code == 401) 502 else code, cancel().status)
@@ -310,40 +324,16 @@ class AdminOperationsHttpTests {
         userStatus = 200
         userBody = "{}"
         assertEquals(502, cancel().status)
-        userBody = null
-        for (code in listOf(409, 404, 503)) {
-            acquireStatus = code
-            assertEquals(code, cancel().status)
-            assertEquals("CONFIRMED", status())
-        }
-        assertTrue(calls.any { it.startsWith("DELETE") })
-    }
-
-    @Test
-    fun `acquire 뒤 참가자 상태가 바뀌면 abort하고 로컬 취소를 거부한다`() {
-        afterAcquireEntered = true
-        assertEquals(409, cancel().status)
         assertEquals("CONFIRMED", status())
-        assertEquals("WAITING", status(waiting))
-        assertTrue(calls.any { it.startsWith("DELETE") })
-    }
-
-    @Test
-    fun `abort 장애는 취소를 보존하고 기존 durable 복구가 같은 operationId로 해제한다`() {
-        abortStatus = 503
-        assertEquals(503, cancel().status)
+        userBody = null
+        attendees = """[{"participantId":2,"entryTime":"09:00","leaveTime":null}]"""
+        assertEquals(200, cancel().status)
         assertEquals("CANCELLED", status())
-        assertEquals("ABORT", jdbc.queryForObject("SELECT action FROM tb_owner_cancellation_delivery", String::class.java))
-        val operation = jdbc.queryForObject("SELECT operation_id::text FROM tb_owner_cancellation_delivery", String::class.java)
-        abortStatus = 204
-        jdbc.update("UPDATE tb_owner_cancellation_delivery SET next_attempt_at = now()")
-        recovery.recoverPending()
-        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM tb_owner_cancellation_delivery", Int::class.java))
-        assertTrue(calls.filter { it.startsWith("DELETE") }.all { it.endsWith("/$operation") })
+        assertFalse(calls.any { it.contains("cancellation-guard") })
     }
 
     @Test
-    fun `동시 취소는 한 acquire와 한 취소 승급 이력만 남긴다`() {
+    fun `동시 취소는 한 출석 확인과 한 취소 이력만 남긴다`() {
         acquireStarted = CountDownLatch(1)
         acquireRelease = CountDownLatch(1)
         val first = CompletableFuture.supplyAsync { cancel().status }
@@ -354,7 +344,7 @@ class AdminOperationsHttpTests {
             acquireRelease!!.countDown()
         }
         assertEquals(200, first.get(10, TimeUnit.SECONDS))
-        assertEquals(1, calls.count { it.startsWith("PUT") })
+        assertEquals(1, calls.count { it.startsWith("GET") })
         assertEquals(
             1,
             jdbc.queryForObject(
@@ -537,10 +527,8 @@ class AdminOperationsHttpTests {
         private var userBody: String? = null
         private var entered = false
         private var linkedTrainee: Long? = null
-        private var acquireStatus = 204
-        private var abortStatus = 204
-        private var afterAcquireEntered = false
-        private var afterAcquire: (() -> Unit)? = null
+        private var attendees = "[]"
+        private var attendanceStatus = 200
         private var messageStatus = 200
         private var messageBody = """{"items":[]}"""
         private var historyStatus = 200
@@ -576,30 +564,30 @@ class AdminOperationsHttpTests {
 
                             path.endsWith("/admin-cancellation-status") -> {
                                 assertEquals("user-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
-                                calls.add("USER ${exchange.requestBody.bufferedReader().readText()}")
+                                val request = exchange.requestBody.bufferedReader().readText()
+                                calls.add("USER $request")
                                 code = userStatus
+                                val participantId = jacksonObjectMapper().readTree(request)["participantId"].asLong()
                                 userBody
                                     ?: """{
-                                        "participantId":1,"entered":$entered,
+                                        "participantId":$participantId,"entered":$entered,
                                         "traineeLinked":${linkedTrainee != null},"linkedTraineeId":$linkedTrainee
                                     }"""
                             }
 
                             path.contains("cancellation-guard") -> {
-                                assertEquals("attendance-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
-                                assertEquals("", exchange.requestBody.bufferedReader().readText())
                                 calls.add("${exchange.requestMethod} $path")
-                                code =
-                                    if (exchange.requestMethod == "PUT") {
-                                        acquireStarted?.countDown()
-                                        acquireRelease?.let { assertTrue(it.await(5, TimeUnit.SECONDS)) }
-                                        if (afterAcquireEntered) entered = true
-                                        afterAcquire?.invoke()
-                                        acquireStatus
-                                    } else {
-                                        abortStatus
-                                    }
+                                code = 500
                                 ""
+                            }
+
+                            path.startsWith("/internal/program-attendances/") -> {
+                                assertEquals("attendance-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
+                                calls.add("${exchange.requestMethod} $path")
+                                acquireStarted?.countDown()
+                                acquireRelease?.let { assertTrue(it.await(5, TimeUnit.SECONDS)) }
+                                code = attendanceStatus
+                                attendees
                             }
 
                             path.endsWith("/standard-programs/7") -> {

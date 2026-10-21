@@ -31,7 +31,7 @@ class SessionAttendanceOutbox(
         return repository.append(expoId, participantId, sessionId, cancelled = true)
     }
 
-    // #249: on-site registration of a participant whose preregistration was cancelled lets them enter again.
+    // #249, #261: on-site registration of a participant with preregistration history lets them enter without a session.
     @Transactional
     fun fieldRegistered(
         expoId: UUID,

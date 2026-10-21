@@ -75,6 +75,49 @@ class AdminAttendanceGateway(
         }
     }
 
+    /** #261: 이 사람(일반은 참가자, 연수는 연수자)이 그 프로그램에 출석했는지. 관리자 프로그램 취소에 쓴다. */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    fun attended(
+        type: ProgramSessionType,
+        programId: Long,
+        personId: Long,
+    ): Boolean {
+        if (url.isBlank() || token.isBlank()) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "출석 조회 연동이 설정되지 않았습니다.")
+        }
+        val response =
+            try {
+                client.send(
+                    HttpRequest
+                        .newBuilder(URI.create("${url.trimEnd('/')}/internal/program-attendances/${type.name.lowercase()}/$programId"))
+                        .timeout(Duration.ofSeconds(8))
+                        .header("X-Internal-Token", token)
+                        .GET()
+                        .build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                )
+            } catch (exception: Exception) {
+                if (exception is InterruptedException) Thread.currentThread().interrupt()
+                throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "출석 원천을 조회할 수 없습니다.", exception)
+            }
+        if (response.statusCode() in 500..599) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "출석 원천이 응답하지 않습니다.")
+        }
+        if (response.statusCode() != 200) {
+            throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "출석 원천 응답 상태가 올바르지 않습니다.")
+        }
+        val field = if (type == ProgramSessionType.TRAINING) "traineeId" else "participantId"
+        val tree =
+            try {
+                mapper.readTree(response.body()).also { tree ->
+                    require(tree.isArray && tree.all { it[field]?.isIntegralNumber == true && it[field].canConvertToLong() })
+                }
+            } catch (exception: Exception) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "출석 원천 응답이 올바르지 않습니다.", exception)
+            }
+        return tree.any { it[field].asLong() == personId }
+    }
+
     private data class ProgramRef(
         val programType: ProgramSessionType,
         val programId: Long,
