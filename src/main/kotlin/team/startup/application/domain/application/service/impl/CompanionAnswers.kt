@@ -20,9 +20,6 @@ internal object CompanionAnswers {
         )
     val regions = setOf("GWANGJU", "JEONNAM", "OTHER")
 
-    /** 회차 참석자 중 이들만 있으면 안 된다(#199 Q1). */
-    val students = setOf("KINDERGARTEN_STUDENT", "ELEMENTARY_STUDENT", "MIDDLE_SCHOOL_STUDENT", "HIGH_SCHOOL_STUDENT")
-
     /** 대표자를 포함한 일행 최대 인원. User도 같은 상한을 누적으로 적용한다. */
     const val MAX_PARTY = 5
 

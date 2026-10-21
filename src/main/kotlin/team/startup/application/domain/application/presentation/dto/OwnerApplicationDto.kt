@@ -122,7 +122,7 @@ data class AddOwnerPreregisterSessionRequest(
     val sessionId: Long?,
     @field:NotNull
     @field:Size(min = 1, max = 5)
-    @field:Schema(description = "이 회차에 갈 일행 참가자 ID 1~5명. 대표자는 빠져도 되지만 학생만으로는 안 된다", example = "[101, 102]")
+    @field:Schema(description = "이 회차에 갈 일행 참가자 ID 1~5명. 대표자는 빠져도 되고 학생만 참석해도 된다(#287)", example = "[101, 102]")
     val participantIds: List<Long>?,
 )
 

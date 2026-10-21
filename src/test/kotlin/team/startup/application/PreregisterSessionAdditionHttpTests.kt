@@ -121,14 +121,25 @@ class PreregisterSessionAdditionHttpTests {
     }
 
     @Test
-    fun `the representative may stay out but students alone cannot attend`() {
-        assertEquals(201, register(companion("adult"), companion("kid", "ELEMENTARY_STUDENT")).status)
-        val studentsOnly = addSession(2, listOf(44))
-        assertEquals(mapper.readTree("""{"status":400,"code":"STUDENTS_ONLY"}"""), mapper.readTree(studentsOnly.contentAsString))
-
-        val response = addSession(2, listOf(43, 44))
+    fun `the representative may stay out and students alone may attend`() {
+        assertEquals(
+            201,
+            register(
+                companion("adult"),
+                companion("kid", "ELEMENTARY_STUDENT"),
+                companion("teen", "MIDDLE_SCHOOL_STUDENT"),
+                companion("senior", "HIGH_SCHOOL_STUDENT"),
+            ).status,
+        )
+        // #287: 학생은 각자 휴대폰으로 신청하므로 학년이 달라도 학생만 고른 회차 추가를 받는다.
+        val response = addSession(2, listOf(44, 45, 46), key = "students")
         assertEquals(201, response.status, response.contentAsString)
-        assertEquals(listOf("2:42:43:OTHER", "2:42:44:OTHER"), applications().filter { it.startsWith("2:") })
+        assertEquals(listOf("2:42:44:OTHER", "2:42:45:OTHER", "2:42:46:OTHER"), applications().filter { it.startsWith("2:") })
+        // 학생만 고른 추가도 멱등 재시도와 이미 신청한 회차·시간 겹침 거절은 그대로다.
+        assertEquals(201, addSession(2, listOf(44, 45, 46), key = "students").status)
+        assertEquals(409, addSession(2, listOf(44)).status)
+        assertEquals(409, addSession(3, listOf(45)).status)
+        assertEquals(8, applications().size)
         // 접수대장 답변은 처음 신청 답변에서 이번 참석 동행자만 남긴다.
         val answers =
             mapper.readTree(
@@ -137,7 +148,7 @@ class PreregisterSessionAdditionHttpTests {
                     String::class.java,
                 ),
             )
-        assertEquals(listOf("adult", "kid"), answers["companions"].toList().map { it["name"].asString() })
+        assertEquals(listOf("kid", "teen", "senior"), answers["companions"].toList().map { it["name"].asString() })
         assertEquals("GENERAL", answers["occupation"].asString())
     }
 
