@@ -136,18 +136,26 @@ class StudentGuardianEligibilityHttpTests {
 
     @Test
     fun `invalid linked grade or guardian role leaves no partial rows`() {
-        batch(grade = "g4", expected = 403)
+        assertEquals("GRADE_INVALID", batch(grade = "g4", expected = 403)["ineligibleReason"].asString())
         assertEquals(0L, count("tb_program_session_application"))
         parentRole = "TEACHER"
-        batch(expected = 403)
+        assertEquals("GUARDIAN_LINK_INVALID", batch(expected = 403)["ineligibleReason"].asString())
         assertEquals(0L, count("tb_program_guardian_batch"))
         assertEquals(0L, count("tb_standard_program_application"))
     }
 
     @Test
     fun `single endpoint rejects lower grades and parents while upper grade still works`() {
-        single(1, """{"101":"primary","102":"g1"}""", 409)
-        single(3, """{"101":"other"}""", 409)
+        // #271: 응답 code는 그대로 두고 ineligibleReason으로 사유를 구분한다.
+        assertEquals(
+            mapper.readTree("""{"status":409,"code":"APPLICATION_CONFLICT","ineligibleReason":"GUARDIAN_REQUIRED"}"""),
+            single(1, """{"101":"primary","102":"g1"}""", 409),
+        )
+        assertEquals("GUARDIAN_LINK_INVALID", single(3, """{"101":"other"}""", 409)["ineligibleReason"].asString())
+        assertEquals(
+            mapper.readTree("""{"status":403,"code":"PARTICIPANT_INELIGIBLE","ineligibleReason":"SCHOOL_TYPE_MISMATCH"}"""),
+            single(1, """{"101":"other"}""", 403),
+        )
         assertEquals(0L, count("tb_program_session_application"))
         single(1, """{"101":"primary","102":"g4"}""", 201)
     }
@@ -228,7 +236,7 @@ class StudentGuardianEligibilityHttpTests {
         id: Int,
         answers: String,
         expected: Int,
-    ) {
+    ): JsonNode =
         mvc
             .perform(
                 post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications")
@@ -238,7 +246,11 @@ class StudentGuardianEligibilityHttpTests {
                     .contentType(MediaType.APPLICATION_JSON)
                     .content("""{"participantId":$id,"formVersion":1,"answers":$answers}"""),
             ).andExpect(status().`is`(expected))
-    }
+            .andReturn()
+            .response
+            .contentAsString
+            .ifBlank { "{}" }
+            .let(mapper::readTree)
 
     private fun reconcile() {
         mvc

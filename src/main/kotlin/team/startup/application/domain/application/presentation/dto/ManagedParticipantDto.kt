@@ -24,12 +24,18 @@ data class ProgramParticipantItem(
 )
 
 // SESSION_TIME_MISMATCH(#197): 확정 사전등록은 있지만 그 회차 시간이 프로그램 시간과 겹치지 않는다.
+// 보호자 동반 정책 거절(#271): GUARDIAN_REQUIRED(초등 1~3학년 단독), GUARDIAN_LINK_INVALID(학생·보호자 연결·역할·단독 보호자),
+// GRADE_INVALID(학년 없음·알 수 없음·4학년 이상 연결), SCHOOL_TYPE_MISMATCH(학교급 답변이 직업·역할과 다름).
 enum class ProgramIneligibleReason {
     OCCUPATION_NOT_ALLOWED,
     PREREGISTRATION_NOT_CONFIRMED,
     SESSION_TIME_MISMATCH,
     GROUP_ALREADY_APPLIED,
     TIME_CONFLICT,
+    GUARDIAN_REQUIRED,
+    GUARDIAN_LINK_INVALID,
+    GRADE_INVALID,
+    SCHOOL_TYPE_MISMATCH,
 }
 
 data class ProgramParticipantsResponse(

@@ -249,12 +249,16 @@ class PreregisterCompanionHttpTests {
         val id = representativeItem()["applicationId"].asString()
         assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
         assertEquals(409, add(id, companion("second")).status)
+        maxSelection.set(2)
+        val overLimit = add(id, companion("second"), companion("third"))
+        assertEquals("COMPANION_LIMIT_REACHED", mapper.readTree(overLimit.contentAsString)["code"].asString())
         maxSelection.set(4)
         assertEquals(409, add(id, companion("first")).status)
         closed = true
         storedDefinition("closed", "true")
         assertEquals("SESSION_CLOSED", representativeItem()["companionAddBlockedReason"].asString())
-        assertEquals(409, add(id, companion("second")).status)
+        val closedAddition = add(id, companion("second"))
+        assertEquals(mapper.readTree("""{"status":409,"code":"SESSION_CLOSED"}"""), mapper.readTree(closedAddition.contentAsString))
         closed = false
         storedDefinition("closed", "false")
         startedAt.set(Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.SECONDS))
@@ -280,7 +284,9 @@ class PreregisterCompanionHttpTests {
         assertEquals(201, add(id, companion("second"), companion("third"), companion("fourth")).status)
         assertEquals("COMPANION_LIMIT_REACHED", representativeItem()["companionAddBlockedReason"].asString())
         assertEquals(0, representativeItem()["remainingCompanionSlots"].asInt())
-        assertEquals(409, add(id, companion("fifth")).status)
+        // #271: 6번째 인원은 조회의 차단 사유와 같은 code로 거절한다.
+        val sixth = add(id, companion("fifth"))
+        assertEquals(mapper.readTree("""{"status":409,"code":"COMPANION_LIMIT_REACHED"}"""), mapper.readTree(sixth.contentAsString))
 
         capacity.set(1)
         storedDefinition("capacity", "1")

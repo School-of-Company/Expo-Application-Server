@@ -39,6 +39,7 @@ import team.startup.application.domain.application.service.GetOwnerPreregisterWa
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.impl.OccupationNotOpenException
+import team.startup.application.domain.application.service.impl.OwnerApplicationRejectedException
 import team.startup.application.domain.application.service.impl.OwnerCompanionsActiveException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.PreregisterFormChangedException
@@ -123,12 +124,13 @@ class OwnerApplicationController(
             ApiResponse(responseCode = "400", description = "동행자 형식 오류 또는 중복 입력"),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
-            ApiResponse(responseCode = "404", description = "본인 대표자 사전등록이 아님"),
+            ApiResponse(responseCode = "404", description = "본인 대표자 사전등록이 아님({status:404, code:NOT_REPRESENTATIVE_PREREGISTRATION})"),
             ApiResponse(
                 responseCode = "409",
                 description =
                     "정원·동행자 상한 초과, 취소·마감·시작된 회차, 사전등록 기간 아님, 처리 중인 추가, 이미 일행인 동행자, " +
-                        "User 재등록 거절(같은 대표자 QR 재발송 한도)",
+                        "User 재등록 거절(같은 대표자 QR 재발송 한도). 추가 차단 판정은 {status, code}이고 code는 " +
+                        "companionAddBlockedReason과 같다(예: COMPANION_LIMIT_REACHED, SEATS_UNAVAILABLE, #271)",
             ),
             ApiResponse(responseCode = "502", description = "공급자 응답 계약 또는 내부 인증 오류(좌석 유지, 운영 확인)"),
             ApiResponse(responseCode = "503", description = "참여 서비스 통지 비활성 또는 공급자 연동 불가(같은 키로 재시도)"),
@@ -168,7 +170,12 @@ class OwnerApplicationController(
         responses = [
             ApiResponse(responseCode = "201", description = "회차 확정"),
             ApiResponse(responseCode = "202", description = "대기 접수(WAITING, position) 또는 승급 뒤 확정 중(PROCESSING)"),
-            ApiResponse(responseCode = "400", description = "형식 오류, 같은 참석자 중복, 일행에 없는 참가자, 학생만 참석, 직업 없는 대상별 정원 회차 참석자"),
+            ApiResponse(
+                responseCode = "400",
+                description =
+                    "형식 오류, 같은 참석자 중복, 일행에 없는 참가자, 학생만 참석({status:400, code:STUDENTS_ONLY}, #271), " +
+                        "직업 없는 대상별 정원 회차 참석자",
+            ),
             ApiResponse(responseCode = "401", description = "참가자 세션 인증 실패"),
             ApiResponse(responseCode = "403", description = "CSRF 검증 실패"),
             ApiResponse(responseCode = "404", description = "신청한 일행 또는 다시 쓸 답변 없음"),
@@ -283,7 +290,8 @@ class OwnerApplicationController(
 }
 
 // 세션 401에 SESSION_REQUIRED/SESSION_EXPIRED code를(#188), 회차 추가의 폼 변경 409에 FORM_CHANGED code를(#199),
-// 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209), 동행자가 남은 대표자 사전등록 취소 409에 COMPANIONS_ACTIVE code를(#257) 싣는다.
+// 유형별 오픈 전 400에 OCCUPATION_NOT_OPEN code를(#209), 동행자가 남은 대표자 사전등록 취소 409에 COMPANIONS_ACTIVE code를(#257),
+// 동행자 추가 차단(companionAddBlockedReason과 같은 code)과 학생만 고른 회차 추가 400 STUDENTS_ONLY에 code를(#271) 싣는다.
 // 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
 class OwnerApplicationSessionExceptionHandler {
@@ -300,6 +308,10 @@ class OwnerApplicationSessionExceptionHandler {
     @ExceptionHandler(PreregisterFormChangedException::class)
     fun formChanged(ex: PreregisterFormChangedException): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "FORM_CHANGED"))
+
+    @ExceptionHandler(OwnerApplicationRejectedException::class)
+    fun rejected(ex: OwnerApplicationRejectedException): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.status(ex.statusCode).body(mapOf("status" to ex.statusCode.value(), "code" to ex.code))
 
     @ExceptionHandler(OwnerCompanionsActiveException::class)
     fun companionsActive(ex: OwnerCompanionsActiveException): ResponseEntity<Map<String, Any>> =
