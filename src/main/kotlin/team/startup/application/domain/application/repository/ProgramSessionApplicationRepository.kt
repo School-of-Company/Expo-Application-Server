@@ -74,6 +74,8 @@ class ProgramSessionApplicationRepository(
         definition: ProgramSessionDefinition,
         participantId: Long,
         excludingTraineeId: Long? = null,
+        // #261: 현장 신청이 접수와 함께 취소할 본인 대기 행은 시간 충돌로 보지 않는다.
+        excludingApplications: List<UUID> = emptyList(),
     ): Boolean {
         if (attribution.pending(UUID.fromString(definition.expoId), participantId)) return true
         val start = sessionTime(definition.startedAt)
@@ -87,6 +89,7 @@ class ProgramSessionApplicationRepository(
                     "WHERE a.expo_id = ? AND a.participant_id = ? AND a.status IN ('CONFIRMED', 'WAITING') " +
                     "AND NOT (a.program_type = ? AND a.program_id = ?) " +
                     "AND (CAST(? AS bigint) IS NULL OR a.trainee_id IS DISTINCT FROM ?) " +
+                    "AND a.id NOT IN (SELECT jsonb_array_elements_text(?::jsonb)::uuid) " +
                     "UNION ALL SELECT COALESCE(s.pending_definition, s.definition, p.definition), s.pending_definition IS NULL " +
                     "FROM tb_legacy_trainee_attribution l " +
                     "JOIN tb_training_program_application t ON t.trainee_id = l.trainee_id " +
@@ -103,6 +106,7 @@ class ProgramSessionApplicationRepository(
                 definition.id,
                 excludingTraineeId,
                 excludingTraineeId,
+                mapper.writeValueAsString(excludingApplications),
                 UUID.fromString(definition.expoId),
                 participantId,
                 definition.programType.name,
@@ -275,10 +279,12 @@ class ProgramSessionApplicationRepository(
     // #197: 참가자의 확정 사전등록 회차 중 [startedAt, endedAt)가 프로그램 시간과 일부라도 겹치는 회차가 있어야 신청할 수 있다.
     // 회차 시간은 저장된 회차 정의에서 읽고 Expo는 부르지 않는다. 입장 허용 시간(leadMinutes)은 판정에 넣지 않는다.
     // 신청 경로는 확정 행을 FOR SHARE로 잡고, 읽기 전용 조회(일행 화면)는 잠그지 않는다. null이면 자격이 있다.
+    // #261: 현장 신청은 requireOverlap = false로 확정 사전등록만 보고 회차 시간은 보지 않는다. 날짜는 현장 접수 기간이 막는다.
     fun preregisterIneligibility(
         definition: ProgramSessionDefinition,
         participantId: Long,
         lock: Boolean = true,
+        requireOverlap: Boolean = true,
     ): ProgramIneligibleReason? {
         val sessions =
             jdbc.query(
@@ -290,6 +296,7 @@ class ProgramSessionApplicationRepository(
                 participantId,
             )
         if (sessions.isEmpty()) return ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
+        if (!requireOverlap) return null
         val start = sessionTime(definition.startedAt)
         val end = sessionTime(definition.endedAt)
         val overlaps =
@@ -302,24 +309,47 @@ class ProgramSessionApplicationRepository(
     fun activeInGroup(
         command: ApplyProgramSessionCommand,
         groupId: UUID,
-    ): Boolean = activeInGroup(UUID.fromString(command.expoId), command.programType, groupId, command.participantId)
+        excluding: List<UUID> = emptyList(),
+    ): Boolean = activeInGroup(UUID.fromString(command.expoId), command.programType, groupId, command.participantId, excluding)
 
     fun activeInGroup(
         expoId: UUID,
         type: ProgramSessionType,
         groupId: UUID,
         participantId: Long,
+        excluding: List<UUID> = emptyList(),
     ): Boolean =
         requireNotNull(
             jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM tb_program_session_application " +
-                    "WHERE expo_id = ? AND program_type = ? AND group_id = ? AND participant_id = ? AND status IN ('CONFIRMED', 'WAITING'))",
+                    "WHERE expo_id = ? AND program_type = ? AND group_id = ? AND participant_id = ? " +
+                    "AND status IN ('CONFIRMED', 'WAITING') " +
+                    "AND id NOT IN (SELECT jsonb_array_elements_text(?::jsonb)::uuid))",
                 Boolean::class.java,
                 expoId,
                 type.name,
                 groupId,
                 participantId,
+                mapper.writeValueAsString(excluding),
             ),
+        )
+
+    // #261: 현장 신청이 취소하고 진행할 같은 묶음의 본인 대기 행. 학생·보호자 묶음 행은 연계 취소가 필요해 빼지 않는다.
+    fun onsiteReplaceableWaiting(
+        expoId: UUID,
+        type: ProgramSessionType,
+        groupId: UUID,
+        participantId: Long,
+    ): List<UUID> =
+        jdbc.query(
+            "SELECT a.id FROM tb_program_session_application a WHERE a.expo_id = ? AND a.program_type = ? AND a.group_id = ? " +
+                "AND a.participant_id = ? AND a.status = 'WAITING' " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_program_guardian_member m WHERE m.application_id = a.id) ORDER BY a.id",
+            { rs, _ -> rs.getObject(1, UUID::class.java) },
+            expoId,
+            type.name,
+            groupId,
+            participantId,
         )
 
     fun confirmedCount(

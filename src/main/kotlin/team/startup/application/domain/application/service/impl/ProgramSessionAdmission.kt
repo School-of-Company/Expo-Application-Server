@@ -9,6 +9,7 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
 import team.startup.application.domain.application.entity.TrainingProgramApplication
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
+import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
@@ -67,7 +68,7 @@ class ProgramSessionAdmission(
         }
         guardianProvider?.validateSingle(command, definition, occupation)
         val preregistered = !(command.onsite && managed.fieldRegistered)
-        if (preregistered) preregisterEligibility(definition, command.participantId, lock = false)
+        if (preregistered) preregisterEligibility(definition, command, lock = false)
         if (occupation == null || occupation !in policy.allowedOccupations) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED.name)
         }
@@ -113,7 +114,7 @@ class ProgramSessionAdmission(
         ledger.limitLockWait()
         ledger.lockParticipant(command.participantId)
         replay(command)?.let { return it }
-        if (preregistered) preregisterEligibility(definition, command.participantId, lock = true)
+        if (preregistered) preregisterEligibility(definition, command, lock = true)
         waitlist.lock(definition)
         repository.observe(definition)
         val now = waitlist.now()
@@ -125,6 +126,20 @@ class ProgramSessionAdmission(
             conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
         }
         if (waitlist.isDeleted(definition)) conflict("삭제된 프로그램입니다.")
+        // #261: 현장 신청은 같은 묶음의 본인 사전 대기를 취소하고 진행한다. 아래 거절은 모두 롤백되어 대기가 그대로 남는다.
+        // ponytail: 다른 프로그램 대기의 제안 좌석이 풀리면 그 프로그램 승급은 다음 계기(스케줄러·취소·신청)에 맡긴다.
+        val replaced =
+            if (command.onsite) {
+                ledger.onsiteReplaceableWaiting(
+                    UUID.fromString(command.expoId),
+                    command.programType,
+                    definition.groupId,
+                    command.participantId,
+                )
+            } else {
+                emptyList()
+            }
+        replaced.forEach { repository.transition(it, "CANCELLED", ApplicationActorType.SYSTEM) }
         if (ledger.activeInGroup(command, definition.groupId)) {
             throw ProgramApplicationConflictException("같은 프로그램 묶음에 활성 신청이 있습니다.", ProgramIneligibleReason.GROUP_ALREADY_APPLIED)
         }
@@ -181,6 +196,8 @@ class ProgramSessionAdmission(
             }
         val acceptedAt = waitlist.now()
         if (!acceptedAt.isBefore(closesAt) || !acceptedAt.isBefore(form.endedAt)) {
+            // 대기를 취소한 현장 신청은 마감 거절도 롤백해 대기를 되살린다. 그 전에 끝낸 승급은 다음 계기에 다시 한다.
+            if (replaced.isNotEmpty()) conflict("프로그램 또는 폼 신청 기간이 아닙니다.")
             throw ProgramSessionAdmissionDeadlineException("프로그램 또는 폼 신청 기간이 아닙니다.")
         }
         if (waiting && !acceptedAt.isBefore(policy.promotionEndedAt)) {
@@ -214,10 +231,10 @@ class ProgramSessionAdmission(
 
     private fun preregisterEligibility(
         definition: ProgramSessionDefinition,
-        participantId: Long,
+        command: ApplyProgramSessionCommand,
         lock: Boolean,
     ) {
-        ledger.preregisterIneligibility(definition, participantId, lock)?.let {
+        ledger.preregisterIneligibility(definition, command.participantId, lock, requireOverlap = !command.onsite)?.let {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, it.name)
         }
     }

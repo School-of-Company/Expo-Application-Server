@@ -45,15 +45,32 @@ class GetProgramParticipantsServiceImpl(
                 ProgramParticipantsResponse(
                     party.representativeId != null,
                     party.participants.map { participant ->
+                        // 신청 경로와 같이 현장 신청은 같은 묶음의 본인 사전 대기를 취소할 행으로 보고 판정에서 뺀다(#261).
+                        val replaced =
+                            if (command.onsite) {
+                                ledger.onsiteReplaceableWaiting(
+                                    command.owner.expoId,
+                                    command.type,
+                                    definition.groupId,
+                                    participant.participantId,
+                                )
+                            } else {
+                                emptyList()
+                            }
                         val preregister =
                             when {
                                 command.onsite && participant.fieldRegistered -> {
                                     null
                                 }
 
-                                // 신청 경로와 같은 회차 시간 겹침 기준(#197). 정책 없는 프로그램은 신청할 수 없어 확정 여부만 본다.
+                                // 신청 경로와 같은 회차 시간 겹침 기준(#197, 현장은 #261로 확정만). 정책 없는 프로그램은 신청할 수 없어 확정 여부만 본다.
                                 policy != null -> {
-                                    ledger.preregisterIneligibility(definition, participant.participantId, lock = false)
+                                    ledger.preregisterIneligibility(
+                                        definition,
+                                        participant.participantId,
+                                        lock = false,
+                                        requireOverlap = !command.onsite,
+                                    )
                                 }
 
                                 !repository.confirmed(command.owner.expoId, participant.participantId) -> {
@@ -74,11 +91,18 @@ class GetProgramParticipantsServiceImpl(
                                     ProgramIneligibleReason.OCCUPATION_NOT_ALLOWED
                                 }
 
-                                ledger.activeInGroup(command.owner.expoId, command.type, definition.groupId, participant.participantId) -> {
+                                ledger.activeInGroup(
+                                    command.owner.expoId,
+                                    command.type,
+                                    definition.groupId,
+                                    participant.participantId,
+                                    replaced,
+                                ) -> {
                                     ProgramIneligibleReason.GROUP_ALREADY_APPLIED
                                 }
 
-                                policy != null && ledger.hasTimeConflict(definition, participant.participantId) -> {
+                                policy != null &&
+                                    ledger.hasTimeConflict(definition, participant.participantId, excludingApplications = replaced) -> {
                                     ProgramIneligibleReason.TIME_CONFLICT
                                 }
 
