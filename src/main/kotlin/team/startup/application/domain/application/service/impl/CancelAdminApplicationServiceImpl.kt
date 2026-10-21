@@ -1,6 +1,5 @@
 package team.startup.application.domain.application.service.impl
 
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -22,15 +21,10 @@ import team.startup.application.domain.application.repository.TrainingProgramApp
 import team.startup.application.domain.application.service.CancelAdminApplicationService
 import team.startup.application.domain.application.service.CancelProgramSessionService
 import team.startup.application.domain.application.service.CancelStudentGuardianApplicationService
-import java.time.Clock
-import java.util.UUID
 
 @Service
 class CancelAdminApplicationServiceImpl(
     private val expo: AdminExpoGateway,
-    private val participants: AdminCancellationParticipantGateway,
-    private val attendance: AttendanceCancellationAdapter,
-    private val deadlines: OwnerCancellationDeadlineGateway,
     private val applications: ProgramWaitlistRepository,
     private val ledger: ProgramSessionApplicationRepository,
     private val trainings: TrainingProgramApplicationRepository,
@@ -38,8 +32,6 @@ class CancelAdminApplicationServiceImpl(
     private val recovery: ProductionOwnerCancellationGuard,
     private val cancel: CancelProgramSessionService,
     private val transactions: TransactionTemplate,
-    private val clock: Clock,
-    @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     private val guardianBatches: StudentGuardianBatchRepository,
     private val guardianCancellation: CancelStudentGuardianApplicationService,
 ) : CancelAdminApplicationService {
@@ -59,46 +51,23 @@ class CancelAdminApplicationServiceImpl(
         deliveries.lock(deliveryCommand).use {
             if (deliveries.find(deliveryCommand) != null) conflict("이전 취소 보호 복구가 진행 중입니다.")
             if (target(command).status == "CANCELLED") return AdminCancellationResult(command.applicationId)
-            if (!attendanceEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "출석 취소 전달이 활성화되지 않았습니다.")
-            val before = participants.status(command.expoId, original.participantId)
-            if (before.entered) conflict("이미 입장한 참가자입니다.")
-            if (type == OwnerApplicationType.TRAINING && original.status == "CONFIRMED" &&
-                (original.traineeId == null || original.traineeId != before.linkedTraineeId)
-            ) {
-                conflict("연수자 연결이 변경되었습니다.")
-            }
-            val deadline = deadlines.program(command.expoId, type, original.key.programId)
-            if (!clock.instant().isBefore(deadline)) conflict("신청 취소 기간이 끝났습니다.")
-            val operationId = UUID.randomUUID()
-            deliveries.insert(deliveryCommand, original.participantId, operationId)
-            var failure: Exception? = null
-            try {
-                attendance.acquireAdmin(command.expoId, original.participantId, operationId)
-                if (participants.status(command.expoId, original.participantId) != before) conflict("취소 보호 중 참가자 상태가 변경되었습니다.")
+            // #261: 그 프로그램에 출석하지 않았으면 입장 여부와 취소 마감에 관계없이 취소한다. 좌석은 신청 경로의 풀로 돌아간다.
+            recovery.acquireAdminProgram(deliveryCommand, original.participantId, original.key.programId).use { permit ->
+                if (type == OwnerApplicationType.TRAINING && original.status == "CONFIRMED" &&
+                    (original.traineeId == null || original.traineeId != permit.linkedTraineeId)
+                ) {
+                    conflict("연수자 연결이 변경되었습니다.")
+                }
                 transactions.executeWithoutResult {
                     ledger.lockParticipant(original.participantId)
-                    before.linkedTraineeId?.let(trainings::lockTrainee)
+                    permit.linkedTraineeId?.let(trainings::lockTrainee)
                     val current = target(command)
                     if (current.participantId != original.participantId || current.key != original.key ||
                         current.traineeId != original.traineeId
                     ) {
                         conflict("취소 대상 신청이 변경되었습니다.")
                     }
-                    if (!clock.instant().isBefore(deadline)) conflict("신청 취소 기간이 끝났습니다.")
                     cancel.execute(CancelProgramSessionCommand(command.applicationId, ApplicationActorType.ADMIN, actorId = access.adminId))
-                    deliveries.abort(operationId)
-                }
-            } catch (exception: Exception) {
-                failure = exception
-                throw exception
-            } finally {
-                try {
-                    deliveries.abort(operationId)
-                    attendance.abort(command.expoId, original.participantId, operationId)
-                    deliveries.delete(operationId)
-                } catch (cleanup: Exception) {
-                    deliveries.defer(operationId)
-                    if (failure != null) failure.addSuppressed(cleanup) else throw cleanup
                 }
             }
         }
