@@ -48,7 +48,9 @@ class AdminGroupMessageController(
 
     @Operation(
         summary = "관리자 그룹 발송 미리보기",
-        description = "현재 전역 관리자 권한과 선택 신청 또는 현재 필터 전체를 확인하고 대표자 번호, 누락 사유, 렌더링 문구를 고정합니다.",
+        description =
+            "현재 전역 관리자 권한과 프로그램 applicationIds/filter 또는 사전등록 keys/preregistrationFilter를 확인합니다. " +
+                "혼합은 400, 행사 밖/없는 선택 key는 404, 5000행 초과는 422입니다. 사전등록은 Notification의 PREREGISTRATION_GROUP_MESSAGE_V1 지원이 필요합니다.",
     )
     @PostMapping("/previews")
     fun preview(

@@ -3,6 +3,7 @@ package team.startup.application.domain.application.presentation.dto
 import com.fasterxml.jackson.annotation.JsonAnySetter
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonInclude
+import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
 import jakarta.validation.constraints.AssertTrue
 import jakarta.validation.constraints.NotBlank
@@ -28,14 +29,30 @@ data class AdminGroupMessageScope(
     val kind: AdminGroupMessageScopeKind,
     @field:Size(min = 1, max = 1000) val applicationIds: List<UUID>? = null,
     @field:Valid val filter: ReportApplicationFilter? = null,
+    @field:Size(min = 1, max = 5000)
+    val keys: List<
+        @Size(min = 1, max = 160)
+        String,
+    >? = null,
+    @field:Valid
+    @field:Schema(description = "사전등록 FILTERED 전용. 프로그램 filter와 혼합 불가. targets와 동일한 sessionId/status/q, 기본 page/size만 허용")
+    val preregistrationFilter: AdminPreregistrationQuery? = null,
 ) : StrictAdminGroupMessageRequest() {
     @get:AssertTrue(message = "scope must contain exactly one matching selector")
     @get:JsonIgnore
     val isSelectorValid: Boolean
         get() =
             when (kind) {
-                AdminGroupMessageScopeKind.SELECTED -> applicationIds != null && filter == null
-                AdminGroupMessageScopeKind.FILTERED -> applicationIds == null && filter != null
+                AdminGroupMessageScopeKind.SELECTED -> {
+                    (applicationIds != null).xor(keys != null) && filter == null &&
+                        preregistrationFilter == null
+                }
+
+                AdminGroupMessageScopeKind.FILTERED -> {
+                    applicationIds == null && keys == null &&
+                        (filter != null).xor(preregistrationFilter != null) &&
+                        (preregistrationFilter == null || (preregistrationFilter.page == 0 && preregistrationFilter.size == 20))
+                }
             }
 
     // ponytail: 발송은 별도 User 토큰을 쓰므로 목록용 사람 후보 조회를 섞지 않는다. 무시하면 대상이 넓어지므로 거부한다.
@@ -45,7 +62,12 @@ data class AdminGroupMessageScope(
 
     @get:AssertTrue(message = "applicationIds must be unique")
     @get:JsonIgnore
-    val isSelectionUnique: Boolean get() = applicationIds == null || applicationIds.distinct().size == applicationIds.size
+    val isSelectionUnique: Boolean get() =
+        (applicationIds == null || applicationIds.distinct().size == applicationIds.size) &&
+            (keys == null || keys.distinct().size == keys.size)
+
+    @get:JsonIgnore
+    val isPreregistration: Boolean get() = keys != null || preregistrationFilter != null
 }
 
 data class AdminGroupMessageSource(
@@ -91,13 +113,14 @@ data class AdminGroupMessageTemplateVariables(
 @JsonInclude(JsonInclude.Include.NON_NULL)
 data class AdminGroupMessageTarget(
     val targetId: String,
-    val applicationId: UUID,
-    val participantId: Long,
-    val programType: ProgramSessionType,
+    val applicationId: UUID?,
+    val participantId: Long?,
+    val programType: ProgramSessionType?,
     val recipientPhone: String? = null,
     val content: String? = null,
     val templateVariables: AdminGroupMessageTemplateVariables? = null,
     val missingReason: String? = null,
+    val ledgerKey: String? = null,
 )
 
 data class AdminGroupMessageResolvedTargets(
@@ -110,6 +133,7 @@ data class AdminGroupMessageConfig(
     val enabled: Boolean,
     val channels: Map<AdminGroupMessageChannel, AdminGroupMessageChannelConfig>,
     val smsFallbackDefault: Boolean,
+    val targetContracts: List<String> = emptyList(),
 )
 
 data class AdminGroupMessageChannelConfig(
@@ -154,11 +178,12 @@ data class AdminGroupMessagePreview(
 
 data class AdminGroupMessagePreviewItem(
     val targetId: String,
-    val applicationId: UUID,
+    val applicationId: UUID?,
     val participantId: Long?,
     val recipientMasked: String?,
     val content: String?,
     val missingReason: String?,
+    val ledgerKey: String? = null,
 )
 
 enum class AdminGroupMessageJobStatus { QUEUED, RUNNING, PAUSED, COMPLETED, COMPLETED_WITH_FAILURES, ATTENTION }
@@ -187,11 +212,12 @@ data class AdminGroupMessageJobCounts(
 
 data class AdminGroupMessageJobItem(
     val targetId: String,
-    val applicationId: UUID,
+    val applicationId: UUID?,
     val participantId: Long?,
     val recipientMasked: String?,
     val status: AdminGroupMessageItemStatus,
     val providerCode: String?,
     val failureReason: String?,
     val missingReason: String?,
+    val ledgerKey: String? = null,
 )
