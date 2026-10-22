@@ -26,8 +26,17 @@ class ProgramPromotionGateway(
     @Value("\${application.registration.user-internal-token:}") private val userToken: String,
     @Value("\${application.registration.expo-url:}") private val expoUrl: String,
     @Value("\${application.registration.expo-internal-token:}") private val expoToken: String,
-) {
+) : ApplicationNoticeSource {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+
+    // #308: 신청 결과 문자의 대표자 번호와 대상자 본인 이름. 대상자 번호로 대신하지 않는다.
+    override fun contact(
+        expoId: UUID,
+        participantId: Long,
+    ): NoticeContact {
+        val participant = participant(expoId, participantId)
+        return NoticeContact(phone(representative(expoId, participant)), text(participant, "name"))
+    }
 
     fun details(event: ProgramPromotionEvent): ProgramPromotionCheck {
         val participant = participant(event.expoId, event.participantId)
@@ -73,7 +82,7 @@ class ProgramPromotionGateway(
     )
 
     // Current Expo title, KST times and place for a #144 offer message. The offer check normalizes the text itself (#236).
-    fun programNotice(
+    override fun programNotice(
         expoId: UUID,
         type: ProgramSessionType,
         programId: Long,

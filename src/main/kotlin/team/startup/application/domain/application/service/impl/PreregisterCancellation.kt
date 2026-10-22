@@ -22,6 +22,7 @@ class PreregisterCancellation(
     private val attendance: SessionAttendanceOutbox,
     private val clock: Clock,
     private val reservations: PreregisterReservationRepository,
+    private val notifications: ApplicationNotifications,
 ) {
     fun lockParticipant(
         participantId: Long,
@@ -55,6 +56,7 @@ class PreregisterCancellation(
             conflict("활성 프로그램 신청을 먼저 취소해야 합니다.")
         }
         preregister.status(applicationId, "CANCELLED", actorType, actorParticipantId, adminId)
+        notifications.preregisterCancelled(expoId, applicationId, sessionId, participantId, actorType)
         // 이 회차의 대표자 신청에 붙이려고 기다리던 동행자 추가(#169)는 붙일 곳이 없어지므로 함께 끝낸다.
         // #198: 대표자 취소는 회차별이고 여기서는 남은 동행자를 막지 않는다. 본인 취소만 #257로 CancelOwnerApplicationServiceImpl이 막는다.
         if (participantId == representativeId) {

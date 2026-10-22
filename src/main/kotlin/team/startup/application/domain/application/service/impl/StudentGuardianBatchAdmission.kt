@@ -39,6 +39,7 @@ class StudentGuardianBatchAdmission(
     private val standards: StandardProgramApplicationRepository,
     private val trainings: TrainingProgramApplicationRepository,
     private val operations: TrainingOperationRepository,
+    private val notifications: ApplicationNotifications,
 ) {
     fun admit(
         requested: ApplyStudentGuardianBatchCommand,
@@ -270,6 +271,8 @@ class StudentGuardianBatchAdmission(
                 channel?.name,
             )
             repository.event(result.applicationId, result.status)
+            // 보호자 재사용(reused)은 위에서 걸러져 신규 신청 문자를 다시 보내지 않는다.
+            notifications.programAdmitted(definition.expoId.let(UUID::fromString), result.applicationId, result.status)
             batches.addMember(batchId, result.applicationId, result.participantId in guardians)
         }
         val byPerson = applications.associate { it.application.participantId to it.application.applicationId }

@@ -27,6 +27,7 @@ class PromotionOffers(
     private val waitlist: ProgramWaitlist,
     private val reservations: PreregisterReservationRepository,
     private val sessions: PreregisterSessionRepository,
+    private val notifications: ApplicationNotifications,
 ) {
     // The single waiting row, or every waiting member of the guardian batch the offer holds seats for.
     fun members(offer: PromotionOffer): List<ProgramWaitlistRepository.Entry> =
@@ -76,6 +77,8 @@ class PromotionOffers(
     ) {
         members(offer).forEach {
             applications.transition(it.id, "CANCELLED", actorType, actorParticipantId = actorParticipantId)
+            // 거절(DECLINED)은 본인이 답한 것이라 안내하지 않는다. 실제 EXPIRED 전이만 만료 안내를 쌓는다.
+            if (state == "EXPIRED") notifications.programOfferExpired(offer.expoId, it.id)
         }
         offers.close(offer.id, state, actorType.name, actorParticipantId)
     }
@@ -87,6 +90,7 @@ class PromotionOffers(
         actorType: ApplicationActorType,
     ) {
         reservations.withdraw(reservation, actorType)
+        if (state == "EXPIRED") notifications.reservationOfferExpired(offer.expoId, reservation.requestId, reservation.sessionId)
         offers.close(offer.id, state, actorType.name)
     }
 
