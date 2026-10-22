@@ -37,7 +37,7 @@ class OwnerCancellationDeadlineGateway(
             when (type) {
                 OwnerApplicationType.STANDARD -> ProgramSessionType.STANDARD
                 OwnerApplicationType.TRAINING -> ProgramSessionType.TRAINING
-                OwnerApplicationType.PREREGISTER -> throw IllegalArgumentException("Not a program application")
+                OwnerApplicationType.PREREGISTER, OwnerApplicationType.FIELD -> throw IllegalArgumentException("Not a program application")
             }
         return programs?.programDefinition(expoId.toString(), programType, programId)?.policy?.cancelEndedAt
             ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 취소 기한을 확인할 수 없습니다.")

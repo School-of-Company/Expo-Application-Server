@@ -194,6 +194,7 @@ class OwnerCancellationGatewayTests {
                 mock(PreregisterWaitlist::class.java),
                 mock(StudentGuardianBatchRepository::class.java),
                 mock(CancelStudentGuardianApplicationService::class.java),
+                mock(team.startup.application.domain.application.service.impl.FieldVisitCancellation::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(command) }
         verifyNoInteractions(ledger, outbox, cancellationAdapter)

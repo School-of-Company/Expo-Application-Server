@@ -6,6 +6,8 @@ import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
 import tools.jackson.databind.JsonNode
+import java.time.Instant
+import java.time.LocalDate
 import java.util.UUID
 
 data class GetOwnerApplicationsCommand(
@@ -15,13 +17,14 @@ data class GetOwnerApplicationsCommand(
     override fun toString() = "GetOwnerApplicationsCommand(expoId=$expoId)"
 }
 
-enum class OwnerApplicationType { PREREGISTER, STANDARD, TRAINING }
+enum class OwnerApplicationType { PREREGISTER, STANDARD, TRAINING, FIELD }
 
 data class CancelOwnerApplicationCommand(
     val expoId: UUID,
     val sessionId: String,
     val type: OwnerApplicationType,
     val applicationId: String,
+    val generation: Long? = null,
 ) {
     override fun toString() = "CancelOwnerApplicationCommand(expoId=$expoId, type=$type, applicationId=$applicationId)"
 }
@@ -37,6 +40,7 @@ data class ManagedOwnerParticipant(
     // User가 저장한 소속(학교). 동행자 중복 판정(#225)에만 쓴다. 옛 User 응답에는 없어 schoolReported가 false다
     @get:JsonIgnore val school: String? = null,
     @get:JsonIgnore val schoolReported: Boolean = false,
+    @get:JsonIgnore val legacyFieldRegistered: Boolean = false,
 )
 
 data class OwnerApplicationParty(
@@ -157,4 +161,18 @@ data class OwnerApplicationsResponse(
                 "신청이 없어도 들어간다. Attendance 연동이 꺼져 있으면 비어 있다(#250)",
     )
     val qrParticipantIds: List<Long> = emptyList(),
+    val fieldRegistrations: List<OwnerFieldVisitItem> = emptyList(),
+)
+
+data class OwnerFieldVisitItem(
+    val registrationId: UUID,
+    val participantId: Long,
+    val visitDate: LocalDate,
+    val generation: Long,
+    val status: String,
+    val registeredAt: Instant,
+    val cancelledAt: Instant?,
+    val cancelledBy: Long?,
+    val cancellable: Boolean,
+    val cancellationBlockedReason: String,
 )
