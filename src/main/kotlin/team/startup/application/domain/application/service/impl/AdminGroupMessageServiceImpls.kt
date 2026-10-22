@@ -64,7 +64,7 @@ class ExecuteAdminGroupMessageServiceImpl(
         request: ExecuteAdminGroupMessageRequest,
     ): AdminGroupMessageJob {
         val requesterId = gateway.authorize(expoId, authorization)
-        val resolved = resolver.resolve(expoId, request.source)
+        val resolved = resolveForExecution(resolver, expoId, request)
         ensureUnchanged(request.targetFingerprint, resolved.fingerprint)
         return gateway.execute(previewId, requesterId, expoId, resolved.fingerprint, request.idempotencyKey)
     }
@@ -93,7 +93,7 @@ class RetryAdminGroupMessageServiceImpl(
         request: ExecuteAdminGroupMessageRequest,
     ): AdminGroupMessageJob {
         val requesterId = gateway.authorize(expoId, authorization)
-        val resolved = resolver.resolve(expoId, request.source)
+        val resolved = resolveForExecution(resolver, expoId, request)
         ensureUnchanged(request.targetFingerprint, resolved.fingerprint)
         return gateway.retry(jobId, requesterId, expoId, resolved.fingerprint, request.idempotencyKey)
     }
@@ -106,4 +106,17 @@ private fun ensureUnchanged(
     if (previewFingerprint != currentFingerprint) {
         throw ResponseStatusException(HttpStatus.CONFLICT, "미리보기 이후 권한 또는 발송 대상이 변경되었습니다. 다시 미리보기해 주세요.")
     }
+}
+
+private fun resolveForExecution(
+    resolver: AdminGroupMessageTargetResolver,
+    expoId: UUID,
+    request: ExecuteAdminGroupMessageRequest,
+) = try {
+    resolver.resolve(expoId, request.source)
+} catch (exception: ResponseStatusException) {
+    if (request.source.scope.isPreregistration && exception.statusCode == HttpStatus.NOT_FOUND) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, "미리보기 이후 대상이 변경되었습니다. 다시 미리보기해 주세요.")
+    }
+    throw exception
 }

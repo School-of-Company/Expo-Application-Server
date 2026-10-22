@@ -72,19 +72,21 @@ FILTERED에서 page/size는 기본값만 허용하며 목록의 페이지를 대
 선택은 현재 행사에서 모든 key가 존재해야 성공한다. 프로그램 UUID나 다른 행사 key가 섞이면 전체 404다.
 검색 전체는 목록과 같은 repository/검색 해석을 사용하고 5000행 초과는 422로 실패한다.
 이 응답은 저장된 작업/내보내기 스냅샷이 아니며 조회 사이 변경을 고정하지 않는다.
-응답 tab은 PREREGISTRATION이다. reportSupported와 messagingSupported는 false다.
-외부 계약 확장 전 실제 엑셀 생성/메시지 발송이 성공했다고 표시하면 안 된다.
+응답 tab은 PREREGISTRATION이다. reportSupported는 false다.
+messagingSupported는 Notification config의 enabled=true와 `targetContracts`의 `PREREGISTRATION_GROUP_MESSAGE_V1` 지원이 확인될 때만 true다(#304).
+그룹 메시지용 Expo/User/Notification URL과 대상별 토큰도 모두 설정되어 있어야 한다.
+미지원·공급자 장애 시 false다. 외부 계약 확장 전 실제 엑셀 생성/메시지 발송이 성공했다고 표시하면 안 된다.
 
 ## 기존 소비자·취소와의 대조
 
 Report의 `/internal/expos/{expoId}/program-session-applications/...`는 프로그램 UUID와
 AdminApplicationRow/ReportRegistrationSource를 사용한다. 사전등록 BIGINT/예약 key를 넘기지 않는다.
 User 저장 전 예약은 ReportRegistrationSource의 participantId도 만들 수 없다.
-Notification 그룹 발송도 기존 AdminGroupMessageTargetResolver의 프로그램 원장 및 UUID만 지원한다.
+Notification 그룹 발송의 기존 프로그램 UUID 계약은 유지한다. #304는 같은 공개 경로에 사전등록 keys/preregistrationFilter를 추가한다.
 기존 대표자 번호 정책은 **User 대표자의 phoneNumber**다. 동행자의 번호나 notificationPhoneNumber로 대체하지 않는다.
 일반 메시지의 동일 번호 중복 제거, 개인화 메시지의 신청별 대상, fingerprint 재확인 정책은 기존 계약을 따른다.
 현재 조회 응답의 participant.phoneNumber/notificationPhoneNumber는 표시용이며 발송 가능 번호 확정이 아니다.
-대기 스냅샷 번호가 있어도 발송 가능 상태를 뜻하지 않으며 대기 SMS는 기존 정책대로 범위 밖이다.
+대기 스냅샷 번호가 있어도 공급자 지원을 확인하기 전에는 발송 가능 상태를 뜻하지 않는다. #304의 수동 관리자 메시지는 예약에도 적용하며 자동 대기 SMS는 추가하지 않는다.
 
 기존 공개 관리자 취소는
 `POST /application/admin/expos/{expoId}/program-session-applications/{applicationId}/cancellation`이며
@@ -139,13 +141,12 @@ Application 쪽 원천은 #284에서 `preregistration-report-source.md`로 제�
 - 다른 행사/프로그램 탭 혼입 거부와 검색 결과·내보내기 대상 일치를 양 서비스 계약 테스트로 검증한다.
 - Application의 targets 응답을 기존 Report 성공 계약으로 오인하지 않는다.
 
-### Notification/Application: 사전등록 그룹 발송 source 확장
+### Notification/Application: 사전등록 그룹 발송 (#304)
 
-- 프로그램 UUID 전용 source를 유지하며 별도 PREREGISTRATION source/대상 스키마를 합의한다.
-- 우선 User 저장된 CONFIRMED/CANCELLED만 후보로 논의하고 상태별 실제 허용 여부를 확정한다.
-- User 대표자 phoneNumber 해석, 행사/탭 scope, 중복 제거, 개인화, preview→execute fingerprint를 재사용한다.
-- WAITING/PENDING/대기철회는 미지원으로 명시한다. 대기 SMS를 이번 이슈로 도입하지 않는다.
-- 검색 q와 별도 User 내부 토큰 경계(기존 FILTERED q 금지)를 해소할 서비스 간 계약이 필요하다.
+Application 구현과 [Notification #106](https://github.com/School-of-Company/Expo-Notification-Server/issues/106)의 capability 계약으로 대체한다.
+CONFIRMED/CANCELLED 참가자와 WAITING/PENDING/철회 예약을 keys 또는 preregistrationFilter로 지정하며 프로그램 선택과 혼합하지 않는다.
+예약의 applicationId/participantId를 만들지 않고 ledgerKey로 식별한다. 회차 변수는 저장된 현재 정의만 쓰며 없는 값은 TEMPLATE_DATA_MISSING이다.
+번호·필터·상한·fingerprint·배포 순서는 [admin-group-messaging.md](admin-group-messaging.md)의 #304 계약을 따른다.
 
 사전등록 관리자 취소 초안은 #182로 구현했다(위 "관리자 취소").
 

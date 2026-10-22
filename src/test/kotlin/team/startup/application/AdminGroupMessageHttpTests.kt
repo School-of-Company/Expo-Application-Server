@@ -59,11 +59,15 @@ class AdminGroupMessageHttpTests {
         notificationStatus.set(200)
         slowNotification = false
         kakaoEnabled = false
+        preregistrationEnabled = true
+        representativePhone = "010-1234-5678"
+        companionName = "동행"
         expoTitle = "광주 박람회"
         calls.clear()
         targetTokens.clear()
         requests.clear()
         jdbc.execute("TRUNCATE tb_program_session_application CASCADE")
+        jdbc.execute("TRUNCATE tb_preregister_application, tb_preregister_reservation, tb_preregister_session_state CASCADE")
         listOf(
             Triple(standard, 1L, "STANDARD"),
             Triple(companion, 2L, "STANDARD"),
@@ -71,6 +75,251 @@ class AdminGroupMessageHttpTests {
             Triple(missingPhone, 4L, "STANDARD"),
             Triple(training, 5L, "TRAINING"),
         ).forEachIndexed { index, (id, participantId, type) -> insert(id, participantId, type, index + 1L) }
+    }
+
+    private fun preregistrationScope(vararg keys: String) = """{"kind":"SELECTED","keys":${mapper.writeValueAsString(keys.toList())}}"""
+
+    private fun seedPreregistrations(): List<String> {
+        jdbc.update(
+            "INSERT INTO tb_preregister_session_state (expo_id, session_id, definition) VALUES (?, 1, ?)",
+            expo,
+            """{"id":1,"expoId":"$expo","title":"오전 회차","startedAt":"2026-10-31T00:30:00Z","endedAt":"2026-10-31T03:30:00Z","place":"접수실","capacity":100,"closed":false,"revision":1}""",
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_application (expo_id, session_id, representative_id, participant_id, status) " +
+                "VALUES (?, 1, 1, 2, 'CONFIRMED')",
+            expo,
+        )
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'waiting', 1, '{}', ?, 2, 'WAITING', 1), (?, 'pending', 1, '{}', ?, 1, 'RESERVED', NULL)",
+            expo,
+            """{"name":"예약 대표","phoneNumber":"010-1234-5678"}""",
+            expo,
+            """{"name":"복구 대표","phoneNumber":"01077778888"}""",
+        )
+        val id = jdbc.queryForObject("SELECT id FROM tb_preregister_application WHERE expo_id = ?", Long::class.java, expo)
+        return listOf("APPLICATION:$expo:$id", "RESERVATION:$expo:waiting", "RESERVATION:$expo:pending")
+    }
+
+    @Test
+    fun `ledger advertises messaging only when notification declares end to end target support`() {
+        seedPreregistrations()
+
+        fun targets() =
+            mvc
+                .perform(
+                    post("/application/admin/expos/$expo/preregistrations/targets")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"kind":"FILTERED","filter":{"status":"WAITING"}}"""),
+                ).andReturn()
+                .response
+        val supported = targets()
+        assertEquals(200, supported.status, supported.contentAsString)
+        assertTrue(mapper.readTree(supported.contentAsString)["messagingSupported"].asBoolean())
+        preregistrationEnabled = false
+        assertFalse(mapper.readTree(targets().contentAsString)["messagingSupported"].asBoolean())
+        notificationStatus.set(503)
+        val unavailable = targets()
+        assertEquals(200, unavailable.status)
+        assertFalse(mapper.readTree(unavailable.contentAsString)["messagingSupported"].asBoolean())
+    }
+
+    @Test
+    fun `preregistration current representative and reservation snapshot deduplicate without fabricated IDs`() {
+        val keys = seedPreregistrations()
+        val common = preview(preregistrationScope(*keys.toTypedArray()), "공통")
+        assertEquals(201, common.status, common.contentAsString)
+        val result = mapper.readTree(common.contentAsString)
+        assertEquals(3, result["applicationCount"].asInt())
+        assertEquals(2, result["messageCount"].asInt())
+        val personalized = preview(preregistrationScope(*keys.toTypedArray()), "{이름} {프로그램} {일시} {장소} {상태}")
+        assertEquals(201, personalized.status, personalized.contentAsString)
+        val targets = requests.last()["targets"]
+        assertEquals(3, targets.size())
+        assertTrue(targets.all { !it.has("applicationId") && !it.has("programType") && it["targetId"] == it["ledgerKey"] })
+        val application = targets.single { it["ledgerKey"].stringValue().startsWith("APPLICATION:") }
+        assertEquals("01012345678", application["recipientPhone"].stringValue())
+        assertTrue(application["content"].stringValue().contains("동행 사전등록 · 오전 회차 10.31(토) 09:30~12:30 접수실 확정"))
+        val waiting = targets.single { it["ledgerKey"].stringValue().endsWith(":waiting") }
+        assertFalse(waiting.has("participantId"))
+        assertTrue(waiting["content"].stringValue().startsWith("예약 대표"))
+        assertEquals(setOf("user:user-token", "notification:notification-token"), targetTokens.toSet())
+    }
+
+    @Test
+    fun `preregistration refuses mixed selectors foreign keys invalid filters and old notification contract`() {
+        val keys = seedPreregistrations()
+        listOf(
+            """{"kind":"SELECTED","keys":["${keys.first()}"],"applicationIds":["$standard"]}""",
+            """{"kind":"FILTERED","filter":{},"preregistrationFilter":{}}""",
+            """{"kind":"FILTERED","preregistrationFilter":{"programType":"STANDARD"}}""",
+            """{"kind":"FILTERED","preregistrationFilter":{"q":" "}}""",
+            """{"kind":"FILTERED","preregistrationFilter":{"page":1}}""",
+            preregistrationScope(keys.first(), keys.first()),
+        ).forEach { assertEquals(400, preview(it, "공통").status, it) }
+        listOf(standard.toString(), "APPLICATION:${UUID.randomUUID()}:1", "RESERVATION:$expo:missing").forEach {
+            assertEquals(404, preview(preregistrationScope(it), "공통").status)
+        }
+        preregistrationEnabled = false
+        assertEquals(503, preview(preregistrationScope(keys.first()), "공통").status)
+        assertFalse(calls.contains("notification-preview"))
+    }
+
+    @Test
+    fun `preregistration filters preserve reservation search semantics missing definitions and QR stay missing`() {
+        seedPreregistrations()
+        val scope = """{"kind":"FILTERED","preregistrationFilter":{"sessionId":1,"status":["WAITING","PENDING"],"q":"예약"}}"""
+        val response = preview(scope, "{이름} {상태}")
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(1, mapper.readTree(response.contentAsString)["applicationCount"].asInt())
+        assertFalse(calls.contains("user"))
+        assertEquals(201, preview(scope, "{URL}").status)
+        assertEquals("TEMPLATE_DATA_MISSING", requests.last()["targets"][0]["missingReason"].stringValue())
+        jdbc.update("DELETE FROM tb_preregister_application WHERE expo_id = ?", expo)
+        jdbc.update("DELETE FROM tb_preregister_session_state WHERE expo_id = ?", expo)
+        assertEquals(201, preview(scope, "{프로그램}").status)
+        assertEquals("TEMPLATE_DATA_MISSING", requests.last()["targets"][0]["missingReason"].stringValue())
+    }
+
+    @Test
+    fun `preregistration kakao preserves cancellation pending labels and missing stored values`() {
+        val keys = seedPreregistrations()
+        kakaoEnabled = true
+        jdbc.update("UPDATE tb_preregister_application SET status = 'CANCELLED' WHERE expo_id = ?", expo)
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET state = 'REJECTED', withdrawn_at = CURRENT_TIMESTAMP WHERE request_id = 'waiting'",
+        )
+        val response = kakaoPreview(preregistrationScope(*keys.toTypedArray()), false)
+        assertEquals(201, response.status, response.contentAsString)
+        val targets = requests.last()["targets"]
+        assertEquals(2, targets.count { it["templateVariables"]["status"].stringValue() == "취소" })
+        assertEquals(1, targets.count { it["templateVariables"]["status"].stringValue() == "처리 중" })
+        jdbc.update("UPDATE tb_preregister_session_state SET definition = '{}' WHERE expo_id = ?", expo)
+        assertEquals(201, kakaoPreview(preregistrationScope(keys[2]), false).status)
+        assertEquals("TEMPLATE_DATA_MISSING", requests.last()["targets"][0]["missingReason"].stringValue())
+    }
+
+    @Test
+    fun `preregistration send retry recheck status phone and removed keys before notification`() {
+        val keys = seedPreregistrations()
+        val scope = preregistrationScope(keys[1])
+
+        fun fingerprint() = mapper.readTree(preview(scope, "공통").contentAsString)["targetFingerprint"].stringValue()
+
+        fun run(
+            path: String,
+            fingerprint: String,
+        ) = mvc
+            .perform(
+                post(path)
+                    .header("Authorization", "Bearer admin")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(execution(fingerprint, scope, "공통")),
+            ).andReturn()
+            .response
+        val first = fingerprint()
+        val started = run("$base/previews/$previewId/jobs", first)
+        assertEquals(202, started.status)
+        assertEquals(keys[1], mapper.readTree(started.contentAsString)["items"][0]["ledgerKey"].stringValue())
+        val retried = run("$base/jobs/$JOB_ID/retries", first)
+        assertEquals(202, retried.status)
+        assertTrue(mapper.readTree(retried.contentAsString)["items"][0]["applicationId"].isNull)
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET user_request = ? WHERE request_id = 'waiting'",
+            """{"name":"예약 대표","phoneNumber":"01099998888"}""",
+        )
+        assertEquals(409, run("$base/previews/$previewId/jobs", first).status)
+        assertEquals(409, run("$base/jobs/$JOB_ID/retries", first).status)
+        val second = fingerprint()
+        jdbc.update("UPDATE tb_preregister_reservation SET state = 'RESERVED' WHERE request_id = 'waiting'")
+        assertEquals(409, run("$base/jobs/$JOB_ID/retries", second).status)
+        val third = fingerprint()
+        jdbc.update("UPDATE tb_preregister_reservation SET state = 'COMPLETED' WHERE request_id = 'waiting'")
+        assertEquals(409, run("$base/previews/$previewId/jobs", third).status)
+        assertEquals(1, calls.count { it == "notification-job" })
+        assertEquals(1, calls.count { it == "notification-retry" })
+    }
+
+    @Test
+    fun `preregistration filtered targets are capped at five thousand ledger rows`() {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "SELECT ?, 'bulk-' || n, 1, '{}', '{}', 1, 'WAITING', n FROM generate_series(1, 5001) n",
+            expo,
+        )
+        val response = preview("""{"kind":"FILTERED","preregistrationFilter":{"status":"WAITING"}}""", "공통")
+        assertEquals(422, response.status, response.contentAsString)
+        assertFalse(calls.contains("notification-preview"))
+        jdbc.update("DELETE FROM tb_preregister_reservation WHERE request_id = 'bulk-5001'")
+        val atLimit = preview("""{"kind":"FILTERED","preregistrationFilter":{"status":"WAITING"}}""", "공통")
+        assertEquals(201, atLimit.status, atLimit.contentAsString)
+        assertEquals(5000, mapper.readTree(atLimit.contentAsString)["applicationCount"].asInt())
+    }
+
+    @Test
+    fun `preregistration application search uses messaging token and live name phone and definition invalidate all rows`() {
+        val keys = seedPreregistrations()
+        val scope = """{"kind":"FILTERED","preregistrationFilter":{"q":"동행","status":"CONFIRMED"}}"""
+        val response = preview(scope, "공통")
+        assertEquals(201, response.status, response.contentAsString)
+        assertEquals(1, mapper.readTree(response.contentAsString)["applicationCount"].asInt())
+        assertTrue(calls.contains("user-search:user-token"))
+        val selected = preregistrationScope(keys[0], keys[1])
+
+        fun currentFingerprint() = mapper.readTree(preview(selected, "공통").contentAsString)["targetFingerprint"].stringValue()
+
+        fun checkCurrentChange(fingerprint: String) {
+            val changed =
+                mvc
+                    .perform(
+                        post("$base/previews/$previewId/jobs")
+                            .header("Authorization", "Bearer admin")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(execution(fingerprint, selected, "공통")),
+                    ).andReturn()
+                    .response
+            assertEquals(409, changed.status)
+        }
+        val beforePhone = currentFingerprint()
+        representativePhone = "01088887777"
+        checkCurrentChange(beforePhone)
+        val beforeName = currentFingerprint()
+        companionName = "변경된 이름"
+        checkCurrentChange(beforeName)
+        representativePhone = "010-1234-5678"
+        val fingerprint = mapper.readTree(preview(selected, "공통").contentAsString)["targetFingerprint"].stringValue()
+        // 공통 문구 중복 제거로 빠진 예약의 상태 변경도 실행을 막아야 한다.
+        jdbc.update("UPDATE tb_preregister_reservation SET state = 'RESERVED' WHERE request_id = 'waiting'")
+        val changed =
+            mvc
+                .perform(
+                    post("$base/previews/$previewId/jobs")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(execution(fingerprint, selected, "공통")),
+                ).andReturn()
+                .response
+        assertEquals(409, changed.status)
+        val next = mapper.readTree(preview(selected, "공통").contentAsString)["targetFingerprint"].stringValue()
+        jdbc.update("UPDATE tb_preregister_session_state SET definition = replace(definition, '접수실', '변경 장소') WHERE expo_id = ?", expo)
+        val definitionChanged =
+            mvc
+                .perform(
+                    post("$base/jobs/$JOB_ID/retries")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(execution(next, selected, "공통")),
+                ).andReturn()
+                .response
+        assertEquals(409, definitionChanged.status)
+        expoStatus.set(403)
+        assertEquals(403, preview(selected, "공통").status)
+        assertFalse(calls.contains("notification-job"))
+        assertFalse(calls.contains("notification-retry"))
     }
 
     @Test
@@ -588,6 +837,12 @@ class AdminGroupMessageHttpTests {
 
         @Volatile private var kakaoEnabled = false
 
+        @Volatile private var preregistrationEnabled = true
+
+        @Volatile private var representativePhone = "010-1234-5678"
+
+        @Volatile private var companionName = "동행"
+
         @Volatile private var expoTitle = "광주 박람회"
         private const val KAKAO_DISABLED = """{"enabled":false,"templates":[]}"""
         private val KAKAO_CHANNEL =
@@ -641,8 +896,8 @@ class AdminGroupMessageHttpTests {
                     val participants =
                         ids.take(if (userStatus.get() == 206) 1 else ids.size).map { id ->
                             when (id) {
-                                1L -> participant(1, "대표", "010-1234-5678", null)
-                                2L -> participant(2, "동행", "01099999999", 1)
+                                1L -> participant(1, "대표", representativePhone, null)
+                                2L -> participant(2, companionName, "01099999999", 1)
                                 3L -> participant(3, "동일", "01012345678", null)
                                 4L -> mapOf("participantId" to 4, "name" to "누락", "phoneNumber" to null, "representativeId" to null)
                                 5L -> participant(5, "연수", "01055555555", 1)
@@ -650,6 +905,10 @@ class AdminGroupMessageHttpTests {
                             }
                         }
                     respond(exchange, 200, mapper.writeValueAsString(participants))
+                }
+                createContext("/internal/expos/") { exchange ->
+                    calls.add("user-search:${exchange.requestHeaders.getFirst("X-Internal-Token")}")
+                    respond(exchange, 200, """{"items":[{"participantId":2}],"nextCursor":null}""")
                 }
                 createContext("/internal/admin-group-messages") { exchange ->
                     if (slowNotification) Thread.sleep(10_500)
@@ -664,6 +923,7 @@ class AdminGroupMessageHttpTests {
                                 """
                                 {
                                     "enabled":true,
+                                    "targetContracts":${if (preregistrationEnabled) "[\"PREREGISTRATION_GROUP_MESSAGE_V1\"]" else "[]"},
                                     "channels":{"SMS":{"enabled":true,"templates":[]},"KAKAO":${if (kakaoEnabled) KAKAO_CHANNEL else KAKAO_DISABLED}},
                                     "smsFallbackDefault":false
                                 }
@@ -728,15 +988,51 @@ class AdminGroupMessageHttpTests {
             representativeId: Long?,
         ) = mapOf("participantId" to id, "name" to name, "phoneNumber" to phone, "representativeId" to representativeId)
 
-        private fun job() =
-            """
-            {
-                "jobId":"$JOB_ID","previewId":"$previewId","status":"COMPLETED_WITH_FAILURES","createdAt":"2026-10-12T00:00:00Z",
-                "counts":{"total":1,"pending":0,"sending":0,"accepted":0,"delivered":0,"failed":1,"unknown":0,"missing":0},
-                "items":[{"targetId":"target","applicationId":"0190abcd-0000-7000-8000-000000000011","participantId":1,
-                "recipientMasked":"010-****-5678","status":"FAILED","providerCode":"TEST","failureReason":"fake"}]
+        private fun job(): String {
+            val targets = requests.lastOrNull()?.path("targets")
+            if (targets?.any { it.has("ledgerKey") } == true) {
+                return mapper.writeValueAsString(
+                    mapOf(
+                        "jobId" to JOB_ID,
+                        "previewId" to previewId,
+                        "status" to "COMPLETED_WITH_FAILURES",
+                        "createdAt" to "2026-10-12T00:00:00Z",
+                        "counts" to
+                            mapOf(
+                                "total" to targets.size(),
+                                "pending" to 0,
+                                "sending" to 0,
+                                "accepted" to 0,
+                                "delivered" to 0,
+                                "failed" to targets.size(),
+                                "unknown" to 0,
+                                "missing" to 0,
+                            ),
+                        "items" to
+                            (0 until targets.size()).map { index ->
+                                mapOf(
+                                    "targetId" to targets[index]["targetId"].stringValue(),
+                                    "ledgerKey" to targets[index]["ledgerKey"].stringValue(),
+                                    "applicationId" to null,
+                                    "participantId" to targets[index]["participantId"]?.longValue(),
+                                    "recipientMasked" to "010-****-5678",
+                                    "status" to "FAILED",
+                                    "providerCode" to "TEST",
+                                    "failureReason" to "fake",
+                                )
+                            },
+                    ),
+                )
             }
-            """.trimIndent()
+            return """
+                {
+                    "jobId":"$JOB_ID","previewId":"$previewId","status":"COMPLETED_WITH_FAILURES","createdAt":"2026-10-12T00:00:00Z",
+                    "counts":{"total":1,"pending":0,"sending":0,"accepted":0,"delivered":0,"failed":1,"unknown":0,"missing":0},
+                    "items":[{"targetId":"target","applicationId":"0190abcd-0000-7000-8000-000000000011","participantId":1,
+                    "recipientMasked":"010-****-5678","status":"FAILED","providerCode":"TEST","failureReason":"fake"}]
+                }
+                """.trimIndent()
+        }
 
         private fun respond(
             exchange: HttpExchange,
@@ -753,6 +1049,8 @@ class AdminGroupMessageHttpTests {
         @DynamicPropertySource
         fun properties(registry: DynamicPropertyRegistry) {
             val url = "http://127.0.0.1:${server.address.port}"
+            registry.add("application.registration.expo-url") { url }
+            registry.add("application.registration.expo-internal-token") { "expo-token" }
             registry.add("application.admin-group-messaging.expo-url") { url }
             registry.add("application.admin-group-messaging.user-url") { url }
             registry.add("application.admin-group-messaging.notification-url") { url }

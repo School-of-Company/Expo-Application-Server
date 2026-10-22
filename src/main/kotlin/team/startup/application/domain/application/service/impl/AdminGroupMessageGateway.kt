@@ -214,6 +214,61 @@ class AdminGroupMessageGateway(
             AdminGroupMessageConfig::class.java,
         )
 
+    fun preregistrationSupported(): Boolean =
+        try {
+            listOf(expoUrl, userUrl, notificationUrl, expoToken, userToken, notificationToken).all { it.isNotBlank() } &&
+                config().let { it.enabled && PREREGISTRATION_CONTRACT in it.targetContracts }
+        } catch (_: ResponseStatusException) {
+            false
+        }
+
+    fun requirePreregistrationContract() {
+        if (!preregistrationSupported()) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Notification 사전등록 그룹 발송 계약이 준비되지 않았습니다.")
+        }
+    }
+
+    fun searchParticipantIds(
+        expoId: UUID,
+        q: String?,
+    ): List<Long>? {
+        if (q == null) return null
+        val ids = mutableListOf<Long>()
+        var cursor = 0L
+        do {
+            val encoded = URLEncoder.encode(q.trim(), StandardCharsets.UTF_8)
+            val tree =
+                node(
+                    call(
+                        Provider.USER,
+                        userUrl,
+                        "/internal/expos/$expoId/standard-participants/details?cursor=$cursor&size=500&q=$encoded",
+                        token = userToken,
+                    ),
+                )
+            try {
+                require(tree.path("items").isArray && tree.has("nextCursor"))
+                val page =
+                    (0 until tree.path("items").size()).map { index ->
+                        val item = tree.path("items")[index]
+                        val id = item.path("participantId")
+                        require(id.isIntegralNumber && id.canConvertToLong() && id.longValue() > cursor)
+                        id.longValue()
+                    }
+                require(page.size <= 500 && page.zipWithNext().all { (a, b) -> a < b })
+                ids.addAll(page)
+                val next = tree.path("nextCursor")
+                if (next.isNull) break
+                require(next.isIntegralNumber && next.canConvertToLong() && page.isNotEmpty() && next.longValue() == page.last())
+                cursor = next.longValue()
+            } catch (_: Exception) {
+                invalidProviderResponse("참가자 검색")
+            }
+        } while (true)
+        ids.chunked(500).forEach { participants(expoId, it) }
+        return ids
+    }
+
     fun preview(
         requesterId: Long,
         expoId: UUID,
@@ -385,5 +440,6 @@ class AdminGroupMessageGateway(
         const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L
         const val BASE_PATH = "/internal/admin-group-messages"
         const val CONFIG_PATH = "$BASE_PATH/config"
+        const val PREREGISTRATION_CONTRACT = "PREREGISTRATION_GROUP_MESSAGE_V1"
     }
 }
