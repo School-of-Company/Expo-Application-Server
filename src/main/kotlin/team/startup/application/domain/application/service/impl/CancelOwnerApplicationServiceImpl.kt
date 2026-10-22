@@ -32,10 +32,15 @@ class CancelOwnerApplicationServiceImpl(
     private val waitlist: PreregisterWaitlist,
     private val guardianBatches: StudentGuardianBatchRepository,
     private val guardianCancellation: CancelStudentGuardianApplicationService,
+    private val fieldCancellation: FieldVisitCancellation,
 ) : CancelOwnerApplicationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelOwnerApplicationCommand) {
         val party = gateway.managedParty(command.expoId, command.sessionId)
+        if (command.type == OwnerApplicationType.FIELD) {
+            fieldCancellation.execute(command, party)
+            return
+        }
         val original =
             owners.cancellationTarget(command, party) ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         if (command.type != OwnerApplicationType.PREREGISTER && guardianBatches.batchId(UUID.fromString(original.applicationId)) != null) {

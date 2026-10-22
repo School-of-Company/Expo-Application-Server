@@ -37,12 +37,14 @@ class GetOwnerApplicationsServiceImpl(
     private val managed: ManagedParticipantRepository,
     transactionManager: PlatformTransactionManager,
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
+    private val fieldCancellation: FieldVisitCancellation,
 ) : GetOwnerApplicationsService {
     private val reads = TransactionTemplate(transactionManager).apply { isReadOnly = true }
 
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: GetOwnerApplicationsCommand): OwnerApplicationsResponse {
         val party = gateway.managedParty(command.expoId, command.sessionId)
+        val fields = fieldCancellation.items(command.expoId, command.sessionId, party)
         val stored = requireNotNull(reads.execute { repository.applications(command.expoId, party) })
         val definitions =
             stored
@@ -52,14 +54,26 @@ class GetOwnerApplicationsServiceImpl(
                     gateway.programDefinitions(command.expoId.toString(), type, items.map { it.sessionOrProgramId }, existing = true)
                 }.associateBy { it.programType.name to it.id }
         val applications = stored.map { it.copy(place = definitions[it.type.name to it.sessionOrProgramId]?.place) }
-        if (!attendanceEnabled) return OwnerApplicationsResponse(party.participants, withCompanions(command, party, applications))
+        val participants =
+            party.participants.filter { participant ->
+                val visits = fields.filter { it.participantId == participant.participantId }
+                visits.isEmpty() || visits.any { it.status == "ACTIVE" } ||
+                    applications.any { it.participantId == participant.participantId && it.applied }
+            }
+        if (!attendanceEnabled) {
+            return OwnerApplicationsResponse(
+                participants,
+                withCompanions(command, party, applications),
+                fieldRegistrations = fields,
+            )
+        }
         // QR 조회와 같은 판정이다. 조회 시점 값이라 QR 조회가 다시 확인한다
         val qrParticipantIds =
             party.representativeId
                 ?.let { representative ->
                     requireNotNull(
                         reads.execute {
-                            party.participants
+                            participants
                                 .filter { managed.qrAvailable(command.expoId, it.participantId, representative, it.fieldRegistered) }
                                 .map { it.participantId }
                         },
@@ -129,7 +143,7 @@ class GetOwnerApplicationsServiceImpl(
                     }
                 application.copy(cancellable = reason == null, cancellationBlockedReason = reason ?: "")
             }
-        return OwnerApplicationsResponse(party.participants, withCompanions(command, party, eligible), qrParticipantIds)
+        return OwnerApplicationsResponse(participants, withCompanions(command, party, eligible), qrParticipantIds, fields)
     }
 
     // #169: 대표자 본인의 확정 사전등록에만 동행자 추가 가능 여부를 붙인다. 공급자 조회 실패는 목록을 막지 않는다.

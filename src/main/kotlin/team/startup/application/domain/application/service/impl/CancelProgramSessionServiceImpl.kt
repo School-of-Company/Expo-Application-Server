@@ -26,6 +26,7 @@ class CancelProgramSessionServiceImpl(
     private val operations: TrainingOperationRepository,
     private val jdbc: JdbcTemplate,
     private val guardianBatches: StudentGuardianBatchRepository,
+    private val notifications: ApplicationNotifications,
 ) : CancelProgramSessionService {
     @Transactional
     override fun execute(command: CancelProgramSessionCommand) {
@@ -74,6 +75,7 @@ class CancelProgramSessionServiceImpl(
             actorId = command.actorId,
             actorParticipantId = command.actorParticipantId,
         )
+        notifications.programCancelled(original.key.expoId, entry.id, command.actorType)
         waitlist.promote(definition, now)
     }
 }

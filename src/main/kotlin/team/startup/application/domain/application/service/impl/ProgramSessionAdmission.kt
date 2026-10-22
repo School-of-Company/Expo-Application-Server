@@ -39,6 +39,7 @@ class ProgramSessionAdmission(
     private val repository: ProgramWaitlistRepository,
     private val guardianEligibility: ObjectProvider<StudentGuardianEligibilityProvider>,
     private val transactions: TransactionTemplate,
+    private val notifications: ApplicationNotifications,
     private val fieldEligibility: FieldVisitEligibility? = null,
 ) {
     fun admit(
@@ -224,6 +225,7 @@ class ProgramSessionAdmission(
         }
         ledger.save(command, definition, form, receipt, channel?.name)
         repository.event(receipt.applicationId, receipt.status)
+        notifications.programAdmitted(UUID.fromString(command.expoId), receipt.applicationId, receipt.status)
         return receipt
     }
 

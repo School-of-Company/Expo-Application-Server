@@ -85,7 +85,9 @@ class OwnerApplicationController(
     @PostMapping("/{type}/{applicationId}/cancellation")
     @Operation(
         summary = "내 일행 신청 개별 취소",
-        description = "참가자 세션과 CSRF 토큰이 필요합니다. 소유권과 취소 조건을 검사하며 공급자 보호 계약이 없으면 503입니다.",
+        description =
+            "참가자 세션과 CSRF 토큰이 필요합니다. FIELD는 fieldRegistrations의 registrationId와 generation 쿼리를 사용합니다. " +
+                "취소 대상 방문일의 첫 입장 전에만 허용하며 공급자 보호 계약이 없으면 503입니다.",
         responses = [
             ApiResponse(responseCode = "204", description = "취소 완료"),
             ApiResponse(responseCode = "400", description = "잘못된 요청"),
@@ -105,8 +107,9 @@ class OwnerApplicationController(
         @PathVariable expoId: UUID,
         @PathVariable type: OwnerApplicationType,
         @PathVariable applicationId: String,
+        @RequestParam(required = false) generation: Long?,
         request: HttpServletRequest,
-    ) = cancelApplication.execute(CancelOwnerApplicationCommand(expoId, session(request), type, applicationId))
+    ) = cancelApplication.execute(CancelOwnerApplicationCommand(expoId, session(request), type, applicationId, generation))
 
     @PostMapping("/PREREGISTER/{applicationId}/companions")
     @Operation(

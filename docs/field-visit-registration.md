@@ -1,6 +1,6 @@
 # 참가자 × KST 방문일 현장등록 (#311)
 
-Application이 방문일 원장·생성·조회와 공통 계약을 소유한다. 취소 실행·스캔 guard·durable cancellation workflow는 #310 소유다. V41을 먼저 적용하고 #310은 V42부터 사용한다. 운영 적용·서버 간 실제 통합·SMS 발송은 이 로컬 구현 검증에 포함하지 않는다.
+Application이 방문일 원장·생성·조회와 공통 계약을 소유한다. 취소 실행·스캔 guard·durable cancellation workflow는 #310 소유다. 문자 알림 V41 뒤에 방문일 원장 V42, 취소 복구 V43을 적용한다. 운영 적용·서버 간 실제 통합·SMS 발송은 이 로컬 구현 검증에 포함하지 않는다.
 
 ## 공개 계약
 
@@ -24,7 +24,7 @@ Application이 방문일 원장·생성·조회와 공통 계약을 소유한다
 
 ## 원장·동시성·복구
 
-V41 `tb_field_visit_registration`은 `(expo_id, participant_id, visit_date)` 유일 제약을 가진다. UUID는 해당 날짜에 유지한다. 취소 완료 뒤 재등록은 같은 UUID의 `generation`을 증가시키고 현재 취소 컬럼을 비우되 `tb_field_visit_event`의 이전 REGISTERED/CANCELLED 이력을 보존한다. 이벤트의 `actor_participant_id`와 DTO `cancelledBy`는 참가자 실행자 ID이며 관리자 `actorId`가 아니다.
+V42 `tb_field_visit_registration`은 `(expo_id, participant_id, visit_date)` 유일 제약을 가진다. UUID는 해당 날짜에 유지한다. 취소 완료 뒤 재등록은 같은 UUID의 `generation`을 증가시키고 현재 취소 컬럼을 비우되 `tb_field_visit_event`의 이전 REGISTERED/CANCELLED 이력을 보존한다. 이벤트의 `actor_participant_id`와 DTO `cancelledBy`는 참가자 실행자 ID이며 관리자 `actorId`가 아니다.
 
 요청은 전화번호의 세션 advisory lock으로 직렬화한다. HTTP 중에는 DB 트랜잭션을 열지 않는다. 로컬 원장 반영은 Expo 잠금(34) → 정렬된 참가자 잠금(43, 대표자 포함) → 방문일 잠금(74) 및 원장 row lock을 사용한다. PRE·기존 FIELD와 활성 인원을 잠금 안에서 재판정한다. 프로그램 신청도 참가자 잠금 뒤 오늘 FIELD 유효성·취소 pending을 다시 확인한다.
 
@@ -52,11 +52,11 @@ User와 Attendance 공통 projection은 `PUT /internal/expos/{expoId}/participan
 
 ## 이관·호환·배포 순서
 
-기존 User FIELD, 생성 시각, 과거 방문일 미기록 자료로 오늘 등록을 추정하지 않는다. V41 backfill은 없다. 옛 FIELD는 미상으로 남고 오늘 권한이 필요하면 세션 소유자가 명시적으로 오늘 등록을 요청한다. 기존 QR·participantId·프로필은 보존한다.
+기존 User FIELD, 생성 시각, 과거 방문일 미기록 자료로 오늘 등록을 추정하지 않는다. V42 backfill은 없다. 옛 FIELD는 미상으로 남고 오늘 권한이 필요하면 세션 소유자가 명시적으로 오늘 등록을 요청한다. 기존 QR·participantId·프로필은 보존한다.
 
-1. V41 및 읽기 원천을 먼저 배포한다. `APPLICATION_FIELD_VISITS_ENABLED=false`가 기본이다. 이때 기존 등록·자격 계약은 유지된다.
+1. 문자 알림 V41 → 방문일 원장 V42 → 취소 복구 V43 및 읽기 원천을 먼저 배포한다. `APPLICATION_FIELD_VISITS_ENABLED=false`가 기본이다. 이때 기존 등록·자격 계약은 유지된다.
 2. User#202와 Attendance#204를 배포하고 같은 세대 terminal·과거 세대 fence·신규 exact mapping·날짜별 첫입장/취소 경합을 실제 서버 조합으로 확인한다.
-3. #310 V42 취소 소비와 Report#92를 준비한다. Report 새 전체 원장은 Application source가 없으면 누락 성공 대신 실패한다.
+3. #310 V43 취소 소비와 Report#92를 준비한다. Report 새 전체 원장은 Application source가 없으면 누락 성공 대신 실패한다.
 4. Client#860의 선택/신규 구분·결과 소비, Gateway 익명 라우팅·세션/CSRF 전달, Expo/User/Attendance/Report 토큰·URL을 확인한 뒤 서버 flag를 활성화한다. 등록 POST enablement와 Attendance delivery 설정도 켠다. Client 코드는 이 작업에서 수정하지 않는다.
 
 flag가 켜지면 기존 `/application/field/standard/{expoId}`는 409 `FIELD_VISIT_SELECTION_REQUIRED`로 닫고 새 경로로 전환한다. 구버전 Application으로 롤백하면 날짜별 자격/취소를 소비하지 못하므로 flag를 끄는 것만으로 호환됐다고 판단하지 않는다. 데이터와 provider projection을 보존한 채 등록 트래픽을 닫고 배포 버전을 함께 맞춘다. 운영 DB 이관·배포·실제 QR 스캔·SMS는 별도 승인된 rollout 검증이 필요하다.

@@ -17,6 +17,7 @@ class WithdrawOwnerPreregisterWaitlistServiceImpl(
     private val reservations: PreregisterReservationRepository,
     private val ledger: PreregisterSessionLedger,
     private val waitlist: PreregisterWaitlist,
+    private val notifications: ApplicationNotifications,
 ) : WithdrawOwnerPreregisterWaitlistService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: OwnerPreregisterWaitlistCommand) {
@@ -31,6 +32,12 @@ class WithdrawOwnerPreregisterWaitlistServiceImpl(
                     if (!reservations.withdraw(reservation, ApplicationActorType.USER)) {
                         conflict("승급 처리 중입니다. 확정 뒤 신청 취소를 이용해 주세요.")
                     }
+                    notifications.reservationWithdrawn(
+                        command.expoId,
+                        reservation.requestId,
+                        reservation.sessionId,
+                        ApplicationActorType.USER,
+                    )
                     reservation.sessionId
                 },
             )

@@ -313,6 +313,39 @@ class PreregisterSessionRepository(
             sessionId,
         )
 
+    data class ApplicationRow(
+        val expoId: UUID,
+        val sessionId: Long,
+        val representativeId: Long,
+        val participantId: Long,
+        val status: String,
+    )
+
+    // #308: 신청 결과 문자가 보내기 직전에 현재 상태를 다시 확인한다.
+    fun application(id: Long): ApplicationRow? =
+        jdbc
+            .query(
+                "SELECT expo_id, session_id, representative_id, participant_id, status FROM tb_preregister_application WHERE id = ?",
+                { rs, _ ->
+                    ApplicationRow(rs.getObject(1, UUID::class.java), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getString(5))
+                },
+                id,
+            ).singleOrNull()
+
+    // 이 대표자 일행에 남은 활성 신청 수. 0이면 취소가 일행 전체의 사전등록을 끝낸 것이다.
+    fun activeUnderRepresentative(
+        expoId: UUID,
+        representativeId: Long,
+    ): Int =
+        requireNotNull(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_preregister_application WHERE expo_id = ? AND representative_id = ? AND status <> 'CANCELLED'",
+                Int::class.java,
+                expoId,
+                representativeId,
+            ),
+        )
+
     fun active(
         expoId: UUID,
         sessionId: Long,
