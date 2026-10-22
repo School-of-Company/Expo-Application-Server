@@ -28,6 +28,13 @@ application:
     enabled: ${APPLICATION_PROMOTIONS_ENABLED:false}
     bootstrap-servers: ${APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS:}
     publish-from: ${APPLICATION_PROMOTIONS_PUBLISH_FROM:}
+  # #308 신청 결과 문자(Notification #110). 꺼져 있으면 outbox에 아무것도 쌓지 않는다. 켜기 전에 Notification 소비자를 먼저 배포하고
+  # expo-ids로 테스트 박람회에 한정해 검증한다(docs/application-result-notifications.md). publish-from은 고정된 활성화 시각이다.
+  notifications:
+    enabled: ${APPLICATION_NOTIFICATIONS_ENABLED:false}
+    bootstrap-servers: ${APPLICATION_NOTIFICATIONS_BOOTSTRAP_SERVERS:}
+    publish-from: ${APPLICATION_NOTIFICATIONS_PUBLISH_FROM:}
+    expo-ids: ${APPLICATION_NOTIFICATIONS_EXPO_IDS:}
   # #144 participation offers. Off keeps the pre-#144 automatic promotion; turn on only after Notification's offer
   # consumer and the Client offer page are deployed (docs/promotion-offer.md).
   promotion-offers:

@@ -15,6 +15,7 @@ class WithdrawPreregisterReservationServiceImpl(
     private val reservations: PreregisterReservationRepository,
     private val ledger: PreregisterSessionLedger,
     private val waitlist: PreregisterWaitlist,
+    private val notifications: ApplicationNotifications,
 ) : WithdrawPreregisterReservationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: WithdrawPreregisterReservationCommand) {
@@ -29,6 +30,7 @@ class WithdrawPreregisterReservationServiceImpl(
                 if (!reservations.withdraw(reservation, actorType, command.adminId)) {
                     conflict("대기 중인 신청만 취소할 수 있습니다.")
                 }
+                notifications.reservationWithdrawn(command.expoId, reservation.requestId, reservation.sessionId, actorType)
                 reservation.sessionId
             } ?: return
         waitlist.promoteQuietly(command.expoId, sessionId)

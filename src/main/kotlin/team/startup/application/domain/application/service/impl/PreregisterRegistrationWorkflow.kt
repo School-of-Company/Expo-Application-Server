@@ -34,6 +34,7 @@ class PreregisterRegistrationWorkflow(
     @Value("\${application.attendance.enabled:false}") private val attendanceEnabled: Boolean,
     @Value("\${application.registration.waitlist-intake-enabled:false}") private val waitlistIntake: Boolean,
     private val retryLimit: ReservationRetryLimit,
+    private val notifications: ApplicationNotifications,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -393,6 +394,8 @@ class PreregisterRegistrationWorkflow(
                         waits,
                         categories,
                     )
+                    // 대기 접수는 여기서 정해진다. 바로 확정되는 회차는 recover가 끝낸 뒤(completeSession) 안내한다.
+                    if (waits) participantIds.forEach { notifications.sessionAdded(expoId, key, sessionId, it, "WAITLISTED") }
                     key
                 },
             )
@@ -690,18 +693,25 @@ class PreregisterRegistrationWorkflow(
             return ResponseStatusException(HttpStatus.CONFLICT, "이미 신청했거나 시간이 겹치는 회차입니다.")
         }
         ids.forEach {
-            repository.insert(
-                expoId,
-                reserved.sessionId,
-                result.participantId,
-                it,
-                "CONFIRMED",
-                reserved.requestId,
-                ApplicationActorType.USER,
-                result.participantId,
-                categories[it],
-            )
+            val receipt =
+                repository.insert(
+                    expoId,
+                    reserved.sessionId,
+                    result.participantId,
+                    it,
+                    "CONFIRMED",
+                    reserved.requestId,
+                    ApplicationActorType.USER,
+                    result.participantId,
+                    categories[it],
+                )
             attendance.confirmed(expoId, it, reserved.sessionId)
+            // 대기했다 승급된 추가(queueSeq 있음)는 이미 대기 안내를 받았고 승급 확정을 신규 확정으로 다시 보내지 않는다.
+            if (reserved.queueSeq ==
+                null
+            ) {
+                notifications.sessionAdded(expoId, reserved.requestId, reserved.sessionId, it, "CONFIRMED", receipt.id)
+            }
         }
         reservations.finish(reserved)
         return null
