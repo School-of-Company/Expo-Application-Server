@@ -68,6 +68,8 @@ private val conflictCodes =
             "삭제된 박람회입니다." to ("EXPO_DELETED" to "삭제된 박람회입니다."),
             RegistrationWorkflow.PREREGISTERED_TODAY to
                 ("ALREADY_PREREGISTERED_TODAY" to "이미 사전등록하셨습니다. 받으신 QR로 입장해 주세요."),
+            "FIELD_VISIT_SELECTION_REQUIRED" to
+                ("FIELD_VISIT_SELECTION_REQUIRED" to "방문일 등록 화면에서 기존 참가자를 선택하거나 새 동행자를 추가해 주세요."),
         )
     }
 
@@ -182,8 +184,9 @@ class RegistrationController(
     @Operation(
         summary = "일반 현장 등록",
         description =
-            "사전등록 이력이 있는 번호도 오늘(KST) 시작하는 회차의 확정이 없으면(다른 날 회차만 확정 또는 모두 취소) 받고, " +
-                "기존 FIELD 등록 요청으로 User가 PRE 대표자를 FIELD로 바꿉니다.",
+            "방문일 원장 기능 활성화 시 409 FIELD_VISIT_SELECTION_REQUIRED입니다. " +
+                "/application/expos/{expoId}/field-visits에서 기존 참가자 선택과 신규 동행자 추가를 구분합니다. " +
+                "기능 비활성화 시에는 기존 전화번호 단위 현장등록 계약을 사용합니다.",
         responses = [
             ApiResponse(responseCode = "201", description = "등록 완료"),
             ApiResponse(responseCode = "400", description = "입력 검증 또는 등록·폼 규칙 위반"),

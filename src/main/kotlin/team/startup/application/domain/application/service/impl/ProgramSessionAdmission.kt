@@ -40,6 +40,7 @@ class ProgramSessionAdmission(
     private val guardianEligibility: ObjectProvider<StudentGuardianEligibilityProvider>,
     private val transactions: TransactionTemplate,
     private val notifications: ApplicationNotifications,
+    private val fieldEligibility: FieldVisitEligibility? = null,
 ) {
     fun admit(
         request: ApplyProgramSessionCommand,
@@ -115,7 +116,10 @@ class ProgramSessionAdmission(
         ledger.limitLockWait()
         ledger.lockParticipant(command.participantId)
         replay(command)?.let { return it }
-        if (preregistered) preregisterEligibility(definition, command, lock = true)
+        val currentField =
+            fieldEligibility?.current(UUID.fromString(command.expoId), command.participantId, !preregistered, command.onsite)
+                ?: !preregistered
+        if (!command.onsite || !currentField) preregisterEligibility(definition, command, lock = true)
         waitlist.lock(definition)
         repository.observe(definition)
         val now = waitlist.now()

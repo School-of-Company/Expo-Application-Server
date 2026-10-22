@@ -25,6 +25,7 @@ class GetProgramParticipantsServiceImpl(
     private val ledger: ProgramSessionApplicationRepository,
     private val waitlist: ProgramWaitlistRepository,
     transactionManager: PlatformTransactionManager,
+    private val fieldEligibility: FieldVisitEligibility? = null,
 ) : GetProgramParticipantsService {
     private val reads = TransactionTemplate(transactionManager).apply { isReadOnly = true }
 
@@ -59,6 +60,11 @@ class GetProgramParticipantsServiceImpl(
                             }
                         val preregister =
                             when {
+                                command.onsite &&
+                                    fieldEligibility?.hasTodayRegistration(command.owner.expoId, participant.participantId) == false -> {
+                                    ProgramIneligibleReason.PREREGISTRATION_NOT_CONFIRMED
+                                }
+
                                 command.onsite && participant.fieldRegistered -> {
                                     null
                                 }

@@ -30,18 +30,18 @@ KST 방문일로 확인하고, 대표자의 동행자는 같은 날짜의 ACTIVE
 
 1. 원장 UUID별 세션 advisory lock으로 취소/복구를 직렬화한다.
 2. 짧은 로컬 트랜잭션에서 박람회 → 참가자 → 연결 연수자 잠금을 잡고 보호 조건을
-   검사한다. 원장 `beginCancellation`과 V42의 `ACQUIRING`을 함께 저장한다.
+   검사한다. 원장 `beginCancellation`과 V43의 `ACQUIRING`을 함께 저장한다.
 3. 트랜잭션 밖에서 날짜별 Attendance acquire를 호출하고 User 소유권/연결을 재확인한다.
 4. 같은 잠금으로 보호 조건을 다시 검사하고 #311의 generation/operation CAS `cancel`,
-   취소 이력, V42 `COMMIT` 결정을 같은 트랜잭션에 기록한다.
+   취소 이력, V43 `COMMIT` 결정을 같은 트랜잭션에 기록한다.
 5. Attendance commit, User CANCELLED projection을 차례로 전달한다. 둘 다 204를
-   확인한 뒤에만 원장의 cancellation pending과 V42 복구 행을 함께 해제한다.
+   확인한 뒤에만 원장의 cancellation pending과 V43 복구 행을 함께 해제한다.
 
 불확실한 acquire는 durable ABORT와 같은 operationId로 복구하며, abort 응답 유실 중에는
 pending을 유지한다. 로컬 취소가 커밋됐으면 COMMIT을 ABORT로 바꾸지 않는다. commit이나
 User projection 응답이 유실돼도 같은 ID/방문일/세대/operationId로 재전달한다.
 공급자 409를 취소 성공으로 간주하거나 participant 전체 취소로 대체하지 않는다.
-기존 취소 복구 스케줄러가 V42도 처리한다. pending 동안 #311 재활성화는 닫힌다.
+기존 취소 복구 스케줄러가 V43도 처리한다. pending 동안 #311 재활성화는 닫힌다.
 
 다른 PRE나 다른 날짜 FIELD는 수정하지 않는다. QR/새 프로그램 자격/활성 일행5명은
 #311과 User/Attendance의 날짜별 등록 projection을 함께 배포해야 일치한다. 관리용
@@ -50,9 +50,9 @@ User projection 응답이 유실돼도 같은 ID/방문일/세대/operationId로
 
 ## 선행 계약과 적용 순서
 
-- #311 소유 V41, `FieldVisitRegistration`, `FieldVisitDto`, `FieldVisitRegistrationRepository`가 선행한다.
+- #311 소유 V42, `FieldVisitRegistration`, `FieldVisitDto`, `FieldVisitRegistrationRepository`가 선행한다.
   이 작업공간의 네 파일은 #311 제공본을 검증용으로 반영한 것이다. 병합할 때 독립
-  마이그레이션으로 다시 만들지 말고 #311 최종본과 동기화한다. #310은 V42를 소유한다.
+  마이그레이션으로 다시 만들지 말고 #311 최종본과 동기화한다. #310은 V43을 소유한다.
 - [User#202](https://github.com/School-of-Company/Expo-User-Server/issues/202):
   `PUT /internal/expos/{expoId}/participants/{participantId}/field-visits/{registrationId}`,
   `{visitDate,generation,status:CANCELLED,operationId}` → 204. 같은 세대 CANCELLED는
@@ -67,7 +67,7 @@ User projection 응답이 유실돼도 같은 ID/방문일/세대/operationId로
   #311 원천에서 FIELD 방문일/취소 시각·실행자와 generation별 이벤트를 소비한다.
   Application 구현만으로 관리자 엑셀 변경을 완료했다고 보지 않는다.
 
-V41 → User/Attendance 새 계약 → V42/#310 소비 및 #311 등록/자격 연결 → Report 원천
+문자 알림 V41 → 방문일 원장 V42 → 취소 복구 V43 → User/Attendance 새 계약 → #310 소비 및 #311 등록/자격 연결 → Report 원천
 소비와 실제 통합 검증 순서다. `application.field-visits.enabled`는 기본 false다.
 실제 공급자/스캔/재등록 검증 전 활성화하지 않는다. Attendance delivery도 활성화돼야 한다.
 404/501/연결 실패는 503으로 닫는다. 대상별 내부 토큰만 사용한다.
