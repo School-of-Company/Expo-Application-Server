@@ -21,6 +21,8 @@ class RegistrationWorkflow(
     private val preregistration: PreregisterRegistrationWorkflow,
     private val attendance: SessionAttendanceOutbox,
     private val reservations: PreregisterReservationRepository,
+    @org.springframework.beans.factory.annotation.Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled:
+        Boolean = false,
 ) {
     private val occupations = CompanionAnswers.occupations
     private val regions = CompanionAnswers.regions
@@ -30,6 +32,9 @@ class RegistrationWorkflow(
         participantType: String,
         applicationType: String,
     ): PreregisterRegistrationReceipt? {
+        if (participantType == "STANDARD" && applicationType == "FIELD" && fieldVisitsEnabled) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_VISIT_SELECTION_REQUIRED")
+        }
         var request = command.request
         val expoId =
             try {

@@ -39,6 +39,7 @@ class StudentGuardianBatchAdmission(
     private val standards: StandardProgramApplicationRepository,
     private val trainings: TrainingProgramApplicationRepository,
     private val operations: TrainingOperationRepository,
+    private val fieldEligibility: FieldVisitEligibility? = null,
 ) {
     fun admit(
         requested: ApplyStudentGuardianBatchCommand,
@@ -84,8 +85,17 @@ class StudentGuardianBatchAdmission(
         val channel = channels.values.first()
         val batchId = UUID.randomUUID()
         ids
-            .filterNot { id -> command.onsite && party.participants.single { it.participantId == id }.fieldRegistered }
-            .firstNotNullOfOrNull { ledger.preregisterIneligibility(definition, it) }
+            .filterNot { id ->
+                val current =
+                    fieldEligibility?.current(
+                        command.key.expoId,
+                        id,
+                        party.participants.single { it.participantId == id }.fieldRegistered,
+                        command.onsite,
+                    )
+                        ?: party.participants.single { it.participantId == id }.fieldRegistered
+                command.onsite && current
+            }.firstNotNullOfOrNull { ledger.preregisterIneligibility(definition, it) }
             ?.let { throw ResponseStatusException(HttpStatus.FORBIDDEN, it.name) }
         val existing = guardians.mapNotNull { id -> batches.active(command.key, id)?.let { id to it } }.toMap()
         if (existing.values.any { it.status != "CONFIRMED" || batches.students(it.id).isEmpty() }) {

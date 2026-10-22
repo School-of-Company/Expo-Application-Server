@@ -7,6 +7,8 @@ import java.util.UUID
 @Repository
 class ManagedParticipantRepository(
     private val jdbc: JdbcTemplate,
+    @org.springframework.beans.factory.annotation.Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled:
+        Boolean = false,
 ) {
     fun confirmed(
         expoId: UUID,
@@ -49,12 +51,25 @@ class ManagedParticipantRepository(
                 "SELECT EXISTS(SELECT 1 FROM tb_preregister_application a WHERE expo_id = ? AND participant_id = ? " +
                     "AND representative_id = ? AND status = 'CONFIRMED' AND NOT EXISTS(" +
                     "SELECT 1 FROM tb_owner_cancellation_delivery d WHERE d.expo_id = a.expo_id " +
-                    "AND d.application_type = 'PREREGISTER' AND d.application_id = a.id::text AND d.action <> 'ABORT')) OR (? AND NOT EXISTS(SELECT 1 FROM tb_field_qr_revoked r WHERE r.expo_id = ? AND r.participant_id = ?))",
+                    "AND d.application_type = 'PREREGISTER' AND d.application_id = a.id::text AND d.action <> 'ABORT')) " +
+                    "OR (? AND (? OR NOT EXISTS(SELECT 1 FROM tb_field_qr_revoked r WHERE r.expo_id = ? AND r.participant_id = ?)))",
                 Boolean::class.java,
                 expoId,
                 participantId,
                 representativeId,
-                fieldRegistered,
+                if (fieldVisitsEnabled) {
+                    jdbc.queryForObject(
+                        "SELECT EXISTS(SELECT 1 FROM tb_field_visit_registration WHERE expo_id=? AND participant_id=? " +
+                            "AND visit_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Seoul')::date AND status='ACTIVE' " +
+                            "AND NOT cancellation_pending AND NOT delivery_pending)",
+                        Boolean::class.java,
+                        expoId,
+                        participantId,
+                    ) == true
+                } else {
+                    fieldRegistered
+                },
+                fieldVisitsEnabled,
                 expoId,
                 participantId,
             ),

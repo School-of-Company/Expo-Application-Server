@@ -37,6 +37,7 @@ data class ManagedOwnerParticipant(
     // User가 저장한 소속(학교). 동행자 중복 판정(#225)에만 쓴다. 옛 User 응답에는 없어 schoolReported가 false다
     @get:JsonIgnore val school: String? = null,
     @get:JsonIgnore val schoolReported: Boolean = false,
+    @get:JsonIgnore val legacyFieldRegistered: Boolean = false,
 )
 
 data class OwnerApplicationParty(

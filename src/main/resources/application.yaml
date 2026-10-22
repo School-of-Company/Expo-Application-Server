@@ -60,6 +60,9 @@ application:
     internal-token: ${APPLICATION_ATTENDANCE_INTERNAL_TOKEN:}
   page-views:
     visitor-hash-retention-hours: ${APPLICATION_PAGE_VIEW_VISITOR_HASH_RETENTION_HOURS:48}
+  field-visits:
+    enabled: ${APPLICATION_FIELD_VISITS_ENABLED:false}
+    recovery-delay-ms: ${APPLICATION_FIELD_VISITS_RECOVERY_DELAY_MS:60000}
   registration:
     enabled: ${APPLICATION_REGISTRATION_ENABLED:false}
     waitlist-intake-enabled: ${APPLICATION_PREREGISTER_WAITLIST_INTAKE_ENABLED:false}

@@ -44,6 +44,9 @@ internal fun PreregisterReservation.blocks(participantIds: Collection<Long>?): B
 class PreregisterReservationRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
+    @org.springframework.beans.factory.annotation.Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled:
+        Boolean = false,
+    private val fieldVisits: FieldVisitRegistrationRepository? = null,
 ) {
     fun deliverCounts(send: (UUID, Long) -> Unit) {
         val candidates =
@@ -330,6 +333,8 @@ class PreregisterReservationRepository(
                 "AND NOT EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.expo_id::text = a.expo_id::text " +
                 "AND p.participant_id = a.participant_id AND p.status <> 'CANCELLED') " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_standard_program_application s WHERE s.participant_id = a.participant_id) " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_field_visit_registration f WHERE f.expo_id=a.expo_id " +
+                "AND f.participant_id=a.participant_id AND (f.status='ACTIVE' OR f.cancellation_pending)) " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = a.expo_id AND r.session_addition " +
                 "AND r.state IN ('RESERVED', 'WAITING') AND r.result::jsonb -> 'participantIds' @> to_jsonb(a.participant_id)) " +
                 "ORDER BY a.participant_id",
@@ -377,6 +382,7 @@ class PreregisterReservationRepository(
                 expoId,
                 representativeId,
             )
+        if (fieldVisitsEnabled) return requireNotNull(fieldVisits).activeParticipantIds(expoId, partyIds + ledger).size
         return (partyIds.toSet() + ledger - cancelledCompanions(expoId, representativeId).toSet()).size
     }
 
@@ -392,7 +398,9 @@ class PreregisterReservationRepository(
                 "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL " +
                 "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?) " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
-                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') ORDER BY a.participant_id",
+                "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_field_visit_registration f WHERE f.expo_id=a.expo_id " +
+                "AND f.participant_id=a.participant_id AND (f.status='ACTIVE' OR f.cancellation_pending)) ORDER BY a.participant_id",
             { rs, _ -> rs.getLong(1) },
             expoId,
             phone,
@@ -419,6 +427,16 @@ class PreregisterReservationRepository(
             )
         if (representatives.isEmpty()) return null
         val ids = mapper.writeValueAsString(representatives)
+        if (jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM tb_field_visit_registration WHERE expo_id=? " +
+                    "AND participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint) AND (status='ACTIVE' OR cancellation_pending))",
+                Boolean::class.java,
+                expoId,
+                ids,
+            ) == true
+        ) {
+            return null
+        }
         val active =
             requireNotNull(
                 jdbc.queryForObject(
