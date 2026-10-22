@@ -82,6 +82,7 @@ import team.startup.application.domain.application.service.ProgramFormProvider
 import team.startup.application.domain.application.service.PromoteAdminApplicationService
 import team.startup.application.domain.application.service.ReplaceTrainingProgramsService
 import team.startup.application.domain.application.service.StudentGuardianEligibilityProvider
+import team.startup.application.domain.application.service.impl.ApplicationNotifications
 import team.startup.application.domain.application.service.impl.ProgramFormAdapter
 import team.startup.application.domain.application.service.impl.ProgramSessionAdmission
 import team.startup.application.domain.application.service.impl.ProgramWaitlist
@@ -765,6 +766,7 @@ class ProgramSessionApplicationTests {
                 context.getBean(ProgramWaitlistRepository::class.java),
                 context.getBeanProvider(StudentGuardianEligibilityProvider::class.java),
                 transactions,
+                context.getBean(ApplicationNotifications::class.java),
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {
@@ -4014,6 +4016,7 @@ class ProgramSessionApplicationTests {
                 context.getBean(ProgramWaitlistRepository::class.java),
                 DefaultListableBeanFactory().getBeanProvider(StudentGuardianEligibilityProvider::class.java),
                 transactions,
+                context.getBean(ApplicationNotifications::class.java),
             )
         val error =
             assertThrows(ResponseStatusException::class.java) {

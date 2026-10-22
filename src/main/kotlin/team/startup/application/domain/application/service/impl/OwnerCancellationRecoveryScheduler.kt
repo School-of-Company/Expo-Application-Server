@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component
 @EnableScheduling
 class OwnerCancellationRecoveryScheduler(
     private val guard: ProductionOwnerCancellationGuard,
+    private val fieldCancellation: FieldVisitCancellation,
 ) {
     @Scheduled(
         fixedDelayString = "\${application.owner.cancellation-recovery-delay-ms:60000}",
@@ -15,5 +16,6 @@ class OwnerCancellationRecoveryScheduler(
     )
     fun recover() {
         guard.recoverPending()
+        fieldCancellation.recoverPending()
     }
 }

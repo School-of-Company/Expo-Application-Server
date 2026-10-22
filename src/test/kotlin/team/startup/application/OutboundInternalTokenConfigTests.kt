@@ -58,6 +58,22 @@ class OutboundInternalTokenConfigTests {
     }
 
     @Test
+    fun `field visits require Attendance target configuration when registration is enabled`() {
+        val field =
+            runner.withPropertyValues(
+                "APPLICATION_REGISTRATION_ENABLED=true",
+                "APPLICATION_FIELD_VISITS_ENABLED=true",
+                "APPLICATION_REGISTRATION_EXPO_INTERNAL_TOKEN=expo-token",
+                "APPLICATION_REGISTRATION_FORM_INTERNAL_TOKEN=form-token",
+                "APPLICATION_REGISTRATION_USER_INTERNAL_TOKEN=user-token",
+                "APPLICATION_ATTENDANCE_URL=http://127.0.0.1:1",
+                "APPLICATION_ATTENDANCE_INTERNAL_TOKEN=",
+            )
+        field.run { assertStartupFailure(it.startupFailure, "APPLICATION_ATTENDANCE_INTERNAL_TOKEN") }
+        field.withPropertyValues("APPLICATION_ATTENDANCE_INTERNAL_TOKEN=attendance-token").run { assertNull(it.startupFailure) }
+    }
+
+    @Test
     fun `admin group messaging requires the token of every configured target only`() {
         val targets = listOf("EXPO", "USER", "NOTIFICATION")
         targets.forEach { missing ->

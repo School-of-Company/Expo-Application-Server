@@ -39,6 +39,8 @@ class StudentGuardianBatchAdmission(
     private val standards: StandardProgramApplicationRepository,
     private val trainings: TrainingProgramApplicationRepository,
     private val operations: TrainingOperationRepository,
+    private val notifications: ApplicationNotifications,
+    private val fieldEligibility: FieldVisitEligibility? = null,
 ) {
     fun admit(
         requested: ApplyStudentGuardianBatchCommand,
@@ -84,8 +86,17 @@ class StudentGuardianBatchAdmission(
         val channel = channels.values.first()
         val batchId = UUID.randomUUID()
         ids
-            .filterNot { id -> command.onsite && party.participants.single { it.participantId == id }.fieldRegistered }
-            .firstNotNullOfOrNull { ledger.preregisterIneligibility(definition, it) }
+            .filterNot { id ->
+                val current =
+                    fieldEligibility?.current(
+                        command.key.expoId,
+                        id,
+                        party.participants.single { it.participantId == id }.fieldRegistered,
+                        command.onsite,
+                    )
+                        ?: party.participants.single { it.participantId == id }.fieldRegistered
+                command.onsite && current
+            }.firstNotNullOfOrNull { ledger.preregisterIneligibility(definition, it) }
             ?.let { throw ResponseStatusException(HttpStatus.FORBIDDEN, it.name) }
         val existing = guardians.mapNotNull { id -> batches.active(command.key, id)?.let { id to it } }.toMap()
         if (existing.values.any { it.status != "CONFIRMED" || batches.students(it.id).isEmpty() }) {
@@ -270,6 +281,8 @@ class StudentGuardianBatchAdmission(
                 channel?.name,
             )
             repository.event(result.applicationId, result.status)
+            // 보호자 재사용(reused)은 위에서 걸러져 신규 신청 문자를 다시 보내지 않는다.
+            notifications.programAdmitted(definition.expoId.let(UUID::fromString), result.applicationId, result.status)
             batches.addMember(batchId, result.applicationId, result.participantId in guardians)
         }
         val byPerson = applications.associate { it.application.participantId to it.application.applicationId }

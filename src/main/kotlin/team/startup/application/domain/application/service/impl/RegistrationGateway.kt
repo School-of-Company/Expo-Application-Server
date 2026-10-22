@@ -7,12 +7,16 @@ import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
+import team.startup.application.domain.application.presentation.dto.FieldParticipantResolution
+import team.startup.application.domain.application.presentation.dto.FieldVisitRegistration
 import team.startup.application.domain.application.presentation.dto.ManagedOwnerParticipant
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.ParticipantQrResponse
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.presentation.dto.RegisterFieldVisitRequest
 import team.startup.application.domain.application.presentation.dto.hasValidPlace
+import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
@@ -134,6 +138,8 @@ class RegistrationGateway(
     @Value("\${application.attendance.url:}") private val attendanceUrl: String = "",
     @Value("\${application.attendance.internal-token:}") private val attendanceToken: String = "",
     @Value("\${application.registration.enabled:false}") registrationEnabled: Boolean = false,
+    @Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled: Boolean = false,
+    private val fieldVisits: FieldVisitRegistrationRepository? = null,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -143,6 +149,11 @@ class RegistrationGateway(
                 require(
                     token.isNotBlank(),
                 ) { "APPLICATION_REGISTRATION_${target}_INTERNAL_TOKEN must be configured when registration is enabled" }
+            }
+            if (fieldVisitsEnabled) {
+                require(attendanceUrl.isNotBlank() && attendanceToken.isNotBlank()) {
+                    "APPLICATION_ATTENDANCE_URL and APPLICATION_ATTENDANCE_INTERNAL_TOKEN must be configured for field visits"
+                }
             }
         }
     }
@@ -276,6 +287,11 @@ class RegistrationGateway(
         participantId: Long,
     ): ManagedParticipantSelection {
         val phoneNumber = participantSessionPhone(expoId, sessionId)
+        if (fieldVisitsEnabled &&
+            fieldVisits?.find(UUID.fromString(expoId), participantId, fieldVisitToday())?.cancellationPending == true
+        ) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_CANCELLATION_PENDING")
+        }
         val participants =
             decode(
                 call(
@@ -301,16 +317,26 @@ class RegistrationGateway(
         }
         return ManagedParticipantSelection(
             if (occupation.isNull) null else occupation.stringValue(),
-            fieldRegistered(participants.get(0)),
+            fieldRegistered(participants.get(0), UUID.fromString(expoId), participantId),
         )
     }
 
     // 옛 User 응답에는 applicationType이 없다. 없으면 현장 등록으로 보지 않아 현장 자격이 닫힌 채로 남는다.
-    private fun fieldRegistered(node: JsonNode): Boolean {
+    private fun fieldRegistered(
+        node: JsonNode,
+        expoId: UUID,
+        participantId: Long,
+    ): Boolean {
+        if (fieldVisitsEnabled) {
+            val visit = fieldVisits?.find(expoId, participantId, fieldVisitToday())
+            return visit?.status == "ACTIVE" && !visit.cancellationPending && !visit.deliveryPending
+        }
         val type = node.get("applicationType") ?: return false
         if (!type.isString || type.stringValue() !in setOf("PRE", "FIELD")) invalidManagedResponse()
         return type.stringValue() == "FIELD"
     }
+
+    private fun fieldVisitToday() = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
 
     fun managedParty(
         expoId: UUID,
@@ -331,7 +357,7 @@ class RegistrationGateway(
             )
         val registered = response.get("registered")
         val participants = response.get("participants")
-        if (registered == null || !registered.isBoolean || participants == null || !participants.isArray || participants.size() > 5) {
+        if (registered == null || !registered.isBoolean || participants == null || !participants.isArray) {
             invalidManagedResponse()
         }
         val party =
@@ -354,9 +380,10 @@ class RegistrationGateway(
                         name.stringValue(),
                         if (occupation.isNull) null else occupation.stringValue(),
                         representative.asBoolean(),
-                        fieldRegistered(node),
+                        fieldRegistered(node, expoId, id.asLong()),
                         school?.takeIf { it.isString }?.stringValue(),
                         school != null,
+                        node.path("applicationType").asString() == "FIELD",
                     )
                 },
             )
@@ -541,6 +568,94 @@ class RegistrationGateway(
         }
     }
 
+    fun resolveFieldParticipants(
+        expoId: UUID,
+        phoneNumber: String,
+        requestId: String,
+        request: RegisterFieldVisitRequest,
+        form: RegistrationForm? = null,
+    ): List<FieldParticipantResolution> {
+        if (request.newParticipants.isEmpty()) return emptyList()
+        val response =
+            fieldVisitCall(
+                userUrl,
+                "/internal/expos/$expoId/field-visit-participants",
+                "POST",
+                mapOf(
+                    "phoneNumber" to phoneNumber,
+                    "requestId" to requestId,
+                    "participants" to request.newParticipants,
+                    "personalInformationStatus" to request.personalInformationStatus,
+                    "formId" to form?.id,
+                    "questions" to
+                        form?.dynamicForm?.mapIndexed { order, field ->
+                            RegistrationQuestion(
+                                field.id,
+                                field.title,
+                                order,
+                                field.formType,
+                                field.jsonData,
+                                field.otherJson,
+                                field.dynamicFormType,
+                            )
+                        },
+                ),
+                userInternalToken,
+            )
+        val node = decode(response.body(), JsonNode::class.java)
+        if (!node.isArray) throw ParticipantIdsMismatchException()
+        val result =
+            (0 until node.size()).map {
+                decode(
+                    node.get(it).toString(),
+                    FieldParticipantResolution::class.java,
+                )
+            }
+        if (result.size != request.newParticipants.size ||
+            result.map { it.clientReference }.toSet() != request.newParticipants.map { it.clientReference }.toSet() ||
+            result.any { it.participantId <= 0 } || result.map { it.participantId }.distinct().size != result.size ||
+            result.any { it.participantId in request.participantIds }
+        ) {
+            throw ParticipantIdsMismatchException()
+        }
+        return result
+    }
+
+    fun projectFieldVisit(registration: FieldVisitRegistration) {
+        val path = "/internal/expos/${registration.expoId}/participants/${registration.participantId}/field-visits/${registration.id}"
+        val operationId = UUID.nameUUIDFromBytes("${registration.id}:${registration.generation}:${registration.status}".toByteArray())
+        val body =
+            mapOf(
+                "visitDate" to registration.visitDate,
+                "generation" to registration.generation,
+                "status" to registration.status,
+                "operationId" to operationId,
+            )
+        fieldVisitCall(attendanceUrl, path, "PUT", body, attendanceToken)
+        fieldVisitCall(userUrl, path, "PUT", body, userInternalToken)
+    }
+
+    private fun fieldVisitCall(
+        base: String,
+        path: String,
+        method: String,
+        body: Any,
+        token: String,
+    ): HttpResponse<String> {
+        try {
+            val response = call(base, path, method, mapper.writeValueAsString(body), token = token, fieldVisitContract = true)
+            if (method == "PUT" && response.statusCode() != 204) {
+                throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "현장 방문일 공급자 응답이 올바르지 않습니다.")
+            }
+            return response
+        } catch (ex: ResponseStatusException) {
+            if (ex.statusCode.value() in setOf(404, 405, 501)) {
+                throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "현장 방문일 공급자 계약이 필요합니다.")
+            }
+            throw ex
+        }
+    }
+
     // #196: User 재신청 응답은 이 서비스에서 취소된 동행자(releasedParticipantIds)도 일행에 담는다. 기존 동행자를 아무도 다시 신청하지
     // 않았을 때(이번 일행 = 대표자 + 새로 만든 동행자)만 뺀다. 다시 신청한 동행자는 User가 같은 ID를 돌려주므로 어느 ID인지 알 수 없어
     // 그대로 두고, 인원이 맞지 않으면 완료 단계가 검토로 남긴다.
@@ -588,6 +703,7 @@ class RegistrationGateway(
         token: String,
         participantSession: Boolean = false,
         conflictReason: String = "이미 등록된 참가자입니다.",
+        fieldVisitContract: Boolean = false,
     ): HttpResponse<String> {
         if (base.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스 연결 주소가 없습니다.")
         val request =
@@ -605,6 +721,9 @@ class RegistrationGateway(
                 Thread.currentThread().interruptIfInterrupted(ex)
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스와 연결할 수 없습니다.", ex)
             }
+        if (fieldVisitContract && response.statusCode() in setOf(404, 405, 501)) {
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "현장 방문일 공급자 계약이 필요합니다.")
+        }
         when (response.statusCode()) {
             in 200..299 -> {
                 return response
