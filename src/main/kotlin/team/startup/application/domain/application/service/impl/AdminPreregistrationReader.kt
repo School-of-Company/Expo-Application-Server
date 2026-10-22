@@ -32,12 +32,14 @@ class AdminPreregistrationReader(
         limit: Int,
         offset: Long = 0,
         keys: List<String>? = null,
+        resolveCandidates: (UUID, String?) -> List<Long>? = { expo, q -> participants.resolve(expo, q, null) },
+        includeDetails: Boolean = true,
         // #284: 같은 읽기 스냅샷에서 보고용 원장 부가 정보를 함께 읽는다.
         within: (List<AdminPreregistrationRow>) -> Unit = {},
     ): Pair<List<AdminPreregistrationRow>, Long> {
         val reservationOnly =
             query.status?.none { it == AdminPreregistrationStatus.CONFIRMED || it == AdminPreregistrationStatus.CANCELLED } == true
-        val candidates = if (reservationOnly) emptyList() else participants.resolve(expoId, query.q, null)
+        val candidates = if (reservationOnly) emptyList() else resolveCandidates(expoId, query.q)
         val (rows, total) =
             requireNotNull(
                 reads.execute {
@@ -53,6 +55,7 @@ class AdminPreregistrationReader(
         if (limit > 5000 && total >= limit) {
             throw ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "대상은 최대 ${limit - 1}행입니다. 검색 범위를 좁혀 주세요.")
         }
+        if (!includeDetails) return rows to total
         val details = participants.details(expoId, rows.mapNotNull { it.participantId }.distinct())
         val names = participants.names(expoId, rows.mapNotNull { it.cancellationActorUser?.participantId })
         return rows.map { row ->

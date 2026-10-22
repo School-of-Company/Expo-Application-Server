@@ -14,7 +14,11 @@ import team.startup.application.domain.application.presentation.dto.AdminGroupMe
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTarget
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTemplate
 import team.startup.application.domain.application.presentation.dto.AdminGroupMessageTemplateVariables
+import team.startup.application.domain.application.presentation.dto.AdminPreregistrationQuery
+import team.startup.application.domain.application.presentation.dto.AdminPreregistrationStatus
+import team.startup.application.domain.application.presentation.dto.ReportPreregistrationSession
 import team.startup.application.domain.application.repository.AdminApplicationQueryRepository
+import team.startup.application.domain.application.repository.ReportPreregistrationRepository
 import team.startup.application.domain.application.time.ExpoProgramTime
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -27,11 +31,14 @@ import java.util.UUID
 class AdminGroupMessageTargetResolver(
     private val applications: AdminApplicationQueryRepository,
     private val gateway: AdminGroupMessageGateway,
+    private val preregistrations: AdminPreregistrationReader,
+    private val preregistrationData: ReportPreregistrationRepository,
 ) {
     fun resolve(
         expoId: UUID,
         source: AdminGroupMessageSource,
     ): AdminGroupMessageResolvedTargets {
+        if (source.scope.isPreregistration) return resolvePreregistrations(expoId, source)
         val rows = rows(expoId, source)
         val participants = gateway.participants(expoId, rows.map { it.participantId })
         val representativeIds = participants.values.map { it.representativeId ?: it.participantId }.distinct()
@@ -70,7 +77,7 @@ class AdminGroupMessageTargetResolver(
                         }
 
                         source.channel == AdminGroupMessageChannel.SMS &&
-                            missingSmsValue(requireNotNull(source.body), variables, row.status) -> {
+                            missingSmsValue(requireNotNull(source.body), variables) -> {
                             "TEMPLATE_DATA_MISSING"
                         }
 
@@ -91,7 +98,7 @@ class AdminGroupMessageTargetResolver(
                         participantId = row.participantId,
                         programType = row.programType,
                         recipientPhone = phone?.takeIf { missing == null },
-                        content = if (missing == null) render(source, kakaoTemplate, variables, row.status) else null,
+                        content = if (missing == null) render(source, kakaoTemplate, variables) else null,
                         templateVariables = variables.takeIf { source.channel == AdminGroupMessageChannel.KAKAO && missing == null },
                         missingReason = missing,
                     )
@@ -102,6 +109,150 @@ class AdminGroupMessageTargetResolver(
             targets,
             rows.size,
         )
+    }
+
+    private fun resolvePreregistrations(
+        expoId: UUID,
+        source: AdminGroupMessageSource,
+    ): AdminGroupMessageResolvedTargets {
+        var definitions = emptyMap<Long, ReportPreregistrationSession>()
+        val rows =
+            preregistrations
+                .read(
+                    expoId,
+                    source.scope.preregistrationFilter ?: AdminPreregistrationQuery(),
+                    MAX_TARGETS + 1,
+                    keys = source.scope.keys,
+                    resolveCandidates = gateway::searchParticipantIds,
+                    includeDetails = false,
+                    within = { found ->
+                        definitions = preregistrationData.sessions(expoId, found.map { it.sessionId }.toSet())
+                    },
+                ).first
+        gateway.requirePreregistrationContract()
+        val participants = gateway.participants(expoId, rows.mapNotNull { it.participantId })
+        val representatives = gateway.participants(expoId, participants.values.map { it.representativeId ?: it.participantId })
+        val template = source.templateId?.let(::approvedKakaoTemplate)
+        val expoName = template?.variableMapping?.expoName?.let { gateway.expoName(expoId) }
+        val summaryUsed = source.body?.contains("{신청내역}") == true || template?.variableMapping?.applicationSummary != null
+        val personalized =
+            if (source.channel == AdminGroupMessageChannel.SMS) {
+                PLACEHOLDERS.any(requireNotNull(source.body)::contains)
+            } else {
+                requireNotNull(template).variableMapping.run {
+                    listOf(name, programName, sessionName, location, status, applicationUrl, applicationSummary).any { it != null }
+                }
+            }
+        val seenPhones = mutableSetOf<String>()
+        val allTargets =
+            rows.map { row ->
+                val participant = row.participantId?.let(participants::getValue)
+                val representative = participant?.let { representatives.getValue(it.representativeId ?: it.participantId) }
+                val phone =
+                    normalizePhone(
+                        if (participant !=
+                            null
+                        ) {
+                            representative?.phoneNumber
+                        } else {
+                            row.reservation
+                                ?.path("phoneNumber")
+                                ?.takeIf { it.isString }
+                                ?.stringValue()
+                        },
+                    )
+                val name =
+                    participant?.name ?: row.reservation
+                        ?.path("name")
+                        ?.takeIf { it.isString }
+                        ?.stringValue()
+                        ?.takeIf { it.isNotBlank() }
+                val definition = definitions[row.sessionId]
+                val programName = definition?.title?.takeIf { it.isNotBlank() }?.let { "사전등록 · $it" }
+                val sessionName = definition?.startedAt?.let { sessionTime(it.toString(), definition.endedAt?.toString()) }
+                val status =
+                    when (row.status) {
+                        AdminPreregistrationStatus.CONFIRMED -> "확정"
+                        AdminPreregistrationStatus.WAITING -> "대기"
+                        AdminPreregistrationStatus.CANCELLED -> "취소"
+                        AdminPreregistrationStatus.PENDING -> "처리 중"
+                    }
+                val variables =
+                    AdminGroupMessageTemplateVariables(
+                        expoName,
+                        name,
+                        programName,
+                        sessionName,
+                        definition?.place?.takeIf { it.isNotBlank() },
+                        status,
+                        applicationSummary =
+                            if (summaryUsed && programName != null && sessionName != null) {
+                                "- 프로그램: $programName\n- 일시: $sessionName\n- 신청 상태: $status".takeIf { it.length <= MAX_SUMMARY_LENGTH }
+                            } else {
+                                null
+                            },
+                    )
+                val missing =
+                    when {
+                        phone == null -> "REPRESENTATIVE_PHONE_MISSING"
+
+                        source.channel == AdminGroupMessageChannel.SMS &&
+                            missingSmsValue(
+                                requireNotNull(source.body),
+                                variables,
+                            )
+                        -> "TEMPLATE_DATA_MISSING"
+
+                        source.channel == AdminGroupMessageChannel.KAKAO &&
+                            missingKakaoValue(
+                                requireNotNull(template),
+                                variables,
+                            )
+                        -> "TEMPLATE_DATA_MISSING"
+
+                        else -> null
+                    }
+                AdminGroupMessageTarget(
+                    targetId = row.key,
+                    applicationId = null,
+                    participantId = row.participantId,
+                    programType = null,
+                    recipientPhone = phone?.takeIf { missing == null },
+                    content = if (missing == null) render(source, template, variables) else null,
+                    templateVariables = variables.takeIf { source.channel == AdminGroupMessageChannel.KAKAO && missing == null },
+                    missingReason = missing,
+                    ledgerKey = row.key,
+                )
+            }
+        val targets = allTargets.filter { personalized || it.missingReason != null || seenPhones.add(requireNotNull(it.recipientPhone)) }
+        // 중복 제거된 행도 상태·번호 변경 검증에 포함한다. 정의는 신청 당시 스냅샷이 아닌 저장된 현재 회차다.
+        val digest = MessageDigest.getInstance("SHA-256")
+
+        fun add(value: Any?) {
+            val bytes = (value?.toString() ?: "<null>").toByteArray(StandardCharsets.UTF_8)
+            digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(bytes.size).array())
+            digest.update(bytes)
+        }
+        add("PREREGISTRATION_GROUP_MESSAGE_V1")
+        add(expoId)
+        add(source)
+        rows.forEach { row ->
+            add(row.key)
+            add(row.status)
+            add(row.sessionId)
+            add(row.applicants)
+            add(row.participantId?.let(participants::getValue))
+            add(row.representativeId)
+            add(row.reservation?.path("name"))
+            add(row.reservation?.path("phoneNumber"))
+            add(definitions[row.sessionId])
+        }
+        representatives.toSortedMap().forEach { (id, person) ->
+            add(id)
+            add(person)
+        }
+        allTargets.forEach(::add)
+        return AdminGroupMessageResolvedTargets(HexFormat.of().formatHex(digest.digest()), targets, rows.size)
     }
 
     private fun rows(
@@ -193,13 +344,12 @@ class AdminGroupMessageTargetResolver(
     private fun missingSmsValue(
         body: String,
         variables: AdminGroupMessageTemplateVariables,
-        status: AdminApplicationStatus,
     ): Boolean =
         (body.contains("{이름}") && variables.name == null) ||
             (body.contains("{프로그램}") && variables.programName == null) ||
             (body.contains("{일시}") && variables.sessionName == null) ||
             (body.contains("{장소}") && variables.location == null) ||
-            (body.contains("{상태}") && statusLabel(status).isBlank()) ||
+            (body.contains("{상태}") && variables.status == null) ||
             (body.contains("{신청내역}") && variables.applicationSummary == null) ||
             // ponytail: QR code 공급 계약(User 일괄 조회)이 정해지기 전까지 링크는 늘 없는 값이다. 연수 신청도 일반 참가자 QR이라 같다.
             body.contains("{URL}")
@@ -221,16 +371,15 @@ class AdminGroupMessageTargetResolver(
         source: AdminGroupMessageSource,
         kakaoTemplate: AdminGroupMessageTemplate?,
         variables: AdminGroupMessageTemplateVariables,
-        status: AdminApplicationStatus,
     ): String =
         when (source.channel) {
             AdminGroupMessageChannel.SMS -> {
                 requireNotNull(source.body)
-                    .replace("{이름}", requireNotNull(variables.name))
+                    .replace("{이름}", variables.name.orEmpty())
                     .replace("{프로그램}", variables.programName.orEmpty())
                     .replace("{일시}", variables.sessionName.orEmpty())
                     .replace("{장소}", variables.location.orEmpty())
-                    .replace("{상태}", statusLabel(status))
+                    .replace("{상태}", variables.status.orEmpty())
                     .replace("{신청내역}", variables.applicationSummary.orEmpty())
             }
 

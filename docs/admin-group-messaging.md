@@ -1,5 +1,33 @@
 # 관리자 그룹 발송 Application 계약
 
+## 사전등록 접수대장 (#304)
+
+기존 프로그램 `applicationIds`/`filter` 요청은 유지한다. 사전등록은 같은 공개 경로에서 다음 scope를 사용한다.
+
+```json
+{"kind":"SELECTED","keys":["APPLICATION:00000000-0000-0000-0000-000000000001:12","RESERVATION:00000000-0000-0000-0000-000000000001:waiting-request"]}
+```
+
+```json
+{"kind":"FILTERED","preregistrationFilter":{"sessionId":1,"status":["CONFIRMED","WAITING","PENDING","CANCELLED"],"q":"0101234"}}
+```
+
+`keys`는 중복 없이 1~5000개, 각 1~160자다. `preregistrationFilter`는 `/application/admin/expos/{expoId}/preregistrations/targets`와 같은 필터이며 기본 page=0/size=20만 허용한다. 프로그램 선택/필터와 혼합하거나 알 수 없는 필드, 공백 q, 잘못된 상태/회차를 보내면 400이다. 프로그램 UUID, 다른 행사 또는 사라진 key는 미리보기 404다. 전체 결과 5000행 초과는 422다. 예약은 일행 인원과 무관하게 한 행으로 센다. User 저장 완료로 key가 사라져도 APPLICATION 행으로 치환하지 않는다.
+
+APPLICATION은 User의 현재 참가자 이름과 `representativeId ?: participantId`의 현재 `phoneNumber`를 사용한다. RESERVATION(WAITING/PENDING/철회 CANCELLED)은 제출 당시 대표자 name/phoneNumber만 사용한다. 동행자 번호나 notificationPhoneNumber로 대체하지 않는다. 사전등록 q는 현재 User 이름/번호 검색과 예약 대표자 스냅샷 검색을 targets와 동일하게 합친다. 검색/상세 호출 모두 `APPLICATION_ADMIN_GROUP_MESSAGE_USER_INTERNAL_TOKEN`을 쓰며 목록용 토큰으로 우회하지 않는다. 기존 공통 문구의 동일 번호 중복 제거와 개인 문구의 행별 발송을 유지한다. 자동 대기 SMS를 추가하는 계약은 아니다.
+
+변수는 `tb_preregister_session_state.definition`에 실제 저장된 **현재 회차**만 읽는다. 제출 당시 제목/일시 스냅샷으로 표현하지 않는다. `{프로그램}`/programName은 `사전등록 · {저장된 회차 title}`, `{일시}`/sessionName은 저장 startedAt/endedAt의 기존 KST 형식, `{장소}`/location은 저장 place다. `{상태}`는 확정/대기/취소/처리 중(PENDING)이다. 정의 또는 필요한 값이 없으면 TEMPLATE_DATA_MISSING이며 행사 장소나 임의 일정으로 채우지 않는다. `{신청내역}`은 기존 세 줄 형식에 이 값을 넣는다. QR/URL은 만들지 않고, 요구하는 문구는 TEMPLATE_DATA_MISSING이다.
+
+사전등록 Notification target은 `targetId == ledgerKey`이며 applicationId/programType을 **생략**한다. APPLICATION만 실제 participantId를 보내고 예약은 생략한다. 공개 preview/job item의 applicationId와 participantId는 nullable이고 ledgerKey로 행을 식별한다. 프로그램 target은 기존 UUID/참가자/프로그램 타입 그대로다. 가짜 UUID, BIGINT의 UUID 변환 또는 예약 참가자 ID 생성은 없다.
+
+미리보기·실행·재시도마다 현재 Expo 권한을 확인한다. 전체 행 상태/회차 정의/현재 참가자·대표자·번호/예약 대표 정보/문구/source를 fingerprint에 포함하며 중복 제거로 빠진 행도 포함한다. 변경되거나 선택 key가 사라지면 실행·재시도는 409로 새 미리보기를 요구하고 Notification 실행을 호출하지 않는다. Notification의 멱등·확정 실패만 재시도·결과 불명 재시도 금지는 유지한다.
+
+실제 Notification develop는 아직 UUID 전용이다. [Notification #106](https://github.com/School-of-Company/Expo-Notification-Server/issues/106)에 target/Redis/preview/job/retry/history 확장과 config `targetContracts: ["PREREGISTRATION_GROUP_MESSAGE_V1"]`를 요청했다. 그 지원과 enabled=true가 확인될 때만 사전등록 처리를 진행하고 targets.messagingSupported=true를 반환한다. 미지원/공급자 장애면 false이며 미리보기·실행·재시도는 503으로 닫는다. fake provider의 capability 선언은 운영 end-to-end 검증을 대신하지 않는다. Notification을 먼저 배포·계약 검증한 뒤 Application, Client 사전등록 모달의 keys/preregistrationFilter/nullable ID/ledgerKey 연계를 확인한다. DB 스키마 변경은 없다.
+
+사전등록 capability 확인에는 그룹 메시지용 Expo/User/Notification URL과 대상별 토큰 설정도 모두 필요하다. User 검색 후보 확인은 기존 접수대장처럼 500명씩 나누되 그룹 메시지용 User 토큰을 사용한다.
+
+## 기존 프로그램 계약
+
 Application은 Client가 전달한 관리자 Bearer JWT를 Expo의 `GET /internal/expo/{expoId}/admin-access`에 전달해 매 요청마다 현재 전역 관리자와 행사 상태를 확인한다. 현재 공급 계약은 `GLOBAL_ADMIN_APPLICATION_READ_V1`이며 행사 소유권 또는 별도 메시지 권한을 뜻하지 않는다. Application은 응답의 행사 ID, 양수 `adminId`, `APPLICATION_READ`, `GLOBAL_ADMIN`, 정책 버전을 모두 확인한다.
 
 공개 경로의 기준은 `/application/expos/{expoId}/admin-group-messages`이다.

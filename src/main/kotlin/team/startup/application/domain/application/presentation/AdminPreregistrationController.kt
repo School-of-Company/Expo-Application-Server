@@ -80,7 +80,9 @@ class AdminPreregistrationController(
 
     @Operation(
         summary = "사전등록 선택·검색 전체 대상 해석",
-        description = "목록과 동일 필터, 최대 5000행. 현재 행사/사전등록 탭만 허용. 실제 Report/Notification 실행은 공급자 확장 전 미지원입니다.",
+        description =
+            "목록과 동일 필터, 최대 5000행. 현재 행사/사전등록 탭만 허용. Report는 미지원이며, " +
+                "messagingSupported는 Notification의 PREREGISTRATION_GROUP_MESSAGE_V1 capability가 준비된 경우에만 true입니다.",
     )
     @PostMapping("/targets")
     fun targets(

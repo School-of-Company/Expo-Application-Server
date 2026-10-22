@@ -12,6 +12,7 @@ import team.startup.application.domain.application.service.SelectAdminPreregistr
 @Service
 class SelectAdminPreregistrationTargetsServiceImpl(
     private val reader: AdminPreregistrationReader,
+    private val messaging: AdminGroupMessageGateway,
 ) : SelectAdminPreregistrationTargetsService {
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: AdminPreregistrationTargetsCommand): AdminPreregistrationTargets {
@@ -31,6 +32,11 @@ class SelectAdminPreregistrationTargetsServiceImpl(
                     reader.read(expoId, requireNotNull(request.filter), 5001)
                 }
             }
-        return AdminPreregistrationTargets(expoId = expoId, items = rows, totalElements = total)
+        return AdminPreregistrationTargets(
+            expoId = expoId,
+            items = rows,
+            totalElements = total,
+            messagingSupported = messaging.preregistrationSupported(),
+        )
     }
 }
