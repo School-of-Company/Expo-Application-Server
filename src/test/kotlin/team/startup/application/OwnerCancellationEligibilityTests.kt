@@ -51,6 +51,7 @@ class OwnerCancellationEligibilityTests {
     private val deliveries = mock(OwnerCancellationDeliveryRepository::class.java)
     private val preregister = mock(PreregisterSessionRepository::class.java)
     private val managed = mock(ManagedParticipantRepository::class.java)
+    private val fieldCancellation = mock(team.startup.application.domain.application.service.impl.FieldVisitCancellation::class.java)
     private var reading = false
     private val transactions =
         object : PlatformTransactionManager {
@@ -74,6 +75,31 @@ class OwnerCancellationEligibilityTests {
     fun start() {
         `when`(gateway.managedParty(EXPO, COMMAND.sessionId)).thenReturn(PARTY)
         configure(APPLICATION)
+    }
+
+    @Test
+    fun `cancelled FIELD without active applications is hidden while another valid PRE preserves participant`() {
+        val cancelled =
+            team.startup.application.domain.application.presentation.dto.OwnerFieldVisitItem(
+                UUID.randomUUID(),
+                2,
+                java.time.LocalDate.of(2026, 10, 22),
+                1,
+                "CANCELLED",
+                NOW,
+                NOW,
+                2,
+                false,
+                "CANCELLED",
+            )
+        `when`(fieldCancellation.items(EXPO, COMMAND.sessionId, PARTY)).thenReturn(listOf(cancelled))
+        `when`(repository.applications(EXPO, PARTY)).thenReturn(emptyList())
+        val hidden = service().execute(COMMAND)
+        assertEquals(listOf(1L), hidden.participants.map { it.participantId })
+        assertTrue(hidden.qrParticipantIds.isEmpty())
+        assertEquals(listOf(cancelled), hidden.fieldRegistrations)
+        `when`(repository.applications(EXPO, PARTY)).thenReturn(listOf(APPLICATION))
+        assertEquals(PARTY.participants, service().execute(COMMAND).participants)
     }
 
     @Test
@@ -273,6 +299,7 @@ class OwnerCancellationEligibilityTests {
             managed,
             transactions,
             enabled,
+            fieldCancellation,
         )
 
     private fun blocked(reason: String) {

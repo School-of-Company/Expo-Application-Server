@@ -251,6 +251,7 @@ class OwnerApplicationTests {
                 context.getBean(PreregisterWaitlist::class.java),
                 context.getBean(StudentGuardianBatchRepository::class.java),
                 context.getBean(CancelStudentGuardianApplicationService::class.java),
+                context.getBean(team.startup.application.domain.application.service.impl.FieldVisitCancellation::class.java),
             )
         failure(HttpStatus.SERVICE_UNAVAILABLE) { service.execute(cancelCommand("2")) }
         assertEquals("CONFIRMED", state(2))

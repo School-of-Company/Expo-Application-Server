@@ -47,6 +47,25 @@ import java.util.UUID
 @Import(InternalSecurityConfig::class, InternalTokenVerifier::class)
 @TestPropertySource(properties = ["application.internal-token=test-token"])
 class OwnerApplicationHttpTests {
+    @Test
+    fun `FIELD cancellation keeps owner cookie CSRF and exact generation contract`() {
+        val id = UUID.randomUUID().toString()
+        val path = "$PATH/FIELD/$id/cancellation"
+        mvc
+            .perform(post(path).param("generation", "3").cookie(Cookie("PARTICIPANT_SESSION", "owner")))
+            .andExpect(status().isForbidden)
+        mvc
+            .perform(post(path).param("generation", "3").with(csrf()))
+            .andExpect(status().isUnauthorized)
+        mvc
+            .perform(post(path).param("generation", "bad").cookie(Cookie("PARTICIPANT_SESSION", "owner")).with(csrf()))
+            .andExpect(status().isBadRequest)
+        mvc
+            .perform(post(path).param("generation", "3").cookie(Cookie("PARTICIPANT_SESSION", "owner")).with(csrf()))
+            .andExpect(status().isNoContent)
+        verify(cancel).execute(CancelOwnerApplicationCommand(EXPO, "owner", OwnerApplicationType.FIELD, id, 3))
+    }
+
     @Autowired private lateinit var mvc: MockMvc
 
     @MockitoBean private lateinit var query: GetOwnerApplicationsService
