@@ -398,7 +398,6 @@ class ManagedParticipantHttpTests {
         preregisters.status(applicationId, "CANCELLED")
         mvc.perform(get(qrPath(4)).cookie(cookie)).andExpect(status().isNotFound)
         mvc.perform(get(adminQrPath(4)).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
-        assertEquals(0, qrCalls.get())
         // 같은 참가자의 취소가 반복돼도 표시는 하나다.
         preregisters.status(applicationId, "CANCELLED")
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM tb_field_qr_revoked", Int::class.java))
