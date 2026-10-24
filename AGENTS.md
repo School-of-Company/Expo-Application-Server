@@ -41,6 +41,15 @@ Single-module Application service built with Kotlin 2.3.21, Spring Boot 4.1.1, J
 - V8 indexes normalized reservation phone numbers. Capacity readers use a shared Expo lock; submissions use the exclusive lock and recheck capacity. Outbox HTTP uses a separate session lock per participant, without an open transaction or Expo lock. Purge queues cancellations and an in-flight PUT is followed by DELETE when the tombstone is observed. Expo purge (#211) takes optional `{standardProgramIds, trainingProgramIds}`, runs the per-program application delete (with deleted-program markers) for each ID, then deletes the expo's program session ledger, offers, guardian batches, program state and report snapshots; receipt sequences stay so numbers are never reused.
 - A saved User ID mismatch or active-participant conflict retains reserved seats with `error_status` and infinite `next_attempt_at`. Internal GET `/internal/expos/{expoId}/preregister-reservations/{requestId}` exposes recovery status without form/phone data. After fixing the authoritative User result, POST the same path plus `/retry` to reuse the original User requestId and snapshot; never fabricate IDs or release ambiguous seats. Uncertain delivery failures (`retry` path) that last past `application.registration.reservation-review.max-attempts` (40) or `max-age-minutes` (60) since the retry window opened (row creation or the last operator retry) move to the same `needsReview` state with a single warning log; seats stay held (#222).
 
+## Logging
+
+The Expo log standard, shared by every Expo service (Spring and Nest alike) so the shared Loki in Expo-Monitoring can label them the same way:
+
+- Every line written to stdout is one JSON object (`logback-spring.xml`, `LogstashEncoder`) with at least `@timestamp` (ISO-8601/RFC3339), `level` (uppercase `TRACE`/`DEBUG`/`INFO`/`WARN`/`ERROR`), `service` (the Eureka app name, `spring.application.name`), `module` and `message`. Other keys (MDC values, `logger_name`, `stack_trace`) may follow. Nothing else goes to stdout: the Spring banner is off and Logback status warnings must not appear.
+- The log pipeline reads only these key names and has no per-service fallback. When a service's logs do not show up or the fields do not match, fix the service's log output, never add parsing fallbacks to the pipeline.
+- `module` is derived from the logger name by `ModuleNameConverter`, never set at the call site: for `team.startup.application.{domain|global}.<x>...` it is `<x>`, otherwise the logger name's parent package. Nest services reuse the per-class logger context (`nestjs-pino` `renameContext: 'module'`).
+- With the `local` profile the same JSON is also written to `${EXPO_LOG_DIR:-~/.expo/logs}/<service>/app.log` for the local Loki file tail. Production writes stdout only (pm2 captures it); add no log file settings there.
+
 ## Run and check
 
 - Copy `.env.example` to `.env`, then run `docker compose up -d --wait` for PostgreSQL 17 and Redis 7. Set `SPRING_PROFILES_ACTIVE=local` for local startup; `application-local.yaml` imports `.env` and needs `POSTGRES_PASSWORD`. Set a nonempty `APPLICATION_INTERNAL_TOKEN`.

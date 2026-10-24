@@ -1,6 +1,9 @@
 spring:
   application:
     name: expo-application-server
+  main:
+    # stdout은 JSON 로그 줄만 둔다(배너는 여러 줄 평문이라 로그 수집기가 줄마다 깨진 로그로 받는다)
+    banner-mode: "off"
   datasource:
     hikari:
       maximum-pool-size: 15
