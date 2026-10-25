@@ -125,6 +125,15 @@ class FieldCancellationGatewayTests {
             200 to HttpStatus.BAD_GATEWAY,
         )) {
             code = value
+            // 상태마다 새 게이트웨이를 쓴다. 하나로 이어 부르면 앞의 5xx가 회로를 열어 뒤의 정상 거절이 503으로 보인다.
+            gateway =
+                FieldCancellationGateway(
+                    mapper,
+                    "http://127.0.0.1:${server.address.port}",
+                    "target-token",
+                    "http://127.0.0.1:${server.address.port}",
+                    "target-token",
+                )
             failure(expected) { gateway.acquire(target, operation, "01000000000") }
             failure(expected) { gateway.commit(target, operation) }
             failure(expected) { gateway.projectCancellation(target, operation) }

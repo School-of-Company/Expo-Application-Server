@@ -24,8 +24,9 @@ class AdminExpoGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.registration.expo-url:}") url: String,
     @Value("\${application.registration.expo-internal-token:}") token: String,
+    circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
-    private val http = AdminSourceHttp(mapper, url, token)
+    private val http = AdminSourceHttp(mapper, url, token, circuits, Downstream.EXPO)
 
     fun history(
         expoId: UUID,

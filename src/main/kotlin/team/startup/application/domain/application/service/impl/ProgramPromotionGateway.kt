@@ -26,6 +26,7 @@ class ProgramPromotionGateway(
     @Value("\${application.registration.user-internal-token:}") private val userToken: String,
     @Value("\${application.registration.expo-url:}") private val expoUrl: String,
     @Value("\${application.registration.expo-internal-token:}") private val expoToken: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) : ApplicationNoticeSource {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -105,10 +106,11 @@ class ProgramPromotionGateway(
     ): JsonNode {
         val program =
             if (type == ProgramSessionType.STANDARD) {
-                call(expoUrl, expoToken, "/internal/expo/$expoId/standard-programs/$programId")
+                call(Downstream.EXPO, expoUrl, expoToken, "/internal/expo/$expoId/standard-programs/$programId")
             } else {
                 val array =
                     call(
+                        Downstream.EXPO,
                         expoUrl,
                         expoToken,
                         "/internal/expo/$expoId/training-programs/batch",
@@ -160,6 +162,7 @@ class ProgramPromotionGateway(
     ): JsonNode {
         val array =
             call(
+                Downstream.USER,
                 userUrl,
                 userToken,
                 "/internal/standard-participants/details",
@@ -218,6 +221,7 @@ class ProgramPromotionGateway(
         }
 
     private fun call(
+        service: String,
         base: String,
         token: String,
         path: String,
@@ -243,7 +247,7 @@ class ProgramPromotionGateway(
                             "application/json",
                         ).POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                 }
-                client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
+                circuits.send(service, client, builder.build(), HttpResponse.BodyHandlers.ofString())
             } catch (exception: Exception) {
                 if (exception is InterruptedException) Thread.currentThread().interrupt()
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "승급 조회 공급자에 연결할 수 없습니다.")

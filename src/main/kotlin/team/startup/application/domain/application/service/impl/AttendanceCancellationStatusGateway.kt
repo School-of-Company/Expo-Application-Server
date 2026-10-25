@@ -19,6 +19,7 @@ class AttendanceCancellationStatusGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.attendance.url:}") private val baseUrl: String,
     @Value("\${application.attendance.internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     data class Status(
         val participantId: Long,
@@ -44,7 +45,9 @@ class AttendanceCancellationStatusGateway(
         }
         val response =
             try {
-                client.send(
+                circuits.send(
+                    Downstream.ATTENDANCE,
+                    client,
                     HttpRequest
                         .newBuilder(
                             URI.create("${baseUrl.trimEnd('/')}/internal/expos/$expoId/participants/$participantId/cancellation-status"),
