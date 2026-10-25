@@ -41,6 +41,7 @@ class AdminGroupMessageGateway(
     @Value("\${application.admin-group-messaging.expo-internal-token:}") private val expoToken: String,
     @Value("\${application.admin-group-messaging.user-internal-token:}") private val userToken: String,
     @Value("\${application.admin-group-messaging.notification-internal-token:}") private val notificationToken: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -396,7 +397,7 @@ class AdminGroupMessageGateway(
         if (body != null) builder.header("Content-Type", "application/json")
         val response =
             try {
-                client.send(builder.method(method, publisher).build(), HttpResponse.BodyHandlers.ofString())
+                circuits.send(provider.service, client, builder.method(method, publisher).build(), HttpResponse.BodyHandlers.ofString())
             } catch (exception: HttpTimeoutException) {
                 throw ResponseStatusException(
                     HttpStatus.GATEWAY_TIMEOUT,
@@ -434,7 +435,13 @@ class AdminGroupMessageGateway(
     private fun invalidProviderResponse(provider: String): Nothing =
         throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "$provider 공급자 응답이 올바르지 않습니다.")
 
-    private enum class Provider { EXPO, USER, NOTIFICATION }
+    private enum class Provider(
+        val service: String,
+    ) {
+        EXPO(Downstream.EXPO),
+        USER(Downstream.USER),
+        NOTIFICATION(Downstream.NOTIFICATION),
+    }
 
     private companion object {
         const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L

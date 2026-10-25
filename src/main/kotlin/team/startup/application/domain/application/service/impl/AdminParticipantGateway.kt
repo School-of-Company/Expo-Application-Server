@@ -23,8 +23,9 @@ class AdminParticipantGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.registration.user-url:}") url: String,
     @Value("\${application.registration.user-internal-token:}") token: String,
+    circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
-    private val http = AdminSourceHttp(mapper, url, token)
+    private val http = AdminSourceHttp(mapper, url, token, circuits, Downstream.USER)
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun resolve(

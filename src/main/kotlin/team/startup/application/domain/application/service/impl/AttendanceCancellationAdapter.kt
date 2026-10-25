@@ -21,6 +21,7 @@ class AttendanceCancellationAdapter(
     private val mapper: ObjectMapper,
     @Value("\${application.attendance.url:}") private val baseUrl: String,
     @Value("\${application.attendance.internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -91,7 +92,7 @@ class AttendanceCancellationAdapter(
                         .header("X-Internal-Token", token)
                         .method(method, body?.let(HttpRequest.BodyPublishers::ofString) ?: HttpRequest.BodyPublishers.noBody())
                 if (body != null) request.header("Content-Type", "application/json")
-                client.send(request.build(), HttpResponse.BodyHandlers.discarding())
+                circuits.send(Downstream.ATTENDANCE, client, request.build(), HttpResponse.BodyHandlers.discarding())
             } catch (exception: Exception) {
                 if (exception is InterruptedException) Thread.currentThread().interrupt()
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "취소 보호 서비스와 연결할 수 없습니다.", exception)

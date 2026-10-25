@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Expo 로그 표준(AGENTS.md "Logging"): stdout에 JSON 한 줄, 필수 키 @timestamp/level/service/module/message.
+  MDC 값은 LogstashEncoder가 그대로 키로 붙인다.
+  local 프로필에서만 공유 로그 폴더에도 같은 JSON을 쓴다(로컬 Alloy가 파일을 tail한다). 운영은 stdout만 쓴다.
+-->
+<configuration>
+    <springProperty name="SERVICE_NAME" source="spring.application.name" defaultValue="expo-application-server"/>
+    <property name="LOG_DIR" value="${EXPO_LOG_DIR:-${user.home}/.expo/logs}"/>
+
+    <conversionRule conversionWord="module" class="team.startup.application.global.logging.ModuleNameConverter"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+            <provider class="net.logstash.logback.composite.loggingevent.LoggingEventPatternJsonProvider">
+                <pattern>{"module":"%module"}</pattern>
+            </provider>
+        </encoder>
+    </appender>
+
+    <springProfile name="local">
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG_DIR}/${SERVICE_NAME}/app.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+                <fileNamePattern>${LOG_DIR}/${SERVICE_NAME}/app.%d{yyyy-MM-dd}.log</fileNamePattern>
+                <maxHistory>7</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+                <provider class="net.logstash.logback.composite.loggingevent.LoggingEventPatternJsonProvider">
+                    <pattern>{"module":"%module"}</pattern>
+                </provider>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+    <!-- springProfile은 root 안에 둘 수 없다(Logback 경고가 stdout에 평문으로 찍힌다). root를 한 번 더 열어 appender를 더한다 -->
+    <springProfile name="local">
+        <root>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+</configuration>

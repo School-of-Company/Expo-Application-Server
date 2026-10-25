@@ -21,6 +21,7 @@ class OwnerCancellationGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.registration.user-url:}") private val baseUrl: String,
     @Value("\${application.registration.user-internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     data class VerifiedStatus(
         val phoneNumber: String,
@@ -91,7 +92,9 @@ class OwnerCancellationGateway(
         }
         val response =
             try {
-                client.send(
+                circuits.send(
+                    Downstream.USER,
+                    client,
                     HttpRequest
                         .newBuilder(URI.create(baseUrl.trimEnd('/') + path))
                         .timeout(Duration.ofSeconds(8))

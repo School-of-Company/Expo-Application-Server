@@ -18,8 +18,9 @@ class LegacyTraineeAttributionGateway(
     mapper: ObjectMapper,
     @Value("\${application.registration.user-url:}") url: String,
     @Value("\${application.registration.user-internal-token:}") token: String,
+    circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
-    private val http = AdminSourceHttp(mapper, url, token)
+    private val http = AdminSourceHttp(mapper, url, token, circuits, Downstream.USER)
 
     fun link(
         expoId: UUID,

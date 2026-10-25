@@ -140,6 +140,7 @@ class RegistrationGateway(
     @Value("\${application.registration.enabled:false}") registrationEnabled: Boolean = false,
     @Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled: Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -159,7 +160,7 @@ class RegistrationGateway(
     }
 
     fun programForm(formId: UUID): JsonNode =
-        decode(call(formUrl, "/internal/forms/by-id/$formId", token = formInternalToken).body(), JsonNode::class.java)
+        decode(call(Downstream.FORM, formUrl, "/internal/forms/by-id/$formId", token = formInternalToken).body(), JsonNode::class.java)
 
     fun programDefinition(
         expoId: String,
@@ -182,6 +183,7 @@ class RegistrationGateway(
                 ids.mapNotNull { id ->
                     val response =
                         call(
+                            Downstream.EXPO,
                             expoUrl,
                             "/internal/expo/$canonicalExpo/standard-programs/$id",
                             allowNotFound = existing,
@@ -229,6 +231,7 @@ class RegistrationGateway(
     ): List<JsonNode> {
         val response =
             call(
+                Downstream.EXPO,
                 expoUrl,
                 "/internal/expo/$expoId/training-programs/batch",
                 "POST",
@@ -258,6 +261,7 @@ class RegistrationGateway(
         val response =
             decode(
                 call(
+                    Downstream.USER,
                     userUrl,
                     "/internal/standard-participants/details",
                     "POST",
@@ -295,6 +299,7 @@ class RegistrationGateway(
         val participants =
             decode(
                 call(
+                    Downstream.USER,
                     userUrl,
                     "/internal/standard-participants/managed/select",
                     "POST",
@@ -347,6 +352,7 @@ class RegistrationGateway(
         val response =
             decode(
                 call(
+                    Downstream.USER,
                     userUrl,
                     "/internal/standard-participants/managed",
                     "POST",
@@ -409,6 +415,7 @@ class RegistrationGateway(
         val session =
             decode(
                 call(
+                    Downstream.USER,
                     userUrl,
                     "/internal/participant-sessions/resolve",
                     "POST",
@@ -443,6 +450,7 @@ class RegistrationGateway(
         val response =
             decode(
                 call(
+                    Downstream.USER,
                     userUrl,
                     "/internal/trainees/resolve-or-create-by-participant",
                     "POST",
@@ -467,6 +475,7 @@ class RegistrationGateway(
         if (attendanceToken.isBlank()) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val response =
             call(
+                Downstream.ATTENDANCE,
                 attendanceUrl,
                 "/internal/expos/$expoId/participants/$participantId/qr",
                 "POST",
@@ -492,7 +501,7 @@ class RegistrationGateway(
     private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
 
     fun expoPeriod(expoId: String): ExpoPeriod {
-        val response = call(expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
+        val response = call(Downstream.EXPO, expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
         val node = decode(response.body(), JsonNode::class.java)
         val required = node.path("participantPhoneVerificationRequired")
         val revision = node.path("participantPhoneVerificationRevision")
@@ -511,7 +520,7 @@ class RegistrationGateway(
         required: Boolean,
     ): RegistrationForm? {
         val path = "/internal/forms/$expoId?type=$participantType&applicationType=$applicationType"
-        val response = call(formUrl, path, allowNotFound = !required, token = formInternalToken)
+        val response = call(Downstream.FORM, formUrl, path, allowNotFound = !required, token = formInternalToken)
         return if (response.statusCode() == 404) null else decode(response.body(), RegistrationForm::class.java)
     }
 
@@ -521,7 +530,7 @@ class RegistrationGateway(
         registration: ParticipantRegistration,
     ): ParticipantRegistrationResult {
         val path = if (type == "STANDARD") "/internal/standard-participants" else "/internal/trainees"
-        val response = call(userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
+        val response = call(Downstream.USER, userUrl, path, "POST", mapper.writeValueAsString(registration), token = userInternalToken)
         return if (type == "STANDARD") {
             val body = decode(response.body(), JsonNode::class.java)
             body.get("groupParticipantIds")?.let { ids ->
@@ -578,6 +587,7 @@ class RegistrationGateway(
         if (request.newParticipants.isEmpty()) return emptyList()
         val response =
             fieldVisitCall(
+                Downstream.USER,
                 userUrl,
                 "/internal/expos/$expoId/field-visit-participants",
                 "POST",
@@ -631,11 +641,12 @@ class RegistrationGateway(
                 "status" to registration.status,
                 "operationId" to operationId,
             )
-        fieldVisitCall(attendanceUrl, path, "PUT", body, attendanceToken)
-        fieldVisitCall(userUrl, path, "PUT", body, userInternalToken)
+        fieldVisitCall(Downstream.ATTENDANCE, attendanceUrl, path, "PUT", body, attendanceToken)
+        fieldVisitCall(Downstream.USER, userUrl, path, "PUT", body, userInternalToken)
     }
 
     private fun fieldVisitCall(
+        service: String,
         base: String,
         path: String,
         method: String,
@@ -643,7 +654,7 @@ class RegistrationGateway(
         token: String,
     ): HttpResponse<String> {
         try {
-            val response = call(base, path, method, mapper.writeValueAsString(body), token = token, fieldVisitContract = true)
+            val response = call(service, base, path, method, mapper.writeValueAsString(body), token = token, fieldVisitContract = true)
             if (method == "PUT" && response.statusCode() != 204) {
                 throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "현장 방문일 공급자 응답이 올바르지 않습니다.")
             }
@@ -678,7 +689,7 @@ class RegistrationGateway(
         participantId: Long,
     ) {
         try {
-            call(expoUrl, "/internal/expo/$expoId/standard-registrations/$participantId", "PUT", token = expoInternalToken)
+            call(Downstream.EXPO, expoUrl, "/internal/expo/$expoId/standard-registrations/$participantId", "PUT", token = expoInternalToken)
         } catch (ex: ResponseStatusException) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "신청 인원을 반영할 수 없습니다.", ex)
         }
@@ -695,6 +706,7 @@ class RegistrationGateway(
         }
 
     private fun call(
+        service: String,
         base: String,
         path: String,
         method: String = "GET",
@@ -716,7 +728,7 @@ class RegistrationGateway(
                 .build()
         val response =
             try {
-                client.send(request, HttpResponse.BodyHandlers.ofString())
+                circuits.send(service, client, request, HttpResponse.BodyHandlers.ofString())
             } catch (ex: Exception) {
                 Thread.currentThread().interruptIfInterrupted(ex)
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "등록 서비스와 연결할 수 없습니다.", ex)
