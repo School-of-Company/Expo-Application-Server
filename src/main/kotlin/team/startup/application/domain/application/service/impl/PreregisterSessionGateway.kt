@@ -21,6 +21,7 @@ class PreregisterSessionGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.registration.expo-url:}") private val baseUrl: String,
     @Value("\${application.registration.expo-internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -34,7 +35,9 @@ class PreregisterSessionGateway(
         }
         val response =
             try {
-                client.send(
+                circuits.send(
+                    Downstream.EXPO,
+                    client,
                     HttpRequest
                         .newBuilder(URI.create("${baseUrl.trimEnd('/')}/internal/expo/$expoId/preregister-sessions/$sessionId"))
                         .timeout(Duration.ofSeconds(8))

@@ -21,6 +21,7 @@ class AdminAttendanceGateway(
     private val mapper: ObjectMapper,
     @Value("\${application.attendance.url:}") private val url: String,
     @Value("\${application.attendance.internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -33,7 +34,9 @@ class AdminAttendanceGateway(
         val refs = sessions.map { ProgramRef(it.programType, it.programId) }.distinct()
         val response =
             try {
-                client.send(
+                circuits.send(
+                    Downstream.ATTENDANCE,
+                    client,
                     HttpRequest
                         .newBuilder(URI.create("${url.trimEnd('/')}/internal/program-attendances/summary"))
                         .timeout(Duration.ofSeconds(8))
@@ -87,7 +90,9 @@ class AdminAttendanceGateway(
         }
         val response =
             try {
-                client.send(
+                circuits.send(
+                    Downstream.ATTENDANCE,
+                    client,
                     HttpRequest
                         .newBuilder(URI.create("${url.trimEnd('/')}/internal/program-attendances/${type.name.lowercase()}/$programId"))
                         .timeout(Duration.ofSeconds(8))

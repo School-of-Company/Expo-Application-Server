@@ -14,6 +14,8 @@ internal class AdminSourceHttp(
     private val mapper: ObjectMapper,
     private val url: String,
     private val token: String,
+    private val circuits: DownstreamCircuits,
+    private val service: String,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -40,7 +42,7 @@ internal class AdminSourceHttp(
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
                 }
-                client.send(request.build(), HttpResponse.BodyHandlers.ofString())
+                circuits.send(service, client, request.build(), HttpResponse.BodyHandlers.ofString())
             } catch (exception: Exception) {
                 if (exception is InterruptedException) Thread.currentThread().interrupt()
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "관리자 원천을 조회할 수 없습니다.")

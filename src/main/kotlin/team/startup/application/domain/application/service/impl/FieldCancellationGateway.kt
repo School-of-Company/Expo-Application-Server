@@ -32,6 +32,7 @@ class FieldCancellationGateway(
     @Value("\${application.attendance.internal-token:}") private val attendanceToken: String,
     @Value("\${application.registration.user-url:}") private val userUrl: String,
     @Value("\${application.registration.user-internal-token:}") private val userToken: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     data class Status(
         val enteredOnVisitDate: Boolean,
@@ -98,6 +99,7 @@ class FieldCancellationGateway(
     ) {
         require(target.participantId > 0 && target.generation > 0)
         request(
+            Downstream.USER,
             userUrl,
             userToken,
             path(target),
@@ -121,10 +123,11 @@ class FieldCancellationGateway(
         expected: Int = 204,
     ): JsonNode {
         require(target.participantId > 0 && target.generation > 0)
-        return request(attendanceUrl, attendanceToken, path(target) + suffix, method, body, expected)
+        return request(Downstream.ATTENDANCE, attendanceUrl, attendanceToken, path(target) + suffix, method, body, expected)
     }
 
     private fun request(
+        service: String,
         baseUrl: String,
         token: String,
         path: String,
@@ -135,7 +138,9 @@ class FieldCancellationGateway(
         if (baseUrl.isBlank() || token.isBlank()) unavailable()
         val response =
             try {
-                client.send(
+                circuits.send(
+                    service,
+                    client,
                     HttpRequest
                         .newBuilder(URI.create(baseUrl.trimEnd('/') + path))
                         .timeout(Duration.ofSeconds(8))

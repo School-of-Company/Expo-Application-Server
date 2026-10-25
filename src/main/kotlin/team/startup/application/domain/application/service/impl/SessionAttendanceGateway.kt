@@ -16,6 +16,7 @@ import java.time.Duration
 class SessionAttendanceGateway(
     @Value("\${application.attendance.url:}") private val url: String,
     @Value("\${application.attendance.internal-token:}") private val token: String,
+    private val circuits: DownstreamCircuits = DownstreamCircuits(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -53,7 +54,7 @@ class SessionAttendanceGateway(
             request.header("Content-Type", "application/json")
             request.PUT(HttpRequest.BodyPublishers.ofString("{$session\"revision\":${message.revision}}"))
         }
-        val response = client.send(request.build(), HttpResponse.BodyHandlers.discarding())
+        val response = circuits.send(Downstream.ATTENDANCE, client, request.build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() != 204) throw IOException("Attendance HTTP ${response.statusCode()}")
     }
 }
