@@ -104,10 +104,22 @@ class DownstreamCircuitsTests {
     }
 
     @Test
-    fun `GET은 연결 실패에 한해 한 번만 다시 시도한다`() {
+    fun `GET은 연결 실패에 한해 한 번만 다시 시도하고 요청 한 건으로 센다`() {
         val dead = HttpRequest.newBuilder(URI.create("http://127.0.0.1:1/x")).GET().build()
         assertThrows(java.io.IOException::class.java) { call(Downstream.FORM, dead) }
-        assertEquals(2, circuits.breaker(Downstream.FORM).metrics.numberOfFailedCalls)
+        assertEquals(1, circuits.breaker(Downstream.FORM).metrics.numberOfFailedCalls)
+        assertEquals(1, circuits.breaker(Downstream.FORM).metrics.numberOfBufferedCalls)
+    }
+
+    @Test
+    fun `연결 거부 GET 사용자 요청은 아홉 번째까지 닫혀 있고 열 번째에 열린다`() {
+        val dead = HttpRequest.newBuilder(URI.create("http://127.0.0.1:1/x")).GET().build()
+        repeat(9) {
+            assertThrows(java.io.IOException::class.java) { call(Downstream.EXPO, dead) }
+            assertEquals(CircuitBreaker.State.CLOSED, circuits.breaker(Downstream.EXPO).state)
+        }
+        assertThrows(java.io.IOException::class.java) { call(Downstream.EXPO, dead) }
+        assertEquals(CircuitBreaker.State.OPEN, circuits.breaker(Downstream.EXPO).state)
     }
 
     @Test

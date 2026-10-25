@@ -30,7 +30,7 @@ object Downstream {
  * 하위 서비스 HTTP 호출의 회로 차단기와 제한적 재시도.
  *
  * 서비스별로 차단기 하나를 둔다. 장애로 세는 것은 타임아웃·연결 실패·5xx뿐이며, 404·409·401 같은 4xx와 본문 해석 오류는
- * 서비스가 정상적으로 답한 것이므로 세지 않는다. 재시도는 멱등한 GET이 연결 실패처럼 즉시 실패했을 때만 한 번 한다.
+ * 서비스가 정상적으로 답한 것이므로 세지 않는다. 재시도는 멱등한 GET이 연결 실패처럼 즉시 실패했을 때만 75ms 뒤에 한 번 한다. 요청 한 건은 회로에 한 건으로 세며 재시도 앞의 실패는 세지 않는다.
  * 타임아웃과 쓰기(PUT/POST/DELETE)는 이미 처리됐을 수 있어 다시 보내지 않는다. 회로가 열리면 [DownstreamCircuitOpenException]을
  * 던지므로 호출부는 기존의 연결 실패 처리로 같은 오류를 돌려준다.
  */
@@ -54,18 +54,35 @@ class DownstreamCircuits {
         client: HttpClient,
         request: HttpRequest,
         handler: HttpResponse.BodyHandler<T>,
-    ): HttpResponse<T> =
-        try {
-            attempt(service, client, request, handler)
+    ): HttpResponse<T> {
+        val idempotent = request.method() == "GET"
+        return try {
+            attempt(service, client, request, handler, willRetry = idempotent)
         } catch (e: IOException) {
-            if (request.method() == "GET" && retryable(e)) attempt(service, client, request, handler) else throw e
+            if (!idempotent || !retryable(e)) throw e
+            pause()
+            attempt(service, client, request, handler, willRetry = false)
         }
+    }
 
+    private fun pause() {
+        try {
+            Thread.sleep(RETRY_DELAY_MS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw e
+        }
+    }
+
+    /**
+     * 사용자 요청 한 건은 회로에 한 건으로 센다. 재시도가 뒤따를 첫 시도의 연결 실패는 표본에서 빼고 마지막 시도만 센다.
+     */
     private fun <T> attempt(
         service: String,
         client: HttpClient,
         request: HttpRequest,
         handler: HttpResponse.BodyHandler<T>,
+        willRetry: Boolean,
     ): HttpResponse<T> {
         val breaker = breaker(service)
         if (!breaker.tryAcquirePermission()) throw DownstreamCircuitOpenException(service)
@@ -74,7 +91,11 @@ class DownstreamCircuits {
             try {
                 client.send(request, handler)
             } catch (e: IOException) {
-                breaker.onError(System.nanoTime() - started, TimeUnit.NANOSECONDS, e)
+                if (willRetry && retryable(e)) {
+                    breaker.releasePermission()
+                } else {
+                    breaker.onError(System.nanoTime() - started, TimeUnit.NANOSECONDS, e)
+                }
                 throw e
             } catch (e: Throwable) {
                 // 중단이나 요청 구성 오류는 하위 서비스의 상태가 아니므로 표본에서 뺀다
@@ -97,5 +118,6 @@ class DownstreamCircuits {
         const val MIN_CALLS = 10
         const val FAILURE_RATE_THRESHOLD = 50f
         const val OPEN_SECONDS = 10L
+        const val RETRY_DELAY_MS = 75L
     }
 }
