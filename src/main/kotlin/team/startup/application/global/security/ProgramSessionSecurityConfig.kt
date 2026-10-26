@@ -30,6 +30,10 @@ class ProgramSessionSecurityConfig {
                         "/application/expos/{expoId}/program-sessions/{programType}/{programId}/participants",
                     ),
                     PathPatternRequestMatcher.withDefaults().matcher(
+                        HttpMethod.GET,
+                        "/application/expos/{expoId}/program-sessions/{programType}/seats",
+                    ),
+                    PathPatternRequestMatcher.withDefaults().matcher(
                         HttpMethod.POST,
                         "/application/expos/{expoId}/program-sessions/{programType}/{programId}/applications",
                     ),

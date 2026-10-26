@@ -2,6 +2,7 @@ package team.startup.application.domain.application.repository
 
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.RowCallbackHandler
 import org.springframework.stereotype.Repository
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
@@ -11,6 +12,7 @@ import team.startup.application.domain.application.presentation.dto.ProgramAdmis
 import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
+import team.startup.application.domain.application.presentation.dto.ProgramSessionPolicy
 import team.startup.application.domain.application.presentation.dto.ProgramSessionReceipt
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -409,26 +411,101 @@ class ProgramSessionApplicationRepository(
     fun admissionSeats(definition: ProgramSessionDefinition): ProgramAdmissionSeats? {
         val policy = definition.policy?.takeIf { it.hasAdmissionCapacities() } ?: return null
         if (!policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "접수 경로별 정원 정의가 올바르지 않습니다.")
-        val pre = admissionConfirmedCount(definition, "PRE_REGISTRATION")
-        val onsite = admissionConfirmedCount(definition, "ONSITE")
-        val unknown = unknownAdmissionCount(definition)
-        val offered = offeredSeats(definition)
-        return ProgramAdmissionSeats(
-            ProgramAdmissionCapacity(
-                requireNotNull(policy.preRegistrationCapacity),
-                pre,
-                (policy.preRegistrationCapacity - pre - unknown - offered).coerceAtLeast(0),
-            ),
-            ProgramAdmissionCapacity(
-                requireNotNull(policy.onsiteCapacity),
-                onsite,
-                (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
-            ),
-            unknown,
-            offeredSeats = offered,
-            waitingEnabled = policy.waitingCapacity > 0,
-            onsiteAdmissionEnabled = policy.onsiteCapacity > 0 && policy.admissionWindow(onsite = true) != null,
+        return admissionSeats(
+            policy,
+            admissionConfirmedCount(definition, "PRE_REGISTRATION"),
+            admissionConfirmedCount(definition, "ONSITE"),
+            unknownAdmissionCount(definition),
+            offeredSeats(definition),
         )
+    }
+
+    fun admissionSeats(
+        policy: ProgramSessionPolicy,
+        pre: Long,
+        onsite: Long,
+        unknown: Long,
+        offered: Long,
+    ) = ProgramAdmissionSeats(
+        ProgramAdmissionCapacity(
+            requireNotNull(policy.preRegistrationCapacity),
+            pre,
+            (policy.preRegistrationCapacity - pre - unknown - offered).coerceAtLeast(0),
+        ),
+        ProgramAdmissionCapacity(
+            requireNotNull(policy.onsiteCapacity),
+            onsite,
+            (policy.onsiteCapacity - onsite - unknown).coerceAtLeast(0),
+        ),
+        unknown,
+        offeredSeats = offered,
+        waitingEnabled = policy.waitingCapacity > 0,
+        onsiteAdmissionEnabled = policy.onsiteCapacity > 0 && policy.admissionWindow(onsite = true) != null,
+    )
+
+    data class SeatUsage(
+        val confirmed: Long = 0,
+        val waiting: Int = 0,
+        val preRegistration: Long = 0,
+        val onsite: Long = 0,
+        val offered: Long = 0,
+    ) {
+        val unknown: Long get() = (confirmed - preRegistration - onsite).coerceAtLeast(0)
+    }
+
+    /**
+     * 공개 정원 요약(#331)용. confirmedCount·admissionConfirmedCount·offeredSeats와 ProgramWaitlistRepository.waitingCount를
+     * 회차마다 부르지 않고 같은 조건으로 한 번에 센다. 직군별(channel) 수는 공개하지 않아 세지 않는다.
+     */
+    fun seatUsage(
+        expoId: UUID,
+        type: ProgramSessionType,
+        programIds: List<Long>,
+    ): Map<Long, SeatUsage> {
+        if (programIds.isEmpty()) return emptyMap()
+        val ids = programIds.distinct().toTypedArray()
+        val table = if (type == ProgramSessionType.STANDARD) "tb_standard_program_application" else "tb_training_program_application"
+        val column = if (type == ProgramSessionType.STANDARD) "standard_program_id" else "training_program_id"
+        val usage = programIds.associateWith { SeatUsage() }.toMutableMap()
+        jdbc.query(
+            "SELECT $column, count(*) FROM $table WHERE $column = ANY(?) GROUP BY $column",
+            RowCallbackHandler { rs -> usage.computeIfPresent(rs.getLong(1)) { _, it -> it.copy(confirmed = rs.getLong(2)) } },
+            ids,
+        )
+        jdbc.query(
+            "SELECT program_id, status, admission_route, count(*) FROM tb_program_session_application " +
+                "WHERE expo_id = ? AND program_type = ? AND program_id = ANY(?) AND status IN ('CONFIRMED', 'WAITING') " +
+                "AND (status <> 'WAITING' OR EXISTS (" +
+                "SELECT 1 FROM tb_preregister_application p WHERE p.expo_id = tb_program_session_application.expo_id " +
+                "AND p.participant_id = tb_program_session_application.participant_id AND p.status = 'CONFIRMED')) " +
+                "GROUP BY program_id, status, admission_route",
+            RowCallbackHandler { rs ->
+                val route = rs.getString(3)
+                val count = rs.getLong(4)
+                usage.computeIfPresent(rs.getLong(1)) { _, it ->
+                    when {
+                        rs.getString(2) == "WAITING" -> it.copy(waiting = it.waiting + count.toInt())
+                        route == "PRE_REGISTRATION" -> it.copy(preRegistration = it.preRegistration + count)
+                        route == "ONSITE" -> it.copy(onsite = it.onsite + count)
+                        else -> it
+                    }
+                }
+            },
+            expoId,
+            type.name,
+            ids,
+        )
+        jdbc.query(
+            "SELECT o.program_id, coalesce(sum(o.seats), 0) FROM tb_promotion_offer o " +
+                "JOIN tb_program_session_application h ON h.id = o.application_id AND h.status = 'WAITING' " +
+                "WHERE o.expo_id = ? AND o.program_type = ? AND o.program_id = ANY(?) AND o.state IN ${PromotionOfferRepository.ACTIVE} " +
+                "GROUP BY o.program_id",
+            RowCallbackHandler { rs -> usage.computeIfPresent(rs.getLong(1)) { _, it -> it.copy(offered = rs.getLong(2)) } },
+            expoId,
+            type.name,
+            ids,
+        )
+        return usage
     }
 
     fun knownGroups(

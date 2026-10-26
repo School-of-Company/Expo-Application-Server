@@ -2,6 +2,7 @@ package team.startup.application
 
 import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
@@ -81,6 +82,26 @@ class SecurityConfigTests {
         mockMvc.perform(get(path)).andExpect(status().isNotFound)
         mockMvc.perform(get(path).header("Authorization", "Bearer admin")).andExpect(status().isNotFound)
     }
+
+    @Test
+    fun `GC 일시 정지 시간을 SLO 버킷 히스토그램으로 내보낸다`() {
+        // GC 알림은 비동기로 기록되므로 버킷이 보일 때까지 잠깐 다시 긁는다
+        System.gc()
+        val bucket = Regex("""jvm_gc_pause_seconds_bucket\{[^}]*le="0\.05"[^}]*}""")
+        val deadline = System.nanoTime() + 10_000_000_000
+        var body = scrapePrometheus()
+        while (!bucket.containsMatchIn(body) && System.nanoTime() < deadline) {
+            Thread.sleep(100)
+            body = scrapePrometheus()
+        }
+        assertTrue(bucket.containsMatchIn(body))
+    }
+
+    private fun scrapePrometheus(): String =
+        mockMvc
+            .perform(get("/actuator/prometheus"))
+            .andReturn()
+            .response.contentAsString
 
     @Test
     fun `health와 prometheus는 인증 없이 GET 할 수 있다`() {
