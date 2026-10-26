@@ -62,7 +62,7 @@ class PreparePreregisterSessionChangeServiceImpl(
                         if (changed != request.definitionChanged) badSessionRequest("정의 변경 여부가 일치하지 않습니다.")
                         // #268: with history only the times stay locked; an unadopted waiting capacity stays unapplied on reconcile.
                         nonTimeOnly =
-                            current.startedAt == next.startedAt && current.endedAt == next.endedAt &&
+                            current.startedAt == next.startedAt && endKept(current, next) &&
                             current.cancelEndedAt == next.cancelEndedAt &&
                             (current.waitingCapacity == null || next.waitingCapacity != null)
                         if (nonTimeOnly && changed) capacityFits(command, current, next)
@@ -81,6 +81,18 @@ class PreparePreregisterSessionChangeServiceImpl(
             repository.prepare(command.expoId, command.sessionId, command.nextRevision, request)
         }
     }
+
+    // #324: with history the end may still move earlier on its KST date; startedAt < endedAt is checked by isValidDefinition.
+    private fun endKept(
+        current: PreregisterSessionDefinition,
+        next: PreregisterSessionDefinition,
+    ): Boolean =
+        current.endedAt == next.endedAt ||
+            (
+                next.endedAt.isBefore(current.endedAt) &&
+                    next.endedAt.atZone(PromotionOfferPolicy.KST).toLocalDate() ==
+                    current.endedAt.atZone(PromotionOfferPolicy.KST).toLocalDate()
+            )
 
     // #173: capacities may change after applications only while they still hold every confirmed and reserved seat.
     // Unknown seats count against both categories, and target sessions take no waiting party.
