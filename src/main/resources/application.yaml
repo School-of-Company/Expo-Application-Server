@@ -85,3 +85,11 @@ application:
     expo-internal-token: ${APPLICATION_REGISTRATION_EXPO_INTERNAL_TOKEN:}
     form-internal-token: ${APPLICATION_REGISTRATION_FORM_INTERNAL_TOKEN:}
     user-internal-token: ${APPLICATION_REGISTRATION_USER_INTERNAL_TOKEN:}
+
+management:
+  metrics:
+    distribution:
+      # GC 일시 정지 p99를 구하려고 jvm_gc_pause_seconds에 고정 경계 10개(+Inf 포함 버킷 11개)를 둔다(Expo-Monitoring #34).
+      # percentiles-histogram은 시리즈당 버킷이 약 69개라 카디널리티가 커서 쓰지 않는다
+      slo:
+        jvm.gc.pause: 1ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s,2s
