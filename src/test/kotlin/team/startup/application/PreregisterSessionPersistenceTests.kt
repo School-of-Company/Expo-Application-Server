@@ -28,6 +28,8 @@ import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.exception.SessionChangeConflictCode
+import team.startup.application.domain.application.exception.SessionChangeConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.CancelPreregisterSessionCommand
 import team.startup.application.domain.application.presentation.dto.PreparePreregisterSessionChangeCommand
@@ -344,6 +346,196 @@ class PreregisterSessionPersistenceTests {
         assertEquals(grown, repository.definition(expoId, 1))
         // #268: time changes stay blocked, even together with a capacity change.
         assertConflict { prepare.execute(change(grown.copy(capacity = 7, endedAt = grown.endedAt.plusSeconds(3600), revision = 3))) }
+    }
+
+    private fun assertConflict(
+        code: SessionChangeConflictCode,
+        block: () -> Unit,
+    ) {
+        assertEquals(code, assertThrows(SessionChangeConflictException::class.java, block).code)
+    }
+
+    private fun assertBadRequest(block: () -> Unit) {
+        assertEquals(400, assertThrows(ResponseStatusException::class.java, block).statusCode.value())
+    }
+
+    // #324 QA fixture copies the operating afternoon sessions on a future year; product code fixes no date or duration.
+    private fun afternoon(
+        day: String,
+        end: String,
+    ) = definition.copy(
+        title = "Afternoon",
+        startedAt = Instant.parse("${day}T13:00:00+09:00"),
+        endedAt = Instant.parse("${day}T$end:00+09:00"),
+        cancelEndedAt = Instant.parse("${day}T12:00:00+09:00"),
+        capacity = 10,
+        waitingCapacity = 5,
+    )
+
+    private fun insertReservation(
+        requestId: String,
+        state: String,
+        queue: Int?,
+    ) {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, ?, 1, ?, '{}', 1, ?, ?)",
+            expoId,
+            requestId,
+            requestId,
+            state,
+            queue,
+        )
+    }
+
+    @Test
+    fun `history allows shortening the end on the same KST date and keeps every other time lock`() {
+        definition = afternoon("2099-10-31", "17:00")
+        publish(definition)
+        val confirmed = apply.execute(command(1, 2))
+        val cancelled = apply.execute(command(3))
+        cancel.execute(CancelPreregisterSessionCommand(expoId, 1, null, cancelled.map { it.id }))
+        insertReservation("queued-324", "WAITING", 1)
+        insertReservation("processing-324", "RESERVED", null)
+        try {
+            val before = repository.applications(expoId, 1)
+            val next = definition.copy(revision = 2)
+            val day = java.time.Duration.ofDays(1)
+            assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+                prepare.execute(change(next.copy(endedAt = definition.endedAt.plusSeconds(1800))))
+            }
+            assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+                prepare.execute(
+                    change(next.copy(startedAt = definition.startedAt.plusSeconds(1800), endedAt = definition.endedAt.minusSeconds(1800))),
+                )
+            }
+            assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+                prepare.execute(change(next.copy(endedAt = definition.endedAt.minusSeconds(1800), cancelEndedAt = definition.startedAt)))
+            }
+            assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+                prepare.execute(change(next.copy(startedAt = definition.startedAt.minus(day), endedAt = definition.endedAt.minus(day))))
+            }
+            assertBadRequest { prepare.execute(change(next.copy(endedAt = definition.startedAt))) }
+            assertBadRequest { prepare.execute(change(next.copy(endedAt = definition.startedAt.minusSeconds(1800)))) }
+            // Shortening still runs every capacity floor: 3 used seats (2 confirmed + 1 processing) and 1 waiting party.
+            assertConflict(SessionChangeConflictCode.BELOW_CONFIRMED_COUNT) {
+                prepare.execute(change(next.copy(endedAt = definition.endedAt.minusSeconds(1800), capacity = 2)))
+            }
+            assertConflict(SessionChangeConflictCode.BELOW_WAITING_COUNT) {
+                prepare.execute(change(next.copy(endedAt = definition.endedAt.minusSeconds(1800), waitingCapacity = 0)))
+            }
+            assertTrue(repository.pending(expoId, 1) == null)
+            assertEquals(definition, repository.definition(expoId, 1))
+
+            val shortened =
+                next.copy(
+                    endedAt = Instant.parse("2099-10-31T16:30:00+09:00"),
+                    place = "Hall",
+                    capacity = 3,
+                    waitingCapacity = 1,
+                )
+            val request = change(shortened)
+            prepare.execute(request)
+            prepare.execute(request)
+            assertConflict { prepare.execute(change(shortened.copy(endedAt = shortened.endedAt.minusSeconds(1800)))) }
+            assertConflict { apply.execute(command(4)) }
+            publish(shortened)
+            assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+            assertEquals(shortened, repository.definition(expoId, 1))
+            assertEquals(before, repository.applications(expoId, 1))
+            assertEquals(confirmed.map { it.id }, repository.applications(expoId, 1).filter { it.status == "CONFIRMED" }.map { it.id })
+            assertEquals(
+                listOf("RESERVED", "WAITING"),
+                jdbc.queryForList(
+                    "SELECT state FROM tb_preregister_reservation WHERE request_id IN ('queued-324', 'processing-324') ORDER BY state",
+                    String::class.java,
+                ),
+            )
+            assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+                prepare.execute(change(shortened.copy(endedAt = definition.endedAt, revision = 3)))
+            }
+        } finally {
+            jdbc.update("DELETE FROM tb_preregister_reservation WHERE request_id IN ('queued-324', 'processing-324')")
+        }
+    }
+
+    @Test
+    fun `shortening that moves the end to an earlier KST date stays locked`() {
+        definition =
+            definition.copy(
+                startedAt = Instant.parse("2099-10-31T22:00:00+09:00"),
+                endedAt = Instant.parse("2099-11-01T01:00:00+09:00"),
+            )
+        publish(definition)
+        apply.execute(command(1))
+        assertConflict(SessionChangeConflictCode.TIME_LOCKED_BY_HISTORY) {
+            prepare.execute(change(definition.copy(endedAt = Instant.parse("2099-10-31T23:30:00+09:00"), revision = 2)))
+        }
+        prepare.execute(change(definition.copy(endedAt = Instant.parse("2099-11-01T00:30:00+09:00"), revision = 2)))
+    }
+
+    @Test
+    fun `shortening keeps an unadopted waiting capacity unapplied`() {
+        definition = afternoon("2099-11-01", "16:00").copy(waitingCapacity = null)
+        publish(definition)
+        apply.execute(command(1))
+        val shortened = definition.copy(endedAt = Instant.parse("2099-11-01T15:30:00+09:00"), waitingCapacity = 4, revision = 2)
+        prepare.execute(change(shortened))
+        publish(shortened)
+        assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        assertEquals(shortened.copy(waitingCapacity = null), repository.definition(expoId, 1))
+    }
+
+    @Test
+    fun `same end with history keeps the no-op path and sessions without history keep free time edits`() {
+        apply.execute(command(1))
+        prepare.execute(change(definition.copy(revision = 2), false))
+        publish(definition.copy(revision = 2))
+        assertTrue(reconcile.execute(PreregisterSessionKey(expoId, 1)))
+        assertBadRequest { prepare.execute(change(definition.copy(endedAt = definition.endedAt.minusSeconds(60), revision = 3), false)) }
+
+        jdbc.execute(
+            "TRUNCATE tb_preregister_application, tb_preregister_session_change, tb_preregister_session_state RESTART IDENTITY CASCADE",
+        )
+        publish(definition)
+        val moved =
+            definition.copy(
+                startedAt = definition.startedAt.plusSeconds(86400),
+                endedAt = definition.endedAt.plusSeconds(90000),
+                revision = 2,
+            )
+        prepare.execute(change(moved))
+    }
+
+    @Test
+    fun `concurrent shortenings of one revision have one winner`() {
+        definition = afternoon("2099-10-31", "17:00")
+        publish(definition)
+        apply.execute(command(1))
+        val pool = Executors.newFixedThreadPool(2)
+        val start = CountDownLatch(1)
+        try {
+            val results =
+                listOf(1800L, 3600L).map { seconds ->
+                    pool.submit<Boolean> {
+                        assertTrue(start.await(10, TimeUnit.SECONDS))
+                        try {
+                            prepare.execute(change(definition.copy(endedAt = definition.endedAt.minusSeconds(seconds), revision = 2)))
+                            true
+                        } catch (exception: ResponseStatusException) {
+                            assertEquals(409, exception.statusCode.value())
+                            false
+                        }
+                    }
+                }
+            start.countDown()
+            assertEquals(1, results.count { it.get(20, TimeUnit.SECONDS) })
+            assertTrue(repository.pending(expoId, 1) != null)
+            assertEquals(definition, repository.definition(expoId, 1))
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test
