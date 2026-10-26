@@ -137,34 +137,58 @@ class ProgramWaitlistRepository(
             .query(
                 "SELECT definition, pending_definition, deleted FROM tb_program_session_state " +
                     "WHERE expo_id = ? AND program_type = ? AND program_id = ?",
-                { rs, _ ->
-                    Triple(
-                        mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java),
-                        rs.getString(2)?.let { mapper.readValue(it, ProgramSessionDefinition::class.java) },
-                        rs.getBoolean(3),
-                    )
-                },
+                { rs, _ -> storedState(rs) },
                 UUID.fromString(definition.expoId),
                 definition.programType.name,
                 definition.id,
             ).singleOrNull()
-            ?.let { (current, pending, deleted) ->
-                val remote = definition.copy(pendingRevision = null)
-                // 신청(lockDefinition)과 같이 정책 없는 회차는 Expo가 승인 요청 없이 바꾼 제목·시간·장소를 받아들인다.
-                val policyless = pending == null && current.policy == null && remote.policy == null && remote.revision >= current.revision
-                if (deleted || (!policyless && listOfNotNull(current, pending).none { remote.matchesApproved(it) })) {
-                    log.warn(
-                        "Program definition mismatch: expoId={} {} {} deleted={} differsFromCurrent={} differsFromPending={}",
-                        definition.expoId,
-                        definition.programType,
-                        definition.id,
-                        deleted,
-                        differingFields(remote, current),
-                        pending?.let { differingFields(remote, it) },
-                    )
-                    throw ProgramDefinitionMismatchException(definition.programType, definition.id)
-                }
-            }
+            ?.let { verify(definition, it) }
+    }
+
+    // 공개 정원 요약(#331)은 회차마다 조회하지 않도록 같은 박람회·종류의 저장 정의를 한 번에 읽어 checkDefinition과 같게 판정한다.
+    fun checkDefinitions(definitions: List<ProgramSessionDefinition>) {
+        val first = definitions.firstOrNull() ?: return
+        require(definitions.all { it.expoId == first.expoId && it.programType == first.programType })
+        val states =
+            jdbc
+                .query(
+                    "SELECT program_id, definition, pending_definition, deleted FROM tb_program_session_state " +
+                        "WHERE expo_id = ? AND program_type = ? AND program_id = ANY(?)",
+                    { rs, _ -> rs.getLong("program_id") to storedState(rs) },
+                    UUID.fromString(first.expoId),
+                    first.programType.name,
+                    definitions.map { it.id }.toTypedArray(),
+                ).toMap()
+        definitions.forEach { definition -> states[definition.id]?.let { verify(definition, it) } }
+    }
+
+    private fun storedState(rs: java.sql.ResultSet) =
+        Triple(
+            mapper.readValue(rs.getString("definition"), ProgramSessionDefinition::class.java),
+            rs.getString("pending_definition")?.let { mapper.readValue(it, ProgramSessionDefinition::class.java) },
+            rs.getBoolean("deleted"),
+        )
+
+    private fun verify(
+        definition: ProgramSessionDefinition,
+        state: Triple<ProgramSessionDefinition, ProgramSessionDefinition?, Boolean>,
+    ) {
+        val (current, pending, deleted) = state
+        val remote = definition.copy(pendingRevision = null)
+        // 신청(lockDefinition)과 같이 정책 없는 회차는 Expo가 승인 요청 없이 바꾼 제목·시간·장소를 받아들인다.
+        val policyless = pending == null && current.policy == null && remote.policy == null && remote.revision >= current.revision
+        if (deleted || (!policyless && listOfNotNull(current, pending).none { remote.matchesApproved(it) })) {
+            log.warn(
+                "Program definition mismatch: expoId={} {} {} deleted={} differsFromCurrent={} differsFromPending={}",
+                definition.expoId,
+                definition.programType,
+                definition.id,
+                deleted,
+                differingFields(remote, current),
+                pending?.let { differingFields(remote, it) },
+            )
+            throw ProgramDefinitionMismatchException(definition.programType, definition.id)
+        }
     }
 
     // #273: 409 원인을 DB 없이 진단하도록 값은 빼고 다른 필드 이름만 남긴다. 시간은 matchesApproved와 같은 시각 기준이다.
