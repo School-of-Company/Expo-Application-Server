@@ -12,6 +12,11 @@ spring:
     hibernate:
       ddl-auto: validate
 
+logging:
+  # 요청마다 접근 로그 한 줄(module HttpAccess, `GET /path/{id} status: 200 (12ms)`). 쿼리·헤더·쿠키·본문은 남기지 않는다.
+  http-access:
+    enabled: ${LOGGING_HTTP_ACCESS_ENABLED:true}
+
 springdoc:
   api-docs:
     path: /application/v3/api-docs
