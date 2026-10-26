@@ -72,7 +72,23 @@ data class ProgramCapacityInfo(
     val waitingCapacity: Int,
     @field:Schema(description = "현재 WAITING 원장 신청 수") val waitingCount: Int,
     @field:Schema(description = "대기 정원에서 현재 WAITING 신청 수를 뺀 남은 대기석") val waitingRemaining: Int,
-)
+) {
+    companion object {
+        fun of(
+            capacity: Int,
+            confirmed: Long,
+            waitingCapacity: Int,
+            waiting: Int,
+        ) = ProgramCapacityInfo(
+            capacity,
+            confirmed,
+            (capacity - confirmed).coerceAtLeast(0),
+            waitingCapacity,
+            waiting,
+            (waitingCapacity - waiting).coerceAtLeast(0),
+        )
+    }
+}
 
 data class ProgramChannelCapacityInfo(
     val name: String,

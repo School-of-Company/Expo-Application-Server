@@ -126,7 +126,7 @@ class GetProgramParticipantsServiceImpl(
                         ProgramParticipantItem(participant, reason == null, reason)
                     },
                     policy?.let {
-                        capacity(
+                        ProgramCapacityInfo.of(
                             it.capacity,
                             ledger.confirmedCount(command.type, command.programId),
                             it.waitingCapacity,
@@ -137,7 +137,7 @@ class GetProgramParticipantsServiceImpl(
                         ProgramChannelCapacityInfo(
                             channel.name,
                             channel.allowedOccupations,
-                            capacity(
+                            ProgramCapacityInfo.of(
                                 channel.capacity,
                                 waitlist.confirmedCount(definition, channel.name).toLong(),
                                 channel.waitingCapacity,
@@ -150,18 +150,4 @@ class GetProgramParticipantsServiceImpl(
             },
         )
     }
-
-    private fun capacity(
-        capacity: Int,
-        confirmed: Long,
-        waitingCapacity: Int,
-        waiting: Int,
-    ) = ProgramCapacityInfo(
-        capacity,
-        confirmed,
-        (capacity - confirmed).coerceAtLeast(0),
-        waitingCapacity,
-        waiting,
-        (waitingCapacity - waiting).coerceAtLeast(0),
-    )
 }
