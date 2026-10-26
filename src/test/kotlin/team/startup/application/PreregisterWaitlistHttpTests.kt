@@ -809,7 +809,9 @@ class PreregisterWaitlistHttpTests {
         reconcile()
         conflict(prepare { it.put("startedAt", "2030-01-01T00:30:00Z") }, "TIME_LOCKED_BY_HISTORY")
         conflict(prepare { it.put("cancelEndedAt", "2029-12-31T00:00:00Z") }, "TIME_LOCKED_BY_HISTORY")
-        assertEquals(204, prepare { it.put("title", "Evening").put("place", "Hall") }.status)
+        conflict(prepare { it.put("endedAt", "2030-01-01T01:30:00Z") }, "TIME_LOCKED_BY_HISTORY")
+        // #324: a same-day end shortening passes with the metadata edits.
+        assertEquals(204, prepare { it.put("endedAt", "2030-01-01T00:30:00Z").put("title", "Evening").put("place", "Hall") }.status)
     }
 
     @Test
