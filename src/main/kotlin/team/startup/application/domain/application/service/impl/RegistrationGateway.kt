@@ -141,7 +141,6 @@ class RegistrationGateway(
     @Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled: Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
-    private val projection: ExpoProjection? = null,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -501,18 +500,7 @@ class RegistrationGateway(
 
     private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
 
-    // 기간(일 단위)과 전화번호 인증 설정만 읽는다. 프로젝션이 켜져 있고 값이 있으면 Expo를 부르지 않는다(docs/expo-projection.md).
     fun expoPeriod(expoId: String): ExpoPeriod {
-        projection?.let { local ->
-            ExpoProjection.uuidOrNull(expoId)?.let(local::expo)?.let {
-                return ExpoPeriod(
-                    it.startedDay,
-                    it.finishedDay,
-                    it.participantPhoneVerificationRequired,
-                    it.participantPhoneVerificationRevision,
-                )
-            }
-        }
         val response = call(Downstream.EXPO, expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
         val node = decode(response.body(), JsonNode::class.java)
         val required = node.path("participantPhoneVerificationRequired")

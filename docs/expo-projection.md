@@ -2,22 +2,15 @@
 
 관련: Expo [#212](https://github.com/School-of-Company/Expo-Expo-Server/issues/212), 발행 계약은 Expo `docs/expo-change-events.md`(Expo PR #213).
 
-Expo가 박람회 변경마다 발행하는 전체 상태 이벤트를 받아 Application DB에 읽기 전용 복사본을 두고, 일부 `/internal/expo/**` 동기 조회를 그 복사본으로 바꾼다. 기본은 꺼져 있고, 꺼져 있으면 소비자·프로젝션 읽기가 아예 뜨지 않아 지금과 같다.
+Expo가 박람회 변경마다 발행하는 전체 상태 이벤트를 받아 Application DB에 읽기 전용 복사본을 두고, 관리자 그룹 발송의 박람회 제목 조회만 그 복사본으로 바꾼다. 기본은 꺼져 있고, 꺼져 있으면 소비자·프로젝션 읽기가 아예 뜨지 않아 지금과 같다.
 
 ## 무엇을 옮기고 무엇을 남기나
 
-프로젝션으로 읽는 값(켜져 있을 때):
-
-| 호출                                                                                                  | 쓰는 곳                                              | 값                                                                           |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `GET /internal/expo/{id}` (`RegistrationGateway.expoPeriod`)                                          | 공개 등록·현장 방문일 등록의 기간·전화번호 인증 판단 | `startedDay`, `finishedDay`, `participantPhoneVerificationRequired/Revision` |
-| `GET /internal/expo/{id}` (`AdminGroupMessageGateway.expoName`)                                       | 관리자 그룹 발송 `#{행사명}`                         | `title`                                                                      |
-| `GET /internal/expo/{id}/preregister-sessions/{sid}` (`OwnerCancellationDeadlineGateway.preregister`) | 사전등록 본인 취소 기한 판단·내 신청 현황            | 회차 `cancelEndedAt`                                                         |
-
-기간은 일 단위이고 이벤트 지연은 수 초라서 접수 여부가 바뀌는 경우는 경계 시각의 경합과 같다. 취소 기한은 Application에 그 회차의 변경 확인(`tb_preregister_session_change` 미완료)이 남아 있으면 Expo가 409로 막던 동작을 지키려고 동기 조회한다.
+프로젝션으로 읽는 값(켜져 있을 때)은 `GET /internal/expo/{id}`의 `title` 하나다(`AdminGroupMessageGateway.expoName`, 관리자 그룹 발송 `#{행사명}`). 표시용이라 이벤트 반영이 늦거나 실패해 옛 제목이 나가도 판단이 틀어지지 않는다.
 
 동기로 남기는 호출:
 
+- 박람회 기간·전화번호 인증 설정 `GET /internal/expo/{id}`(`RegistrationGateway.expoPeriod`)와 사전등록 회차 취소 기한 `GET .../preregister-sessions/{sid}`(`OwnerCancellationDeadlineGateway.preregister`): 접수·취소 허용 판단이라 반영이 늦거나 실패한 옛 값을 쓰면 안 된다. 플래그와 관계없이 매번 Expo에 묻고, 실패하면 예전처럼 503이다. 소비자는 기간·인증 설정·회차 취소 기한도 저장하지만 지금은 읽지 않는다.
 - 관리자 권한 확인 `admin-access`, `admin-application-{cancel,promote}-access`: 인증·권한이라 매번 Expo에 묻는다.
 - 일반참가자 집계 `PUT .../standard-registrations/{participantId}`: Expo를 바꾸는 명령이다.
 - 프로그램 정의 `GET .../standard-programs/{id}`, `POST .../training-programs/batch`(조회지만 POST): 정원·승급·신청·취소 판정에 들어가고, 이벤트에 없는 `pendingRevision`(변경 중이면 409)과 승급 안내의 `applicationLookupUrl`이 필요하다. 오래된 정원으로 초과 접수할 수 있어 강한 일관성이 필요하다.
@@ -26,7 +19,7 @@ Expo가 박람회 변경마다 발행하는 전체 상태 이벤트를 받아 Ap
 
 ## MISS와 대체
 
-프로젝션에 박람회 행이 없거나, tombstone이거나, `expo.deleting`이 참이거나, 회차가 없으면 MISS다. MISS면 기존 동기 호출(회로 차단기 포함)을 그대로 부르고, 같은 대상의 MISS는 INFO 로그 `Expo projection miss, falling back to sync call`을 한 번만 남긴다. 그래서 켠 직후 republish 전에도 동작은 지금과 같다.
+프로젝션에 박람회 행이 없거나, tombstone이거나, `expo.deleting`이 참이면 MISS다. MISS면 기존 동기 호출(회로 차단기 포함)을 그대로 부르고, 같은 대상의 MISS는 INFO 로그 `Expo projection miss, falling back to sync call`을 한 번만 남긴다. 그래서 켠 직후 republish 전에도 동작은 지금과 같다.
 
 ## 소비자
 
@@ -51,5 +44,5 @@ FROM tb_expo_projection;
 
 ## 테스트
 
-- `ExpoProjectionReadTests`: 꺼짐·적중·MISS 대체를 Expo 모의 서버 호출 경로로 확인하고, 메시지 해석·거절 규칙을 본다(Docker 불필요).
-- `ExpoProjectionKafkaTests`(Testcontainers PostgreSQL + Kafka): version 순서·중복·옛 메시지 무시, tombstone 뒤 되살림 방지, 삭제 중 MISS, 실제 broker 소비와 DLT, 게이트웨이 연결.
+- `ExpoProjectionReadTests`: 제목의 꺼짐·적중·MISS 대체와 기간·취소 기한의 항상 동기 조회를 Expo 모의 서버 호출 경로로 확인하고, 메시지 해석·거절 규칙을 본다(Docker 불필요).
+- `ExpoProjectionKafkaTests`(Testcontainers PostgreSQL + Kafka): version 순서·중복·옛 메시지 무시, tombstone 뒤 되살림 방지, 삭제 중 MISS, 실제 broker 소비와 DLT, 제목은 프로젝션·기간은 동기인 게이트웨이 연결.

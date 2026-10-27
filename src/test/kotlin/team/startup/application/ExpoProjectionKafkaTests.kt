@@ -28,8 +28,8 @@ import org.testcontainers.kafka.KafkaContainer
 import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.ExpoProjectionReadTests.Companion.event
 import team.startup.application.domain.application.repository.ExpoProjectionRepository
+import team.startup.application.domain.application.service.impl.AdminGroupMessageGateway
 import team.startup.application.domain.application.service.impl.ExpoChangedConsumer
-import team.startup.application.domain.application.service.impl.ExpoPeriod
 import team.startup.application.domain.application.service.impl.ExpoProjectionUpdater
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import tools.jackson.databind.ObjectMapper
@@ -46,6 +46,8 @@ class ExpoProjectionKafkaTests {
     @Autowired private lateinit var repository: ExpoProjectionRepository
 
     @Autowired private lateinit var registration: RegistrationGateway
+
+    @Autowired private lateinit var groupMessage: AdminGroupMessageGateway
 
     @Autowired private lateinit var mapper: ObjectMapper
 
@@ -116,14 +118,17 @@ class ExpoProjectionKafkaTests {
     }
 
     @Test
-    fun `gateway reads the projection and falls back to the sync call on a miss`() {
+    fun `title reads the projection while expo period stays on the sync call`() {
         val expo = UUID.randomUUID()
         assertTrue(updater.apply(change(expo, 40)))
 
-        assertEquals(ExpoPeriod("2030-01-01", "2030-01-02", true, 3), registration.expoPeriod(expo.toString()))
-        // No Expo is reachable in this test, so reaching the synchronous call fails with its existing 503.
-        val failure = assertThrows(ResponseStatusException::class.java) { registration.expoPeriod(UUID.randomUUID().toString()) }
-        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, failure.statusCode)
+        assertEquals("v40", groupMessage.expoName(expo))
+        // No Expo is reachable in this test, so every synchronous call fails with its existing 503,
+        // including the expo period even though the projection holds a row for it.
+        for (target in listOf(expo, UUID.randomUUID())) {
+            val failure = assertThrows(ResponseStatusException::class.java) { registration.expoPeriod(target.toString()) }
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, failure.statusCode)
+        }
     }
 
     @Test

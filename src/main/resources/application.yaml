@@ -51,7 +51,7 @@ application:
     response-url: ${APPLICATION_PROMOTION_OFFERS_RESPONSE_URL:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
   # Expo `expo.expo.changed` 로컬 프로젝션(docs/expo-projection.md). 꺼져 있으면 소비자가 뜨지 않고 Expo를 예전처럼 동기 조회한다.
-  # 켜면 박람회 기간·전화번호 인증 설정·제목·사전등록 취소 기한을 프로젝션에서 읽고, 없으면 동기 조회로 넘어간다.
+  # 켜면 관리자 그룹 발송의 박람회 제목만 프로젝션에서 읽고, 없으면 동기 조회로 넘어간다. 신청 기간·취소 기한은 항상 동기 조회다.
   expo-projection:
     enabled: ${KAFKA_EXPO_PROJECTION_ENABLED:false}
     bootstrap-servers: ${KAFKA_EXPO_PROJECTION_BOOTSTRAP_SERVERS:}

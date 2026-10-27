@@ -9,7 +9,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 // KAFKA_EXPO_PROJECTION_ENABLED=true일 때만 있는 Expo 읽기 경로(docs/expo-projection.md). 없으면(null) 게이트웨이는 예전 동기 조회만 한다.
-// MISS(행 없음·tombstone·삭제 중·회차 없음)면 null을 돌려주고 호출자가 기존 동기 조회로 넘어간다. 같은 대상의 MISS 로그는 한 번만 남긴다.
+// 박람회 제목 표시에만 쓴다. 신청 기간·취소 기한처럼 옛 값이면 안 되는 판단은 항상 Expo를 동기 조회한다.
+// MISS(행 없음·tombstone·삭제 중)면 null을 돌려주고 호출자가 기존 동기 조회로 넘어간다. 같은 대상의 MISS 로그는 한 번만 남긴다.
 @Component
 @ConditionalOnProperty(name = ["application.expo-projection.enabled"], havingValue = "true")
 class ExpoProjection(
@@ -18,20 +19,14 @@ class ExpoProjection(
     private val log = LoggerFactory.getLogger(javaClass)
     private val missed = ConcurrentHashMap.newKeySet<String>()
 
-    fun expo(expoId: UUID): ExpoProjectionRepository.Expo? = store.expo(expoId) ?: miss("expo", expoId, null)
-
-    fun session(
-        expoId: UUID,
-        sessionId: Long,
-    ): ExpoProjectionRepository.Session? = store.session(expoId, sessionId) ?: miss("session", expoId, sessionId)
+    fun expo(expoId: UUID): ExpoProjectionRepository.Expo? = store.expo(expoId) ?: miss("expo", expoId)
 
     private fun miss(
         kind: String,
         expoId: UUID,
-        sessionId: Long?,
     ): Nothing? {
-        if (missed.size < MAX_LOGGED_MISSES && missed.add("$kind:$expoId:$sessionId")) {
-            log.info("Expo projection miss, falling back to sync call: kind={}, expoId={}, sessionId={}", kind, expoId, sessionId)
+        if (missed.size < MAX_LOGGED_MISSES && missed.add("$kind:$expoId")) {
+            log.info("Expo projection miss, falling back to sync call: kind={}, expoId={}", kind, expoId)
         }
         return null
     }

@@ -9,11 +9,6 @@ import java.util.UUID
 // Expo `expo.expo.changed`의 로컬 복사본에서 읽는 쪽. 삭제됐거나 삭제 중인 박람회는 없는 것으로 돌려 동기 조회로 넘긴다.
 interface ExpoProjectionStore {
     fun expo(expoId: UUID): ExpoProjectionRepository.Expo?
-
-    fun session(
-        expoId: UUID,
-        sessionId: Long,
-    ): ExpoProjectionRepository.Session?
 }
 
 @Repository
@@ -90,7 +85,7 @@ class ExpoProjectionRepository(
                 expoId,
             ).singleOrNull()
 
-    override fun session(
+    fun session(
         expoId: UUID,
         sessionId: Long,
     ): Session? =

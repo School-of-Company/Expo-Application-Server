@@ -6,8 +6,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.http.HttpStatus
-import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.repository.ExpoProjectionRepository
 import team.startup.application.domain.application.repository.ExpoProjectionStore
 import team.startup.application.domain.application.service.impl.AdminGroupMessageGateway
@@ -23,6 +21,7 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 // KAFKA_EXPO_PROJECTION_ENABLED 꺼짐(projection 없음)·켜짐 적중·MISS 동기 대체를 Expo 모의 서버 호출로 확인한다.
+// 신청 기간·취소 기한은 켜져 있어도 항상 Expo를 동기 조회하고, 프로젝션은 관리자 그룹 발송의 박람회 제목에만 쓴다.
 class ExpoProjectionReadTests {
     private lateinit var server: HttpServer
     private val paths = CopyOnWriteArrayList<String>()
@@ -31,14 +30,8 @@ class ExpoProjectionReadTests {
     private val store =
         object : ExpoProjectionStore {
             val expos = mutableMapOf<UUID, ExpoProjectionRepository.Expo>()
-            val sessions = mutableMapOf<Pair<UUID, Long>, ExpoProjectionRepository.Session>()
 
             override fun expo(expoId: UUID) = expos[expoId]
-
-            override fun session(
-                expoId: UUID,
-                sessionId: Long,
-            ) = sessions[expoId to sessionId]
         }
 
     @BeforeEach
@@ -68,7 +61,7 @@ class ExpoProjectionReadTests {
 
     private val url get() = "http://127.0.0.1:${server.address.port}"
 
-    private fun registration(projection: ExpoProjection?) =
+    private fun registration() =
         RegistrationGateway(
             mapper = mapper,
             expoUrl = url,
@@ -77,61 +70,42 @@ class ExpoProjectionReadTests {
             expoInternalToken = "expo-token",
             formInternalToken = "",
             userInternalToken = "",
-            projection = projection,
         )
 
     private fun groupMessage(projection: ExpoProjection?) =
         AdminGroupMessageGateway(mapper, url, "", "", "expo-token", "", "", projection = projection)
 
-    private fun deadlines(projection: ExpoProjection?) =
-        OwnerCancellationDeadlineGateway(mapper, url, "expo-token", projection = projection)
+    private fun deadlines() = OwnerCancellationDeadlineGateway(mapper, url, "expo-token")
 
     private val remotePeriod = ExpoPeriod("2026-10-01", "2026-10-03", false, 0)
 
     @Test
-    fun `flag off keeps every read on the synchronous Expo call`() {
+    fun `flag off keeps the title on the synchronous Expo call`() {
         store.expos[EXPO] = LOCAL
-        store.sessions[EXPO to 7L] = ExpoProjectionRepository.Session(7, Instant.parse("2030-01-01T00:00:00Z"))
 
-        assertEquals(remotePeriod, registration(null).expoPeriod(EXPO.toString()))
         assertEquals("원격 박람회", groupMessage(null).expoName(EXPO))
-        assertEquals(Instant.parse("2026-10-12T01:00:00Z"), deadlines(null).preregister(EXPO, 7))
-        assertEquals(listOf("/internal/expo/$EXPO", "/internal/expo/$EXPO", "/internal/expo/$EXPO/preregister-sessions/7"), paths)
+        assertEquals(listOf("/internal/expo/$EXPO"), paths)
     }
 
     @Test
-    fun `flag on reads the projection without calling Expo`() {
+    fun `flag on reads the title from the projection without calling Expo`() {
         store.expos[EXPO] = LOCAL
-        store.sessions[EXPO to 7L] = ExpoProjectionRepository.Session(7, Instant.parse("2030-01-01T00:00:00Z"))
-        val projection = ExpoProjection(store)
 
-        assertEquals(ExpoPeriod("2030-01-01", "2030-01-02", true, 3), registration(projection).expoPeriod(EXPO.toString()))
-        assertEquals(ExpoPeriod("2030-01-01", "2030-01-02", true, 3), registration(projection).expoPeriod(EXPO.toString().uppercase()))
-        assertEquals("로컬 박람회", groupMessage(projection).expoName(EXPO))
-        assertEquals(Instant.parse("2030-01-01T00:00:00Z"), deadlines(projection).preregister(EXPO, 7))
+        assertEquals("로컬 박람회", groupMessage(ExpoProjection(store)).expoName(EXPO))
         assertEquals(emptyList<String>(), paths)
     }
 
     @Test
-    fun `projected missing deadline is rejected like the synchronous response`() {
-        store.expos[EXPO] = LOCAL
-        store.sessions[EXPO to 7L] = ExpoProjectionRepository.Session(7, null)
-
-        val failure = assertThrows(ResponseStatusException::class.java) { deadlines(ExpoProjection(store)).preregister(EXPO, 7) }
-
-        assertEquals(HttpStatus.CONFLICT, failure.statusCode)
-        assertEquals(emptyList<String>(), paths)
+    fun `flag on with a projection miss falls back to the synchronous title call`() {
+        assertEquals("원격 박람회", groupMessage(ExpoProjection(store)).expoName(EXPO))
+        assertEquals(listOf("/internal/expo/$EXPO"), paths)
     }
 
     @Test
-    fun `flag on with a projection miss falls back to the synchronous call`() {
-        val projection = ExpoProjection(store)
-
-        assertEquals(remotePeriod, registration(projection).expoPeriod(EXPO.toString()))
-        assertEquals(remotePeriod, registration(projection).expoPeriod("not-a-uuid").also { paths.removeAt(paths.lastIndex) })
-        assertEquals("원격 박람회", groupMessage(projection).expoName(EXPO))
-        assertEquals(Instant.parse("2026-10-12T01:00:00Z"), deadlines(projection).preregister(EXPO, 7))
-        assertEquals(listOf("/internal/expo/$EXPO", "/internal/expo/$EXPO", "/internal/expo/$EXPO/preregister-sessions/7"), paths)
+    fun `expo period and cancellation deadline always use the synchronous Expo call`() {
+        assertEquals(remotePeriod, registration().expoPeriod(EXPO.toString()))
+        assertEquals(Instant.parse("2026-10-12T01:00:00Z"), deadlines().preregister(EXPO, 7))
+        assertEquals(listOf("/internal/expo/$EXPO", "/internal/expo/$EXPO/preregister-sessions/7"), paths)
     }
 
     @Test
