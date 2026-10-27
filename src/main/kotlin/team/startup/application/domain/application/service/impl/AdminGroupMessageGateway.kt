@@ -42,6 +42,7 @@ class AdminGroupMessageGateway(
     @Value("\${application.admin-group-messaging.user-internal-token:}") private val userToken: String,
     @Value("\${application.admin-group-messaging.notification-internal-token:}") private val notificationToken: String,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
+    private val projection: ExpoProjection? = null,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -155,6 +156,7 @@ class AdminGroupMessageGateway(
 
     // 카카오 `#{행사명}`: 발송하는 박람회의 현재 제목. 공백 제목은 없는 값으로 보고 대상별 누락으로 처리한다.
     fun expoName(expoId: UUID): String? {
+        projection?.expo(expoId)?.let { return it.title.trim().takeIf { title -> title.isNotEmpty() } }
         val title = node(call(Provider.EXPO, expoUrl, "/internal/expo/$expoId", token = expoToken)).get("title")
         if (title?.isString != true) invalidProviderResponse("박람회")
         return title.stringValue().trim().takeIf { it.isNotEmpty() }
