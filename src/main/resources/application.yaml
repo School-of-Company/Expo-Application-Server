@@ -50,6 +50,12 @@ application:
     bootstrap-servers: ${APPLICATION_PROMOTION_OFFERS_BOOTSTRAP_SERVERS:}
     response-url: ${APPLICATION_PROMOTION_OFFERS_RESPONSE_URL:}
   internal-token: ${APPLICATION_INTERNAL_TOKEN:}
+  # Expo `expo.expo.changed` 로컬 프로젝션(docs/expo-projection.md). 꺼져 있으면 소비자가 뜨지 않고 Expo를 예전처럼 동기 조회한다.
+  # 켜면 박람회 기간·전화번호 인증 설정·제목·사전등록 취소 기한을 프로젝션에서 읽고, 없으면 동기 조회로 넘어간다.
+  expo-projection:
+    enabled: ${KAFKA_EXPO_PROJECTION_ENABLED:false}
+    bootstrap-servers: ${KAFKA_EXPO_PROJECTION_BOOTSTRAP_SERVERS:}
+    group-id: ${KAFKA_EXPO_PROJECTION_GROUP_ID:expo-application-server.expo-changed}
   # #162 관리자 신청 현황 변경 SSE(docs/admin-data-change-events.md). Gateway의 text/event-stream 전달을 확인한 뒤 켠다.
   admin-events:
     enabled: ${APPLICATION_ADMIN_EVENTS_ENABLED:false}
