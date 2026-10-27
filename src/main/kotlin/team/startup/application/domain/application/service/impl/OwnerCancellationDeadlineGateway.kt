@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
+import team.startup.application.domain.application.repository.PreregisterSessionRepository
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
 import java.net.http.HttpClient
@@ -25,6 +26,8 @@ class OwnerCancellationDeadlineGateway(
     @Value("\${application.registration.expo-internal-token:}") private val token: String,
     private val programs: RegistrationGateway? = null,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
+    private val projection: ExpoProjection? = null,
+    private val sessions: PreregisterSessionRepository? = null,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -49,6 +52,12 @@ class OwnerCancellationDeadlineGateway(
         expoId: UUID,
         sessionId: Long,
     ): Instant {
+        // 회차 변경 확인 중이면 Expo가 409로 막으므로 프로젝션 값을 쓰지 않고 예전처럼 동기 조회한다.
+        if (projection != null && sessions?.pending(expoId, sessionId) == null) {
+            projection.session(expoId, sessionId)?.let {
+                return it.cancelEndedAt ?: throw ResponseStatusException(HttpStatus.CONFLICT, "취소 기한이 설정되지 않았습니다.")
+            }
+        }
         if (baseUrl.isBlank() || token.isBlank()) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "취소 기한 연동이 설정되지 않았습니다.")
         }
