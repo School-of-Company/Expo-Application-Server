@@ -594,7 +594,9 @@ class RegistrationGateway(
                 mapOf(
                     "phoneNumber" to phoneNumber,
                     "requestId" to requestId,
-                    "participants" to request.newParticipants,
+                    // 저장된 요청과 고정된 폼 snapshot으로만 조립하므로 같은 키 재전송 본문이 매번 같다.
+                    "participants" to
+                        request.newParticipants.map { it.copy(informationJson = FieldVisitAnswers.assemble(form, it, mapper)) },
                     "personalInformationStatus" to request.personalInformationStatus,
                     "formId" to form?.id,
                     "questions" to

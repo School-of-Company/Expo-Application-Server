@@ -47,13 +47,7 @@ class RegisterFieldVisitServiceImpl(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST)
         }
         request.newParticipants.forEach {
-            val answers =
-                try {
-                    mapper.readTree(it.informationJson)
-                } catch (ex: Exception) {
-                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "폼 답변이 올바른 JSON이 아닙니다.", ex)
-                }
-            if (!answers.isObject) throw ResponseStatusException(HttpStatus.BAD_REQUEST, "폼 답변은 JSON 객체여야 합니다.")
+            FieldVisitAnswers.assemble(null, it, mapper)
             if (it.occupation !in CompanionAnswers.occupations || it.region !in CompanionAnswers.regions ||
                 (it.occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER") && it.school.isNullOrBlank())
             ) {
@@ -91,6 +85,15 @@ class RegisterFieldVisitServiceImpl(
                     }
                 }
             }
+            val form =
+                if (request.newParticipants.isEmpty() || requests.exists(command.expoId, command.requestId)) {
+                    null
+                } else {
+                    // #333: 요청 저장과 User 생성 전에 제출 당시 FIELD 폼으로 답변을 검증한다. 같은 키 재시도는 처음 snapshot을 쓴다.
+                    gateway.form(command.expoId.toString(), "STANDARD", "FIELD", false).also { form ->
+                        request.newParticipants.forEach { FieldVisitAnswers.assemble(form, it, mapper) }
+                    }
+                }
             val stored =
                 requests.reserve(
                     command.expoId,
@@ -101,11 +104,7 @@ class RegisterFieldVisitServiceImpl(
                     request,
                     party.representativeId,
                     party.participants.map { it.participantId },
-                    if (request.newParticipants.isEmpty() || requests.exists(command.expoId, command.requestId)) {
-                        null
-                    } else {
-                        gateway.form(command.expoId.toString(), "STANDARD", "FIELD", false)
-                    },
+                    form,
                 )
             finish(command.expoId, command.requestId, stored)
         }

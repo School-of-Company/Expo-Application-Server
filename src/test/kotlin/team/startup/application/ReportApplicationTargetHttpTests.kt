@@ -30,8 +30,16 @@ import team.startup.application.domain.application.service.impl.AdminExpoGateway
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.sql.DataSource
 
 @SpringBootTest(properties = ["eureka.client.enabled=false", "application.internal-token=test-token"])
@@ -640,6 +648,38 @@ class ReportApplicationTargetHttpTests {
     }
 
     @Test
+    fun `지연된 User 요청은 다른 대상 조회의 응답을 막지 않는다`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = AtomicBoolean(true)
+        observeUser = {
+            if (first.compareAndSet(true, false)) {
+                entered.countDown()
+                check(release.await(30, TimeUnit.SECONDS))
+            }
+        }
+        HttpClient.newHttpClient().use { client ->
+            val blocked =
+                client.sendAsync(
+                    HttpRequest
+                        .newBuilder(URI.create("http://127.0.0.1:${user.address.port}/internal/probe"))
+                        .header("X-Internal-Token", "user-token")
+                        .build(),
+                    HttpResponse.BodyHandlers.discarding(),
+                )
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                userCandidates(listOf(1))
+                assertEquals(2, json(create("{\"filter\":{\"q\":\"person\"}}"))["totalElements"].asInt())
+            } finally {
+                release.countDown()
+                blocked.get(5, TimeUnit.SECONDS)
+                observeUser = null
+            }
+        }
+    }
+
+    @Test
     fun `User 전체 페이지와 배치 조회 중에는 스냅샷 작업이 DB 연결을 점유하지 않는다`() {
         userCandidates((1L..501L).toList())
         val pool = dataSource.unwrap(com.zaxxer.hikari.HikariDataSource::class.java)
@@ -779,8 +819,10 @@ class ReportApplicationTargetHttpTests {
         private var batchBody: String? = null
 
         @Volatile private var observeUser: (() -> Unit)? = null
+        private val userExecutor = Executors.newVirtualThreadPerTaskExecutor()
         private val user =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                executor = userExecutor
                 createContext("/internal") { exchange ->
                     observeUser?.invoke()
                     val body = exchange.requestBody.readAllBytes().decodeToString()
@@ -817,6 +859,7 @@ class ReportApplicationTargetHttpTests {
         @JvmStatic
         fun stopUser() {
             user.stop(0)
+            userExecutor.close()
         }
 
         @Container
