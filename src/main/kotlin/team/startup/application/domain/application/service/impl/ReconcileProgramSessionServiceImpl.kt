@@ -16,6 +16,17 @@ class ReconcileProgramSessionServiceImpl(
 ) : ReconcileProgramSessionService {
     @Transactional
     override fun execute(command: ProgramSessionKey) {
+        repository.settledDefinition(command)?.let { current ->
+            val policy = current.policy
+            if (policy != null &&
+                (
+                    repository.waitingCount(current) == 0 ||
+                        (policy.channels ?: listOf(null)).none { waitlist.free(current, it?.name) > 0 }
+                )
+            ) {
+                return
+            }
+        }
         val definition =
             gateway.programDefinition(command.expoId.toString(), command.programType, command.programId)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)

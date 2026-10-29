@@ -1,8 +1,10 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataAccessException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.http.HttpStatus
+import org.springframework.jdbc.UncategorizedSQLException
 import org.springframework.stereotype.Component
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
@@ -97,7 +99,12 @@ class ProgramSessionAdmission(
                         null
                     }
                 }
-            } catch (ex: PessimisticLockingFailureException) {
+            } catch (ex: DataAccessException) {
+                if (ex !is PessimisticLockingFailureException &&
+                    (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != "55P03")
+                ) {
+                    throw ex
+                }
                 throw ProgramApplicationConflictException("신청이 몰려 처리하지 못했습니다. 같은 멱등 키로 재시도해 주세요.").apply { initCause(ex) }
             }
         deadline?.let { throw it }

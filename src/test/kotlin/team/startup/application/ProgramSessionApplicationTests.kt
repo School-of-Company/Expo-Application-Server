@@ -2482,6 +2482,115 @@ class ProgramSessionApplicationTests {
         )
     }
 
+    @ParameterizedTest
+    @CsvSource("STANDARD", "TRAINING")
+    fun `session lock timeout returns HTTP conflict and the same key can retry`(typeName: String) {
+        val type = ProgramSessionType.valueOf(typeName)
+
+        fun request() =
+            post("/application/expos/$EXPO/program-sessions/$type/1/applications")
+                .with(csrf())
+                .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                .header("Idempotency-Key", "lock-timeout")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"participantId":1,"formVersion":1,"answers":{"101":"a"}}""")
+
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.autoCommit = false
+            connection.prepareStatement("SELECT pg_advisory_xact_lock(44, hashtext(?))").use {
+                it.setString(1, "$EXPO:$type:$GROUP")
+                it.execute()
+            }
+            mvc.perform(request()).andExpect(status().isConflict).andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+            assertEquals(0L, count("tb_program_session_application"))
+            assertEquals(0L, count("tb_program_session_receipt"))
+            connection.rollback()
+        }
+        mvc.perform(request()).andExpect(status().isCreated).andExpect(jsonPath("$.status").value("CONFIRMED"))
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `reconcile skips Expo when settled sessions have no waiter or no free seat`() {
+        waitingCapacity = 1
+        var before = batchCalls.get()
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(before + 1, batchCalls.get())
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        before = batchCalls.get()
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(before, batchCalls.get())
+
+        service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        before = batchCalls.get()
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(before, batchCalls.get())
+        assertEquals(1L, count("tb_training_program_application"))
+        assertEquals(
+            1L,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_application WHERE status = 'WAITING'", Long::class.java),
+        )
+    }
+
+    @ParameterizedTest
+    @CsvSource("false", "true")
+    fun `reconcile confirms pending policies even without waiters or free seats`(hasWaiter: Boolean) {
+        waitingCapacity = 1
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        if (hasWaiter) service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
+        change(ProgramSessionType.TRAINING) { it.put("waitingCapacity", 2) }
+        assertEquals(
+            1,
+            jdbc.queryForObject("SELECT count(*) FROM tb_program_session_state WHERE pending_change_id IS NOT NULL", Int::class.java),
+        )
+        val before = batchCalls.get()
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(before + 1, batchCalls.get())
+        assertEquals(
+            0,
+            jdbc.queryForObject(
+                "SELECT count(*) FROM tb_program_session_state WHERE pending_change_id IS NOT NULL OR pending_definition IS NOT NULL",
+                Int::class.java,
+            ),
+        )
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `session SQL failures other than lock timeout are not converted to HTTP conflict`() {
+        jdbc.execute(
+            "CREATE FUNCTION test_apply_sqlstate() RETURNS trigger LANGUAGE plpgsql AS " +
+                "$$ BEGIN RAISE EXCEPTION 'application failure' USING ERRCODE = '55000'; END; $$",
+        )
+        try {
+            jdbc.execute(
+                "CREATE TRIGGER test_apply_sqlstate BEFORE INSERT ON tb_program_session_application " +
+                    "FOR EACH ROW EXECUTE FUNCTION test_apply_sqlstate()",
+            )
+            val failure =
+                assertThrows(jakarta.servlet.ServletException::class.java) {
+                    mvc.perform(
+                        post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications")
+                            .with(csrf())
+                            .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                            .header("Idempotency-Key", "other-sqlstate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""{"participantId":1,"formVersion":1,"answers":{"101":"a"}}"""),
+                    )
+                }
+            val sql =
+                generateSequence(failure as Throwable?) {
+                    it.cause
+                }.filterIsInstance<org.springframework.jdbc.UncategorizedSQLException>().single()
+            assertEquals("55000", sql.sqlException?.sqlState)
+            assertEquals(0L, count("tb_program_session_application"))
+            assertEquals(0L, count("tb_standard_program_application"))
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS test_apply_sqlstate ON tb_program_session_application")
+            jdbc.execute("DROP FUNCTION test_apply_sqlstate()")
+        }
+    }
+
     @Test
     fun `persisted policy marshalling preserves scheduler cutoff and pending events`() {
         waitingCapacity = 1
