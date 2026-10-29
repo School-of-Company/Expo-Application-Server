@@ -330,7 +330,7 @@ class PreregisterReservationRepository(
                 "AND a.participant_id <> a.representative_id AND a.status = 'CANCELLED' " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
                 "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') " +
-                "AND NOT EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.expo_id::text = a.expo_id::text " +
+                "AND NOT EXISTS(SELECT 1 FROM tb_program_session_application p WHERE p.expo_id = a.expo_id " +
                 "AND p.participant_id = a.participant_id AND p.status <> 'CANCELLED') " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_standard_program_application s WHERE s.participant_id = a.participant_id) " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_field_visit_registration f WHERE f.expo_id=a.expo_id " +
