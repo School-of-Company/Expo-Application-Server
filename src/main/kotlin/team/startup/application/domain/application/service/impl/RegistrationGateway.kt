@@ -291,9 +291,8 @@ class RegistrationGateway(
         participantId: Long,
     ): ManagedParticipantSelection {
         val phoneNumber = participantSessionPhone(expoId, sessionId)
-        if (fieldVisitsEnabled &&
-            fieldVisits?.find(UUID.fromString(expoId), participantId, fieldVisitToday())?.cancellationPending == true
-        ) {
+        val visit = if (fieldVisitsEnabled) fieldVisits?.find(UUID.fromString(expoId), participantId, fieldVisitToday()) else null
+        if (visit?.cancellationPending == true) {
             throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_CANCELLATION_PENDING")
         }
         val participants =
@@ -322,7 +321,11 @@ class RegistrationGateway(
         }
         return ManagedParticipantSelection(
             if (occupation.isNull) null else occupation.stringValue(),
-            fieldRegistered(participants.get(0), UUID.fromString(expoId), participantId),
+            if (fieldVisitsEnabled) {
+                visit?.status == "ACTIVE" && !visit.cancellationPending && !visit.deliveryPending
+            } else {
+                fieldRegistered(participants.get(0), UUID.fromString(expoId), participantId)
+            },
         )
     }
 
@@ -367,6 +370,19 @@ class RegistrationGateway(
         if (registered == null || !registered.isBoolean || participants == null || !participants.isArray) {
             invalidManagedResponse()
         }
+        val visits =
+            if (fieldVisitsEnabled) {
+                fieldVisits
+                    ?.findToday(
+                        expoId,
+                        participants.toList().map {
+                            it.path("participantId").asLong()
+                        },
+                        fieldVisitToday(),
+                    ).orEmpty()
+            } else {
+                emptyMap()
+            }
         val party =
             OwnerApplicationParty(
                 (0 until participants.size()).map { index ->
@@ -387,7 +403,15 @@ class RegistrationGateway(
                         name.stringValue(),
                         if (occupation.isNull) null else occupation.stringValue(),
                         representative.asBoolean(),
-                        fieldRegistered(node, expoId, id.asLong()),
+                        if (fieldVisitsEnabled) {
+                            visits[id.asLong()]?.let {
+                                it.status == "ACTIVE" && !it.cancellationPending &&
+                                    !it.deliveryPending
+                            } ==
+                                true
+                        } else {
+                            fieldRegistered(node, expoId, id.asLong())
+                        },
                         school?.takeIf { it.isString }?.stringValue(),
                         school != null,
                         node.path("applicationType").asString() == "FIELD",
@@ -403,7 +427,7 @@ class RegistrationGateway(
         ) {
             invalidManagedResponse()
         }
-        return party
+        return party.copy(phoneNumber = phoneNumber)
     }
 
     private fun invalidManagedResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "관리 참가자 응답이 올바르지 않습니다.")

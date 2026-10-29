@@ -8,6 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramGuardianPolicy
 import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
@@ -86,9 +87,9 @@ class StudentGuardianEligibilityAdapter(
         command: ApplyProgramSessionCommand,
         definition: ProgramSessionDefinition,
         occupation: String?,
-    ) {
-        val policy = definition.policy ?: return
-        val guardian = policy.guardianPolicy ?: return
+    ): ProgramFormSnapshot? {
+        val policy = definition.policy ?: return null
+        val guardian = policy.guardianPolicy ?: return null
         if (!guardian.valid()) invalidPolicy()
         if (occupation == "PARENT") conflict(ProgramIneligibleReason.GUARDIAN_LINK_INVALID)
         val form = forms.loadAndValidate(command.expoId, policy.formId, command.formVersion, command.answers)
@@ -98,6 +99,7 @@ class StudentGuardianEligibilityAdapter(
         if (school == guardian.guardianSchoolValue) schoolTypeMismatch()
         if ((school == guardian.elementarySchoolValue) != (occupation == "ELEMENTARY_STUDENT")) schoolTypeMismatch()
         if (needsGuardian(guardian, command.answers)) conflict(ProgramIneligibleReason.GUARDIAN_REQUIRED)
+        return form
     }
 
     private fun saved(

@@ -45,6 +45,7 @@ data class ManagedOwnerParticipant(
 
 data class OwnerApplicationParty(
     val participants: List<ManagedOwnerParticipant>,
+    @get:JsonIgnore val phoneNumber: String? = null,
 ) {
     val representativeId: Long? get() = participants.singleOrNull { it.representative }?.participantId
 }
