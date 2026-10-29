@@ -100,8 +100,9 @@ class ProgramSessionAdmission(
                     }
                 }
             } catch (ex: DataAccessException) {
+                // 그룹 잠금 대기가 lock_timeout(5초)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
                 if (ex !is PessimisticLockingFailureException &&
-                    (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != "55P03")
+                    (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != LOCK_NOT_AVAILABLE)
                 ) {
                     throw ex
                 }
@@ -275,6 +276,9 @@ class ProgramSessionAdmission(
         }
     }
 }
+
+// PostgreSQL lock_not_available. Spring은 lock_timeout 초과를 UncategorizedSQLException으로 감싼다.
+private const val LOCK_NOT_AVAILABLE = "55P03"
 
 internal class ProgramSessionAdmissionDeadlineException(
     message: String,
