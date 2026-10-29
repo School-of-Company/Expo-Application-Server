@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -52,7 +53,7 @@ class PreregisterRecoveryScheduler(
                     }
                     try {
                         send(expoId, participantId)
-                    } catch (ex: org.springframework.web.server.ResponseStatusException) {
+                    } catch (ex: ResponseStatusException) {
                         repository.countRetry(expoId, participantId)
                         return@withCountDeliveryLock false
                     }
