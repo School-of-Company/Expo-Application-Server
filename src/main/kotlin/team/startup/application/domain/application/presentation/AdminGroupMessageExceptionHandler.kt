@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation
 
+import org.springframework.core.annotation.Order
 import org.springframework.dao.DataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
@@ -21,6 +22,7 @@ import team.startup.application.domain.application.service.impl.AdminExpoGateway
         LegacyTraineeAttributionController::class,
     ],
 )
+@Order(0)
 class AdminGroupMessageExceptionHandler {
     @ExceptionHandler(ProgramApplicationConflictException::class)
     fun conflict(): ResponseEntity<ProblemDetail> = error(409, "Application cancellation conflicts with the current program policy")

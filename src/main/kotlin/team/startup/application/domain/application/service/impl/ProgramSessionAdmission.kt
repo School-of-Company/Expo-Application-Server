@@ -1,8 +1,10 @@
 package team.startup.application.domain.application.service.impl
 
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.dao.DataAccessException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.http.HttpStatus
+import org.springframework.jdbc.UncategorizedSQLException
 import org.springframework.stereotype.Component
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
@@ -97,7 +99,13 @@ class ProgramSessionAdmission(
                         null
                     }
                 }
-            } catch (ex: PessimisticLockingFailureException) {
+            } catch (ex: DataAccessException) {
+                // 그룹 잠금 대기가 lock_timeout(5초)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
+                if (ex !is PessimisticLockingFailureException &&
+                    (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != LOCK_NOT_AVAILABLE)
+                ) {
+                    throw ex
+                }
                 throw ProgramApplicationConflictException("신청이 몰려 처리하지 못했습니다. 같은 멱등 키로 재시도해 주세요.").apply { initCause(ex) }
             }
         deadline?.let { throw it }
@@ -268,6 +276,9 @@ class ProgramSessionAdmission(
         }
     }
 }
+
+// PostgreSQL lock_not_available. Spring은 lock_timeout 초과를 UncategorizedSQLException으로 감싼다.
+private const val LOCK_NOT_AVAILABLE = "55P03"
 
 internal class ProgramSessionAdmissionDeadlineException(
     message: String,

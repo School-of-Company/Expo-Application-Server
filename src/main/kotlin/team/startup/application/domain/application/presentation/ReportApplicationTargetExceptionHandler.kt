@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation
 
+import org.springframework.core.annotation.Order
 import org.springframework.dao.DataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
@@ -13,6 +14,7 @@ import org.springframework.web.server.ResponseStatusException
 import tools.jackson.core.JacksonException
 
 @RestControllerAdvice(assignableTypes = [ReportApplicationTargetController::class])
+@Order(0)
 class ReportApplicationTargetExceptionHandler {
     @ExceptionHandler(ResponseStatusException::class)
     fun expected(exception: ResponseStatusException): ResponseEntity<ProblemDetail> =
