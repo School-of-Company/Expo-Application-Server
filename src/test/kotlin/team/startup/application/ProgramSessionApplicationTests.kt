@@ -2511,19 +2511,19 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
-    fun `reconcile skips Expo when settled sessions have no waiter or no free seat`() {
+    fun `scheduler skips Expo when settled sessions have no waiter or no free seat`() {
         waitingCapacity = 1
         var before = batchCalls.get()
         reconcile(ProgramSessionType.TRAINING)
         assertEquals(before + 1, batchCalls.get())
         service.execute(command(type = ProgramSessionType.TRAINING))
         before = batchCalls.get()
-        reconcile(ProgramSessionType.TRAINING)
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
         assertEquals(before, batchCalls.get())
 
         service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
         before = batchCalls.get()
-        reconcile(ProgramSessionType.TRAINING)
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
         assertEquals(before, batchCalls.get())
         assertEquals(1L, count("tb_training_program_application"))
         assertEquals(
@@ -2533,8 +2533,19 @@ class ProgramSessionApplicationTests {
     }
 
     @ParameterizedTest
+    @CsvSource("1", "2")
+    fun `internal reconciliation reads Expo for settled sessions without waiters`(seats: Int) {
+        capacity = seats
+        service.execute(command(type = ProgramSessionType.TRAINING))
+        val before = batchCalls.get()
+        reconcile(ProgramSessionType.TRAINING)
+        assertEquals(before + 1, batchCalls.get())
+        assertEquals(1L, count("tb_training_program_application"))
+    }
+
+    @ParameterizedTest
     @CsvSource("false", "true")
-    fun `reconcile confirms pending policies even without waiters or free seats`(hasWaiter: Boolean) {
+    fun `scheduler confirms pending policies even without waiters or free seats`(hasWaiter: Boolean) {
         waitingCapacity = 1
         service.execute(command(type = ProgramSessionType.TRAINING))
         if (hasWaiter) service.execute(command(participant = 2, type = ProgramSessionType.TRAINING))
@@ -2544,7 +2555,7 @@ class ProgramSessionApplicationTests {
             jdbc.queryForObject("SELECT count(*) FROM tb_program_session_state WHERE pending_change_id IS NOT NULL", Int::class.java),
         )
         val before = batchCalls.get()
-        reconcile(ProgramSessionType.TRAINING)
+        context.getBean(ProgramWaitlistScheduler::class.java).reconcile()
         assertEquals(before + 1, batchCalls.get())
         assertEquals(
             0,
