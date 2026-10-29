@@ -974,6 +974,7 @@ class AdminApplicationHttpTests {
             waiting(null),
         )
         participantIds = listOf(10L, 11L)
+        batchBody = """[{"participantId":10,"occupation":"TEACHER"},{"participantId":11,"occupation":null}]"""
         userBody =
             """{"items":[""" +
             listOf(10 to "\"TEACHER\"", 11 to "null").joinToString(",") { (id, occupation) ->
@@ -999,6 +1000,7 @@ class AdminApplicationHttpTests {
         expoStatus = 200
         val response = mvc.perform(get(path).header("Authorization", "Bearer original-admin-jwt")).andReturn().response
         assertEquals(200, response.status)
+        assertEquals(listOf("batch:$expoId"), userRequests)
         assertEquals("no-store", response.getHeader("Cache-Control"))
         val body = mapper.readTree(response.contentAsString)
         assertEquals(2, body["confirmedUniqueParticipants"].asInt())
@@ -1033,11 +1035,24 @@ class AdminApplicationHttpTests {
                 .response.status,
         )
         expoRequests.clear()
+        userRequests.clear()
         val internal = mvc.perform(get(internalPath).header("X-Internal-Token", "test-token")).andReturn().response
         assertEquals(200, internal.status)
         assertEquals("no-store", internal.getHeader("Cache-Control"))
         assertEquals(body, mapper.readTree(internal.contentAsString))
         assertTrue(expoRequests.isEmpty())
+        assertEquals(listOf("batch:$expoId"), userRequests)
+        batchBody = """[{"participantId":10,"occupation":"GENERAL"},{"participantId":11,"occupation":null}]"""
+        val updated = mvc.perform(get(internalPath).header("X-Internal-Token", "test-token")).andReturn().response
+        assertEquals(200, updated.status)
+        val updatedOccupations =
+            mapper.readTree(updated.contentAsString)["occupations"].associate { row ->
+                row["occupation"].takeUnless { it.isNull }?.asString() to row["confirmedParticipants"].asInt()
+            }
+        assertEquals(1, updatedOccupations["GENERAL"])
+        assertEquals(0, updatedOccupations["TEACHER"])
+        assertEquals(1, updatedOccupations[null])
+        userRequests.clear()
         val unknown =
             mvc.perform(
                 get("/internal/expos/${UUID.randomUUID()}/preregistrations/summary").header("X-Internal-Token", "test-token"),
@@ -1046,6 +1061,7 @@ class AdminApplicationHttpTests {
         val unknownBody = mapper.readTree(unknown.andReturn().response.contentAsString)
         assertEquals(0, unknownBody["confirmedUniqueParticipants"].asInt())
         assertEquals(0, unknownBody["sessions"].size())
+        assertTrue(userRequests.isEmpty())
         jdbc.update("INSERT INTO tb_preregister_deleted_expo (expo_id) VALUES (?)", expoId)
         assertEquals(
             409,

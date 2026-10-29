@@ -1,13 +1,40 @@
 package team.startup.application
 
+import jdk.jfr.Recording
+import jdk.jfr.consumer.RecordingFile
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import team.startup.application.domain.application.time.ExpoProgramTime
+import java.nio.file.Path
 import java.time.Instant
 import java.time.format.DateTimeParseException
 
 class ExpoProgramTimeTests {
+    @Test
+    fun `minute precision local formats do not create parsing exceptions`(
+        @TempDir directory: Path,
+    ) {
+        ExpoProgramTime.parse("2026-10-20T10:00:00+09:00")
+        val events = directory.resolve("local-times.jfr")
+        Recording().use { recording ->
+            recording.enable("jdk.JavaExceptionThrow")
+            recording.start()
+            ExpoProgramTime.parse("2026-10-20T10:00")
+            ExpoProgramTime.parse("2026-10-20 10:00")
+            recording.stop()
+            recording.dump(events)
+        }
+        val parsingExceptions =
+            RecordingFile.readAllEvents(events).count {
+                it.eventType.name == "jdk.JavaExceptionThrow" &&
+                    it.getThread("eventThread").javaThreadId == Thread.currentThread().threadId() &&
+                    it.getClass("thrownClass").name == DateTimeParseException::class.java.name
+            }
+        assertEquals(0, parsingExceptions)
+    }
+
     @Test
     fun `Expo local formats use KST and explicit offsets keep their instant`() {
         for (value in listOf(

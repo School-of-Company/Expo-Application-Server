@@ -1,5 +1,6 @@
 package team.startup.application
 
+import com.sun.net.httpserver.HttpServer
 import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.ProducerRecord
@@ -36,9 +37,13 @@ import team.startup.application.domain.application.service.impl.NoticeContact
 import team.startup.application.domain.application.service.impl.ProgramPromotionGateway
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
+import java.net.InetSocketAddress
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @SpringBootTest(properties = ["eureka.client.enabled=false"])
 @Testcontainers
@@ -94,17 +99,19 @@ class ApplicationNotificationTests {
 
     private val producer = FlakyProducer()
 
-    private fun publisher(expoIds: List<String> = emptyList()) =
-        ApplicationNotificationPublisher(
-            repository,
-            ApplicationNotificationResolver(source, programs, preregister, reservations),
-            jdbc,
-            producer,
-            mapper,
-            "2020-01-01T00:00:00Z",
-            "notification.sms.requested",
-            expoIds,
-        )
+    private fun publisher(
+        expoIds: List<String> = emptyList(),
+        noticeSource: ApplicationNoticeSource = source,
+    ) = ApplicationNotificationPublisher(
+        repository,
+        ApplicationNotificationResolver(noticeSource, programs, preregister, reservations),
+        jdbc,
+        producer,
+        mapper,
+        "2020-01-01T00:00:00Z",
+        "notification.sms.requested",
+        expoIds,
+    )
 
     @BeforeEach
     fun reset() {
@@ -152,6 +159,78 @@ class ApplicationNotificationTests {
 
     private fun count(where: String = "TRUE") =
         jdbc.queryForObject("SELECT count(*) FROM tb_application_notification WHERE $where", Long::class.java)!!
+
+    @Test
+    fun `notification batch reuses participant and program lookups but rechecks state and refreshes the next batch`() {
+        val requestedIds = CopyOnWriteArrayList<Long>()
+        val programCalls = AtomicInteger()
+        val phone = AtomicReference("01011112222")
+        val server =
+            HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                createContext("/internal") { exchange ->
+                    val body =
+                        if (exchange.requestURI.path == "/internal/standard-participants/details") {
+                            val request = mapper.readTree(exchange.requestBody.bufferedReader().readText())
+                            val id = request["participantIds"][0].asLong()
+                            requestedIds.add(id)
+                            mapper.writeValueAsString(
+                                listOf(
+                                    mapOf(
+                                        "participantId" to id,
+                                        "representativeId" to
+                                            if (id ==
+                                                1L
+                                            ) {
+                                                null
+                                            } else {
+                                                1L
+                                            },
+                                        "name" to "Person$id",
+                                        "phoneNumber" to phone.get(),
+                                    ),
+                                ),
+                            )
+                        } else {
+                            programCalls.incrementAndGet()
+                            """{"id":3,"expoId":"$EXPO","programType":"STANDARD","title":"Program","startedAt":"2026-10-30T10:00:00+09:00","endedAt":"2026-10-30T11:00:00+09:00","place":"Hall"}"""
+                        }
+                    val bytes = body.toByteArray()
+                    exchange.sendResponseHeaders(200, bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                }
+                start()
+            }
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val publisher = publisher(noticeSource = ProgramPromotionGateway(mapper, url, "user-token", url, "expo-token"))
+            val party = (1L..5L).map { application(participantId = it) }
+            record { party.forEach { programAdmitted(EXPO, it, "CONFIRMED") } }
+
+            publisher.publishDue()
+
+            assertEquals(listOf(1L, 2L, 3L, 4L, 5L), requestedIds.toList())
+            assertEquals(1, programCalls.get())
+            assertEquals(5, sent().single()["items"].size())
+            val active = application(participantId = 6)
+            val cancelled = application(participantId = 7)
+            record {
+                programAdmitted(EXPO, active, "CONFIRMED")
+                programAdmitted(EXPO, cancelled, "CONFIRMED")
+            }
+            setStatus(cancelled, "CANCELLED")
+            phone.set("01033334444")
+
+            publisher.publishDue()
+
+            assertEquals(listOf(1L, 2L, 3L, 4L, 5L, 6L, 1L), requestedIds.toList())
+            assertEquals(2, programCalls.get())
+            assertEquals("01033334444", sent().last()["phoneNumber"].asString())
+            assertEquals(1, sent().last()["items"].size())
+            assertEquals(1L, count("skip_reason = 'STATE_CHANGED'"))
+        } finally {
+            server.stop(0)
+        }
+    }
 
     @Test
     fun `confirmed application sends the representative number with the actual participant and program`() {

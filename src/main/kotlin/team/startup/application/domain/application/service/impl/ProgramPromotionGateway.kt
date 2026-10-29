@@ -30,6 +30,32 @@ class ProgramPromotionGateway(
 ) : ApplicationNoticeSource {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
+    override fun forBatch(): ApplicationNoticeSource =
+        object : ApplicationNoticeSource {
+            private val participants = mutableMapOf<Pair<UUID, Long>, JsonNode>()
+            private val notices = mutableMapOf<Triple<UUID, ProgramSessionType, Long>, ProgramNotice>()
+
+            private fun participant(
+                expoId: UUID,
+                participantId: Long,
+            ): JsonNode = participants.getOrPut(expoId to participantId) { this@ProgramPromotionGateway.participant(expoId, participantId) }
+
+            override fun contact(
+                expoId: UUID,
+                participantId: Long,
+            ): NoticeContact {
+                val participant = participant(expoId, participantId)
+                return NoticeContact(phone(representative(expoId, participant, this::participant)), text(participant, "name"))
+            }
+
+            override fun programNotice(
+                expoId: UUID,
+                type: ProgramSessionType,
+                programId: Long,
+            ): ProgramNotice =
+                notices.getOrPut(Triple(expoId, type, programId)) { this@ProgramPromotionGateway.programNotice(expoId, type, programId) }
+        }
+
     // #308: 신청 결과 문자의 대표자 번호와 대상자 본인 이름. 대상자 번호로 대신하지 않는다.
     override fun contact(
         expoId: UUID,
@@ -140,11 +166,12 @@ class ProgramPromotionGateway(
     private fun representative(
         expoId: UUID,
         participant: JsonNode,
+        lookup: (UUID, Long) -> JsonNode = this::participant,
     ): JsonNode {
         val representativeId = participant.get("representativeId") ?: invalid()
         if (representativeId.isNull) return participant
         if (!representativeId.isIntegralNumber || !representativeId.canConvertToLong() || representativeId.asLong() <= 0) invalid()
-        return participant(expoId, representativeId.asLong()).also {
+        return lookup(expoId, representativeId.asLong()).also {
             if (it.get("representativeId")?.isNull != true) invalid()
         }
     }

@@ -114,7 +114,7 @@ class ApplicationNotificationPublisher(
             if (rows.isEmpty()) return@withDeliveryLock
             val resolved =
                 try {
-                    rows.map(resolver::resolve)
+                    resolver.resolveBatch(rows)
                 } catch (exception: Exception) {
                     repository.deferred(scoped, rows.map { it.id })
                     throw exception
