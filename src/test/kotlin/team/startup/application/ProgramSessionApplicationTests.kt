@@ -4787,8 +4787,9 @@ class ProgramSessionApplicationTests {
                     command: ApplyProgramSessionCommand,
                     definition: team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition,
                     occupation: String?,
-                ) {
+                ): team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot? {
                     if (guardianPolicy) throw ProgramApplicationConflictException("동반 정책은 배치 접수가 필요합니다.")
+                    return null
                 }
             }
 

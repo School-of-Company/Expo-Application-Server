@@ -26,7 +26,7 @@ class GetOwnerPromotionOffersServiceImpl(
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: OwnerPromotionOfferCommand): List<OwnerPromotionOffer> {
         val party = gateway.managedParty(command.expoId, command.participantSession)
-        val phone = gateway.participantSessionPhone(command.expoId.toString(), command.participantSession)
+        val phone = requireNotNull(party.phoneNumber)
         val now = clock.instant()
         return requireNotNull(
             reads.execute {

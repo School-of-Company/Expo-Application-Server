@@ -119,6 +119,24 @@ class FieldVisitRegistrationRepository(
                 visitDate,
             ).singleOrNull()
 
+    fun findToday(
+        expoId: UUID,
+        participantIds: Collection<Long>,
+        visitDate: LocalDate,
+    ): Map<Long, FieldVisitRegistration> {
+        if (participantIds.isEmpty()) return emptyMap()
+        return jdbc
+            .query(
+                "SELECT * FROM tb_field_visit_registration WHERE expo_id=? AND participant_id=ANY(?) AND visit_date=?",
+                org.springframework.jdbc.core.PreparedStatementSetter { ps ->
+                    ps.setObject(1, expoId)
+                    ps.setArray(2, ps.connection.createArrayOf("bigint", participantIds.toTypedArray()))
+                    ps.setObject(3, visitDate)
+                },
+                row,
+            ).associateBy { it.participantId }
+    }
+
     fun findByParticipants(
         expoId: UUID,
         participantIds: Collection<Long>,

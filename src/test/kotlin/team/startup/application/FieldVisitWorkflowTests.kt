@@ -132,7 +132,7 @@ class FieldVisitWorkflowTests {
 
     private fun prepare(request: RegisterFieldVisitRequest) {
         `when`(gateway.participantSessionPhone(expoId.toString(), "session")).thenReturn(phone)
-        `when`(gateway.managedParty(expoId, "session")).thenReturn(
+        `when`(gateway.managedParty(expoId, "session", phone)).thenReturn(
             OwnerApplicationParty(
                 (1L..5L).map {
                     ManagedOwnerParticipant(

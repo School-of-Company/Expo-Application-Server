@@ -68,7 +68,7 @@ class ProgramSessionAdmission(
         if (policy.guardianPolicy != null && guardianProvider == null) {
             throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "보호자 자격 공급자가 준비되지 않았습니다.")
         }
-        guardianProvider?.validateSingle(command, definition, occupation)
+        val guardianForm = guardianProvider?.validateSingle(command, definition, occupation)
         val preregistered = !(command.onsite && managed.fieldRegistered)
         if (preregistered) preregisterEligibility(definition, command, lock = false)
         if (occupation == null || occupation !in policy.allowedOccupations) {
@@ -80,7 +80,7 @@ class ProgramSessionAdmission(
         val provider =
             forms.ifAvailable
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 폼 조회 계약이 준비되지 않았습니다.")
-        val form = provider.loadAndValidate(command.expoId, policy.formId, command.formVersion, command.answers)
+        val form = guardianForm ?: provider.loadAndValidate(command.expoId, policy.formId, command.formVersion, command.answers)
         if (form.expoId != command.expoId || form.id != policy.formId || form.purpose != "PROGRAM" || form.version != command.formVersion) {
             conflict("프로그램 폼 또는 버전이 변경되었습니다.")
         }
