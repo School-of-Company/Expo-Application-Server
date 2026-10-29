@@ -86,9 +86,9 @@ class AdminParticipantGateway(
         val ids = participantIds.distinct().sorted()
         require(ids.all { it > 0 })
         return ids
-            .chunked(10000)
+            .chunked(USER_BATCH_LIMIT)
             .flatMap { batch ->
-                val tree = http.read("/internal/standard-participants/details", mapOf("expoId" to expoId, "participantIds" to batch))
+                val tree = http.read(DETAILS_PATH, mapOf("expoId" to expoId, "participantIds" to batch))
                 http.valid {
                     require(tree.isArray && tree.size() == batch.size)
                     batch.mapIndexed { index, id ->
@@ -152,7 +152,7 @@ class AdminParticipantGateway(
         ids: List<Long>,
     ) {
         ids.chunked(500).forEach { batch ->
-            val tree = http.read("/internal/standard-participants/details", mapOf("expoId" to expoId, "participantIds" to batch))
+            val tree = http.read(DETAILS_PATH, mapOf("expoId" to expoId, "participantIds" to batch))
             http.valid {
                 require(tree.isArray && tree.size() == batch.size)
                 require(
@@ -222,4 +222,11 @@ class AdminParticipantGateway(
         val items: List<AdminParticipantDetail>,
         val nextCursor: Long?,
     )
+
+    private companion object {
+        const val DETAILS_PATH = "/internal/standard-participants/details"
+
+        // User 배치 상세 API가 한 번에 받는 ID 상한.
+        const val USER_BATCH_LIMIT = 10_000
+    }
 }
