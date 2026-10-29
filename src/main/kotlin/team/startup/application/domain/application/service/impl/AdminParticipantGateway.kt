@@ -79,6 +79,30 @@ class AdminParticipantGateway(
         return results
     }
 
+    fun occupations(
+        expoId: UUID,
+        participantIds: List<Long>,
+    ): Map<Long, AdminOccupation?> {
+        val ids = participantIds.distinct().sorted()
+        require(ids.all { it > 0 })
+        return ids
+            .chunked(10000)
+            .flatMap { batch ->
+                val tree = http.read("/internal/standard-participants/details", mapOf("expoId" to expoId, "participantIds" to batch))
+                http.valid {
+                    require(tree.isArray && tree.size() == batch.size)
+                    batch.mapIndexed { index, id ->
+                        val node = tree[index]
+                        val actual = node["participantId"]
+                        val occupation = node["occupation"]
+                        require(actual?.isIntegralNumber == true && actual.canConvertToLong() && actual.asLong() == id)
+                        require(occupation != null && (occupation.isNull || occupation.isString))
+                        id to occupation.takeUnless { it.isNull }?.stringValue()?.let(AdminOccupation::valueOf)
+                    }
+                }
+            }.toMap()
+    }
+
     /** #261: User가 FIELD로 저장한 참가자의 일행 대표자 ID(대표자 본인이면 자기 ID). 없거나 FIELD가 아니면 null이다. */
     fun fieldRepresentative(
         expoId: UUID,
