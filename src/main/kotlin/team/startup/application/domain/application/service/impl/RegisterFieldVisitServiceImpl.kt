@@ -115,7 +115,7 @@ class RegisterFieldVisitServiceImpl(
         requestId: String,
         ownerHash: String,
     ) {
-        requests.withLock(expoId, ownerHash) { finish(expoId, requestId, requests.recoverRequest(expoId, requestId, ownerHash)) }
+        requests.tryWithLock(expoId, ownerHash) { finish(expoId, requestId, requests.recoverRequest(expoId, requestId, ownerHash)) }
     }
 
     private fun finish(

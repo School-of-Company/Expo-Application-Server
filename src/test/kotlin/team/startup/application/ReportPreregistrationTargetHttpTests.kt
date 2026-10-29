@@ -8,12 +8,14 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.Mockito
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.mock.web.MockHttpServletResponse
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -23,6 +25,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.repository.ReportPreregistrationRepository
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
@@ -174,6 +177,46 @@ class ReportPreregistrationTargetHttpTests {
     private fun JsonNode.value(field: String) = this[field].takeUnless { it.isNull }?.asString()
 
     private fun items(body: JsonNode) = (0 until body["items"].size()).map { body["items"][it] }
+
+    @Test
+    fun `선택한 신청의 등록 원문만 한 번 변환하여 보고 필드를 추출한다`() {
+        val ids =
+            jdbc
+                .queryForList(
+                    "SELECT id FROM tb_preregister_application WHERE expo_id = ? AND participant_id = 1",
+                    Long::class.java,
+                    expo,
+                ).filterNotNull()
+        val template = Mockito.spy(NamedParameterJdbcTemplate(jdbc))
+
+        val rows = ReportPreregistrationRepository(template, mapper).applications(expo, ids)
+
+        assertEquals(ids.toSet(), rows.keys)
+        val snapshot = rows.values.first { it.snapshot != null }.snapshot!!
+        val submittedJson = mapper.readTree(submitted)
+        val fields = setOf("name", "phoneNumber", "occupation", "informationJson", "questions")
+        assertEquals(fields, snapshot.propertyNames().toSet())
+        fields.forEach { assertEquals(submittedJson[it], snapshot[it], it) }
+        assertEquals(1, rows.values.count { it.snapshot == null })
+        val sql =
+            Mockito
+                .mockingDetails(template)
+                .invocations
+                .mapNotNull { it.arguments.firstOrNull() as? String }
+                .last { it.contains("AS snapshot") }
+        val plan =
+            NamedParameterJdbcTemplate(jdbc).queryForObject(
+                "EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) $sql",
+                mapOf("expo" to expo, "ids" to ids),
+                String::class.java,
+            )!!
+        assertEquals(1, Regex("::jsonb").findAll(plan).count(), plan)
+        val materialized =
+            mapper.readTree(plan)[0]["Plan"]["Plans"].single {
+                it["Subplan Name"]?.asString()?.startsWith("CTE ") == true
+            }
+        assertEquals(ids.size, materialized["Actual Rows"].asInt(), plan)
+    }
 
     @Test
     fun `참가자 회차 행과 예약 일행 행을 구분하고 이력 좌석 구분 스냅샷과 현재 프로필을 분리한다`() {
