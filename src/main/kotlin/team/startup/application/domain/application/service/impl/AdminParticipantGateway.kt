@@ -79,6 +79,30 @@ class AdminParticipantGateway(
         return results
     }
 
+    fun occupations(
+        expoId: UUID,
+        participantIds: List<Long>,
+    ): Map<Long, AdminOccupation?> {
+        val ids = participantIds.distinct().sorted()
+        require(ids.all { it > 0 })
+        return ids
+            .chunked(USER_BATCH_LIMIT)
+            .flatMap { batch ->
+                val tree = http.read(DETAILS_PATH, mapOf("expoId" to expoId, "participantIds" to batch))
+                http.valid {
+                    require(tree.isArray && tree.size() == batch.size)
+                    batch.mapIndexed { index, id ->
+                        val node = tree[index]
+                        val actual = node["participantId"]
+                        val occupation = node["occupation"]
+                        require(actual?.isIntegralNumber == true && actual.canConvertToLong() && actual.asLong() == id)
+                        require(occupation != null && (occupation.isNull || occupation.isString))
+                        id to occupation.takeUnless { it.isNull }?.stringValue()?.let(AdminOccupation::valueOf)
+                    }
+                }
+            }.toMap()
+    }
+
     /** #261: User가 FIELD로 저장한 참가자의 일행 대표자 ID(대표자 본인이면 자기 ID). 없거나 FIELD가 아니면 null이다. */
     fun fieldRepresentative(
         expoId: UUID,
@@ -128,7 +152,7 @@ class AdminParticipantGateway(
         ids: List<Long>,
     ) {
         ids.chunked(500).forEach { batch ->
-            val tree = http.read("/internal/standard-participants/details", mapOf("expoId" to expoId, "participantIds" to batch))
+            val tree = http.read(DETAILS_PATH, mapOf("expoId" to expoId, "participantIds" to batch))
             http.valid {
                 require(tree.isArray && tree.size() == batch.size)
                 require(
@@ -198,4 +222,11 @@ class AdminParticipantGateway(
         val items: List<AdminParticipantDetail>,
         val nextCursor: Long?,
     )
+
+    private companion object {
+        const val DETAILS_PATH = "/internal/standard-participants/details"
+
+        // User 배치 상세 API가 한 번에 받는 ID 상한.
+        const val USER_BATCH_LIMIT = 10_000
+    }
 }
