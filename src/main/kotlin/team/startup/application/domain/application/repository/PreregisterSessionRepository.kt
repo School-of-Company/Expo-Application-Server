@@ -176,6 +176,7 @@ class PreregisterSessionRepository(
         )
 
     fun lock(expoId: UUID) {
+        jdbc.execute("SET LOCAL lock_timeout = '3s'")
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
     }
 

@@ -33,6 +33,7 @@ import team.startup.application.domain.application.service.impl.SessionAttendanc
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
+import java.sql.DriverManager
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -1020,6 +1021,69 @@ class PreregisterRegistrationHttpTests {
         assertEquals(listOf("PUT:42", "PUT:43", "DELETE:43", "DELETE:42", "PUT:42", "PUT:43"), attendanceRequests.toList())
         assertEquals(200, cancel("test-token", null))
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE status = 'CONFIRMED'", Int::class.java))
+    }
+
+    @Test
+    fun `exclusive lock contention returns 409 and the same key can retry`() {
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            withExpoLock {
+                val pending = pool.submit<Int> { submit("lock-retry") }
+                assertEquals(409, pending.get(8, TimeUnit.SECONDS))
+                assertEquals(0, count("tb_preregister_reservation"))
+                assertTrue(userRequests.isEmpty())
+            }
+            assertEquals(201, submit("lock-retry"))
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `completion lock timeout retains seats and replays the original User request`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        userGate.set(entered to release)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit<Int> { submit("completion-lock") }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            withExpoLock {
+                release.countDown()
+                assertEquals(409, pending.get(8, TimeUnit.SECONDS))
+                assertEquals("RESERVED", jdbc.queryForObject("SELECT state FROM tb_preregister_reservation", String::class.java))
+                assertEquals(0, count("tb_preregister_application"))
+                assertEquals(0, count("tb_session_attendance_outbox"))
+                assertEquals(0, count("tb_preregister_count_outbox"))
+            }
+            assertEquals(4, capacity().get("remaining").intValue())
+            val original = userRequests.single()
+            assertEquals(201, submit("completion-lock"))
+            assertEquals(listOf(original, original), userRequests.toList())
+            assertEquals(1, stored.size)
+            assertEquals(1, count("tb_preregister_application"))
+            assertEquals(1, count("tb_session_attendance_outbox"))
+            assertEquals(1, count("tb_preregister_count_outbox"))
+        } finally {
+            release.countDown()
+            userGate.set(null)
+            pool.shutdownNow()
+        }
+    }
+
+    private fun withExpoLock(action: () -> Unit) {
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("SELECT pg_advisory_xact_lock(34, hashtext(?))").use {
+                    it.setString(1, EXPO.toString())
+                    it.execute()
+                }
+                action()
+            } finally {
+                connection.rollback()
+            }
+        }
     }
 
     @Test
