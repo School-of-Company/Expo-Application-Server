@@ -15,6 +15,7 @@ import java.time.Clock
 class ProgramWaitlistScheduler(
     private val repository: ProgramWaitlistRepository,
     private val reconcile: ReconcileProgramSessionService,
+    private val waitlist: ProgramWaitlist,
     private val clock: Clock,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -26,6 +27,16 @@ class ProgramWaitlistScheduler(
     fun reconcile() {
         for (key in repository.keys(clock.instant())) {
             try {
+                val current = repository.settledDefinition(key)
+                val policy = current?.policy
+                if (current != null && policy != null &&
+                    (
+                        repository.waitingCount(current) == 0 ||
+                            (policy.channels ?: listOf(null)).none { waitlist.free(current, it?.name) > 0 }
+                    )
+                ) {
+                    continue
+                }
                 reconcile.execute(key)
             } catch (exception: RuntimeException) {
                 log.warn("프로그램 회차 복구 보류: {} / {} / {} ({})", key.expoId, key.programType, key.programId, exception.javaClass.simpleName)

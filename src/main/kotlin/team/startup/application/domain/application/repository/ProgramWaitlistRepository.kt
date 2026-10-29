@@ -132,6 +132,18 @@ class ProgramWaitlistRepository(
             ),
         )
 
+    fun settledDefinition(key: ProgramSessionKey): ProgramSessionDefinition? =
+        jdbc
+            .query(
+                "SELECT definition FROM tb_program_session_state " +
+                    "WHERE expo_id = ? AND program_type = ? AND program_id = ? " +
+                    "AND pending_change_id IS NULL AND pending_definition IS NULL AND NOT deleted",
+                { rs, _ -> mapper.readValue(rs.getString(1), ProgramSessionDefinition::class.java) },
+                key.expoId,
+                key.programType.name,
+                key.programId,
+            ).singleOrNull()
+
     fun checkDefinition(definition: ProgramSessionDefinition) {
         jdbc
             .query(
