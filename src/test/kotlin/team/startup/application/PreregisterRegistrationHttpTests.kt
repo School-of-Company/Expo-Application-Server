@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.Mockito.doAnswer
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
@@ -17,6 +18,7 @@ import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
@@ -66,7 +68,7 @@ class PreregisterRegistrationHttpTests {
 
     @Autowired private lateinit var reservations: PreregisterReservationRepository
 
-    @Autowired private lateinit var repository: PreregisterSessionRepository
+    @MockitoSpyBean private lateinit var repository: PreregisterSessionRepository
 
     @Autowired private lateinit var ledger: PreregisterSessionLedger
 
@@ -751,7 +753,7 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
-    fun `capacity readers share a lock while submission waits for all readers`() {
+    fun `shared ledger locks allow capacity reads while submissions wait`() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(3)
@@ -1071,6 +1073,18 @@ class PreregisterRegistrationHttpTests {
         }
     }
 
+    @Test
+    fun `public capacity does not wait for an exclusive expo lock`() {
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            withExpoLock {
+                assertEquals(5, pool.submit<Int> { capacity().get("remaining").intValue() }.get(8, TimeUnit.SECONDS))
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
     private fun withExpoLock(action: () -> Unit) {
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             connection.autoCommit = false
@@ -1084,6 +1098,34 @@ class PreregisterRegistrationHttpTests {
                 connection.rollback()
             }
         }
+    }
+
+    @Test
+    fun `capacity uses one snapshot when a waiting reservation is promoted between counts`() {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'reserved', 1, 'reserved', '{}', 1, 'RESERVED', NULL), " +
+                "(?, 'waiting', 1, 'waiting', '{}', 1, 'WAITING', 1)",
+            EXPO,
+            EXPO,
+        )
+        doAnswer { invocation ->
+            val occupied = invocation.callRealMethod()
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    assertEquals(
+                        1,
+                        it.executeUpdate("UPDATE tb_preregister_reservation SET state = 'RESERVED' WHERE request_id = 'waiting'"),
+                    )
+                }
+            }
+            occupied
+        }.`when`(repository).occupied(EXPO, 1)
+        val snapshot = capacity()
+        assertEquals(1, snapshot.get("confirmed").intValue())
+        assertEquals(1, snapshot.get("waiting").intValue())
+        assertEquals(0, snapshot.get("remaining").intValue())
     }
 
     @Test

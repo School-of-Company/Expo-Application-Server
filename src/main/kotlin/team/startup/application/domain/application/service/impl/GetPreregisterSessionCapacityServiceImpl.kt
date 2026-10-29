@@ -2,6 +2,7 @@ package team.startup.application.domain.application.service.impl
 
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
@@ -34,10 +35,13 @@ class GetPreregisterSessionCapacityServiceImpl(
                     null
                 }
             }
-        val reads = TransactionTemplate(requireNotNull(ledger.transactions.transactionManager)).apply { isReadOnly = true }
+        val reads =
+            TransactionTemplate(requireNotNull(ledger.transactions.transactionManager)).apply {
+                isReadOnly = true
+                isolationLevel = TransactionDefinition.ISOLATION_REPEATABLE_READ
+            }
         return requireNotNull(
             reads.execute {
-                repository.readLock(query.expoId)
                 if (repository.expoDeleted(query.expoId)) conflict("삭제된 박람회입니다.")
                 val definition = ledger.current(query.expoId, query.sessionId, observation, persist = false)
                 val occupied = repository.occupied(query.expoId, query.sessionId)

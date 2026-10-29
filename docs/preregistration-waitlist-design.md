@@ -181,7 +181,9 @@ Application이 실제로 적용하는 값을 정의 스냅샷에 명시하고, 0
 
 - 신청·취소·승급·대기 정원 채택·정의 변경 준비·purge는 기존
   `pg_advisory_xact_lock(34, hashtext(expoId))` 배타 잠금으로 직렬화하고, 잔여석 조회는
-  기존 공유 잠금을 사용합니다. 원격 관찰(Expo 정의, Form 기간)은 잠금 밖에서 합니다.
+  공유 잠금 없이 읽기 전용 REPEATABLE READ 스냅샷 하나를 사용합니다. 원격 관찰(Expo 정의, Form 기간)은 잠금 밖에서 합니다.
+- 배타 잠금 트랜잭션은 `lock_timeout=3s`를 사용하며 사전등록 원장은 SQLSTATE `55P03`만
+  409로 변환합니다. 예약·User 요청 스냅샷은 유지하고 같은 멱등 키로 재시도합니다.
 - WAITING→RESERVED, WAITING→REJECTED(취소)는 상태 조건부 UPDATE라 재실행해도 중복 승급·
   중복 취소가 없습니다.
 - 대기 취소와 승급 경합: 잠금 안에서 WAITING일 때만 취소. 이미 RESERVED면 409
