@@ -41,9 +41,9 @@ class GetAdminPreregisterSummaryServiceImpl(
             )
         val confirmed =
             participants
-                .details(expoId, confirmedIds)
+                .occupations(expoId, confirmedIds)
                 .values
-                .groupingBy { it.occupation }
+                .groupingBy { it }
                 .eachCount()
         val waitingByOccupation = waiting.flatMap(::partyOccupations).groupingBy { it }.eachCount()
         return summary.copy(

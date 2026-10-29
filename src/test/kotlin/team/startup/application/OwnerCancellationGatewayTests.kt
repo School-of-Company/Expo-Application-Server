@@ -98,6 +98,22 @@ class OwnerCancellationGatewayTests {
     }
 
     @Test
+    fun `resolved phone skips resolve while participant status and provider denials remain authoritative`() {
+        val verified = gateway.verify(COMMAND, "01012345678")
+        assertEquals("01012345678", verified.phoneNumber)
+        assertEquals(OwnerCancellationStatus(2, false, false, false, null), verified.status)
+        assertEquals(
+            mapper.readTree("""{"expoId":"$EXPO","phoneNumber":"01012345678","participantId":2}"""),
+            requests.single().second,
+        )
+        statusCode = 404
+        failure(HttpStatus.NOT_FOUND) { gateway.verify(COMMAND, "01012345678") }
+        statusCode = 503
+        failure(HttpStatus.SERVICE_UNAVAILABLE) { gateway.verify(COMMAND, "01012345678") }
+        assertEquals(List(3) { "/internal/standard-participants/cancellation-status" }, requests.map { it.first })
+    }
+
+    @Test
     fun `invalid session or identity cannot reach cancellation status`() {
         failure(HttpStatus.UNAUTHORIZED) { gateway.find(COMMAND.copy(sessionId = " ")) }
         failure(HttpStatus.NOT_FOUND) { gateway.find(COMMAND.copy(participantId = 0)) }

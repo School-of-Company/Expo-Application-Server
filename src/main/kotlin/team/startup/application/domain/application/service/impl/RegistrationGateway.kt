@@ -349,10 +349,10 @@ class RegistrationGateway(
     fun managedParty(
         expoId: UUID,
         sessionId: String,
-        resolvedPhoneNumber: String? = null,
+        resolvedPhone: String? = null,
     ): OwnerApplicationParty {
         if (sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
-        val phoneNumber = resolvedPhoneNumber ?: participantSessionPhone(expoId.toString(), sessionId)
+        val phoneNumber = resolvedPhone ?: participantSessionPhone(expoId.toString(), sessionId)
         val response =
             decode(
                 call(
