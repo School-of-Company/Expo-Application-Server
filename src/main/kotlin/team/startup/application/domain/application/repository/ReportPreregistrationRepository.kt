@@ -88,10 +88,12 @@ class ReportPreregistrationRepository(
                 }.groupBy({ it.first }, { it.second })
         return jdbc
             .query(
-                "SELECT a.id, a.seat_category, r.request_id IS NOT NULL AS linked, r.queue_seq IS NOT NULL AS promoted, " +
-                    "$SNAPSHOT AS snapshot FROM tb_preregister_application a " +
+                "WITH targets AS MATERIALIZED (" +
+                    "SELECT a.id, a.seat_category, r.request_id IS NOT NULL AS linked, r.queue_seq IS NOT NULL AS promoted, " +
+                    "r.user_request::jsonb AS user_request FROM tb_preregister_application a " +
                     "LEFT JOIN tb_preregister_reservation r ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id " +
-                    "WHERE a.expo_id = :expo AND a.id IN (:ids)",
+                    "WHERE a.expo_id = :expo AND a.id IN (:ids)) " +
+                    "SELECT id, seat_category, linked, promoted, $SNAPSHOT AS snapshot FROM targets r",
                 parameters,
             ) { rs, _ ->
                 val id = rs.getLong("id")
@@ -136,8 +138,8 @@ class ReportPreregistrationRepository(
     private companion object {
         // Same submitted fields the admin ledger exposes for reservations; consents and recovery commands stay private.
         const val SNAPSHOT =
-            "jsonb_build_object('name', r.user_request::jsonb -> 'name', 'phoneNumber', r.user_request::jsonb -> 'phoneNumber', " +
-                "'occupation', r.user_request::jsonb -> 'occupation', 'informationJson', r.user_request::jsonb -> 'informationJson', " +
-                "'questions', r.user_request::jsonb -> 'questions')"
+            "jsonb_build_object('name', r.user_request -> 'name', 'phoneNumber', r.user_request -> 'phoneNumber', " +
+                "'occupation', r.user_request -> 'occupation', 'informationJson', r.user_request -> 'informationJson', " +
+                "'questions', r.user_request -> 'questions')"
     }
 }
