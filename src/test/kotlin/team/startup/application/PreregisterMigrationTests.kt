@@ -32,7 +32,12 @@ class PreregisterMigrationTests {
                     "INSERT INTO tb_preregister_transition (application_id, expo_id, session_id, participant_id, status) " +
                         "VALUES (1, '00000000-0000-0000-0000-000000000034', 1, 42, 'WAITING')",
                 )
-                val upgrade = Flyway.configure().dataSource(postgres.jdbcUrl, postgres.username, postgres.password).load()
+                val upgrade =
+                    Flyway
+                        .configure()
+                        .dataSource(postgres.jdbcUrl, postgres.username, postgres.password)
+                        .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
+                        .load()
                 val failure = assertThrows(FlywayException::class.java) { upgrade.migrate() }
                 assertTrue(failure.message.orEmpty().contains("Resolve legacy WAITING"))
                 sql.execute("UPDATE tb_preregister_application SET status = 'CANCELLED'")

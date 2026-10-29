@@ -7,6 +7,9 @@ spring:
   datasource:
     hikari:
       maximum-pool-size: 15
+  flyway:
+    postgresql:
+      transactional-lock: false
   jpa:
     open-in-view: false
     hibernate:

@@ -15,8 +15,12 @@ import java.sql.DriverManager
 @Testcontainers
 class PreregisterParticipantIndexMigrationTests {
     @Test
-    fun `upgrade adds covering participant index used by waiting count`() {
-        val config = Flyway.configure().dataSource(postgres.jdbcUrl, postgres.username, postgres.password)
+    fun `upgrade concurrently adds participant index used by waiting count`() {
+        val config =
+            Flyway
+                .configure()
+                .dataSource(postgres.jdbcUrl, postgres.username, postgres.password)
+                .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
         config.target("44").load().migrate()
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
             val jdbc = JdbcTemplate(SingleConnectionDataSource(connection, true))
@@ -57,8 +61,12 @@ class PreregisterParticipantIndexMigrationTests {
             config.target("latest").load().migrate()
 
             assertEquals(
-                "CREATE INDEX $index ON public.tb_preregister_application USING btree (expo_id, participant_id) INCLUDE (status)",
+                "CREATE INDEX $index ON public.tb_preregister_application USING btree (expo_id, participant_id)",
                 jdbc.queryForObject("SELECT pg_get_indexdef(?::regclass)", String::class.java, index),
+            )
+            assertEquals(
+                true,
+                jdbc.queryForObject("SELECT indisvalid FROM pg_index WHERE indexrelid = ?::regclass", Boolean::class.java, index),
             )
             val plan = explain()
             assertTrue(plan.contains(index), plan)
