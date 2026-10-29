@@ -53,6 +53,11 @@ class ApplicationNotificationResolver(
     private val preregister: PreregisterSessionRepository,
     private val reservations: PreregisterReservationRepository,
 ) {
+    fun resolveBatch(rows: List<Row>): List<ResolvedNotification> {
+        val batchResolver = ApplicationNotificationResolver(source.forBatch(), programs, preregister, reservations)
+        return rows.map(batchResolver::resolve)
+    }
+
     fun resolve(row: Row): ResolvedNotification =
         when {
             row.applicationId != null -> program(row)
