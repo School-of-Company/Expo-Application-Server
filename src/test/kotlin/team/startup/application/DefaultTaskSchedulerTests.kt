@@ -13,20 +13,22 @@ import java.util.function.Supplier
 
 class DefaultTaskSchedulerTests {
     @Test
-    fun `long default task does not delay other default tasks`() {
-        val blocker = Blocker()
+    fun `six long default tasks leave a thread for the seventh task`() {
+        val blockers = List(6) { Blocker() }
         val heartbeat = Heartbeat()
         AnnotationConfigApplicationContext().use { context ->
             context.register(SchedulingOn::class.java, DefaultTaskSchedulerConfig::class.java)
-            context.registerBean("blocker", Blocker::class.java, Supplier { blocker })
+            blockers.forEachIndexed { index, blocker ->
+                context.registerBean("blocker-$index", Blocker::class.java, Supplier { blocker })
+            }
             context.registerBean("heartbeat", Heartbeat::class.java, Supplier { heartbeat })
             context.refresh()
             try {
-                assertTrue(blocker.started.await(5, TimeUnit.SECONDS))
+                blockers.forEach { assertTrue(it.started.await(5, TimeUnit.SECONDS)) }
                 heartbeat.pulses = CountDownLatch(3)
                 assertTrue(heartbeat.pulses.await(2, TimeUnit.SECONDS))
             } finally {
-                blocker.release.countDown()
+                blockers.forEach { it.release.countDown() }
             }
         }
     }
