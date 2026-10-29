@@ -48,12 +48,15 @@ class PreregisterReservationRepository(
         Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
 ) {
-    fun dueCounts(): List<Pair<UUID, Long>> =
-        jdbc.query(
+    fun dueCounts(excludedExpos: Set<UUID> = emptySet()): List<Pair<UUID, Long>> {
+        val exclusion = if (excludedExpos.isEmpty()) "" else "AND expo_id NOT IN (${excludedExpos.joinToString { "?" }}) "
+        return jdbc.query(
             "SELECT expo_id, participant_id FROM tb_preregister_count_outbox WHERE next_attempt_at <= CURRENT_TIMESTAMP " +
-                "ORDER BY next_attempt_at LIMIT 100",
+                exclusion + "ORDER BY next_attempt_at LIMIT 100",
             { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
+            *excludedExpos.toTypedArray(),
         )
+    }
 
     fun countDue(
         expoId: UUID,

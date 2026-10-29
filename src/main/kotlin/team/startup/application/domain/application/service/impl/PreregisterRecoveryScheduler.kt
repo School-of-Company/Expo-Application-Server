@@ -41,9 +41,14 @@ class PreregisterRecoveryScheduler(
         send: (UUID, Long) -> Unit,
     ) {
         val started = nanoTime()
-        val candidates = reservations.dueCounts()
-        for ((expoId, participantId) in candidates) {
+        val failedExpos = mutableSetOf<UUID>()
+        val attempted = mutableSetOf<Pair<UUID, Long>>()
+        var candidates = reservations.dueCounts().iterator()
+        while (candidates.hasNext() && attempted.size < 100) {
             if (nanoTime() - started >= TimeUnit.SECONDS.toNanos(5)) return
+            val candidate = candidates.next()
+            if (!attempted.add(candidate)) continue
+            val (expoId, participantId) = candidate
             val delivered =
                 reservations.withCountDeliveryLock(expoId, participantId) { repository ->
                     if (!repository.countDue(expoId, participantId)) return@withCountDeliveryLock true
@@ -60,7 +65,10 @@ class PreregisterRecoveryScheduler(
                     repository.countDelivered(expoId, participantId)
                     true
                 }
-            if (delivered == false) return
+            if (delivered == false) {
+                failedExpos.add(expoId)
+                candidates = reservations.dueCounts(failedExpos).iterator()
+            }
         }
     }
 
