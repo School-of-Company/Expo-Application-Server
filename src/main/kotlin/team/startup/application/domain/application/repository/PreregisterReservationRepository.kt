@@ -8,6 +8,7 @@ import team.startup.application.domain.application.service.impl.ParticipantRegis
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 data class PreregisterReservation(
     val expoId: UUID,
@@ -48,7 +49,11 @@ class PreregisterReservationRepository(
         Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
 ) {
-    fun deliverCounts(send: (UUID, Long) -> Unit) {
+    fun deliverCounts(
+        nanoTime: () -> Long = System::nanoTime,
+        send: (UUID, Long) -> Unit,
+    ) {
+        val started = nanoTime()
         val candidates =
             jdbc.query(
                 "SELECT expo_id, participant_id FROM tb_preregister_count_outbox WHERE next_attempt_at <= CURRENT_TIMESTAMP " +
@@ -56,35 +61,39 @@ class PreregisterReservationRepository(
                 { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
             )
         for ((expoId, participantId) in candidates) {
-            jdbc.withDeliveryLock(39, "$expoId:$participantId") { scoped ->
-                val due =
-                    scoped.queryForObject(
-                        "SELECT EXISTS(SELECT 1 FROM tb_preregister_count_outbox WHERE expo_id = ? AND participant_id = ? " +
-                            "AND next_attempt_at <= CURRENT_TIMESTAMP)",
-                        Boolean::class.java,
-                        expoId,
-                        participantId,
-                    ) == true
-                if (!due) return@withDeliveryLock
-                val repository = PreregisterReservationRepository(scoped, mapper)
-                val deleted =
-                    scoped.queryForObject(
-                        "SELECT EXISTS(SELECT 1 FROM tb_preregister_deleted_expo WHERE expo_id = ?)",
-                        Boolean::class.java,
-                        expoId,
-                    ) == true
-                if (deleted) {
+            if (nanoTime() - started >= TimeUnit.SECONDS.toNanos(5)) return
+            val delivered =
+                jdbc.withDeliveryLock(39, "$expoId:$participantId") { scoped ->
+                    val due =
+                        scoped.queryForObject(
+                            "SELECT EXISTS(SELECT 1 FROM tb_preregister_count_outbox WHERE expo_id = ? AND participant_id = ? " +
+                                "AND next_attempt_at <= CURRENT_TIMESTAMP)",
+                            Boolean::class.java,
+                            expoId,
+                            participantId,
+                        ) == true
+                    if (!due) return@withDeliveryLock true
+                    val repository = PreregisterReservationRepository(scoped, mapper)
+                    val deleted =
+                        scoped.queryForObject(
+                            "SELECT EXISTS(SELECT 1 FROM tb_preregister_deleted_expo WHERE expo_id = ?)",
+                            Boolean::class.java,
+                            expoId,
+                        ) == true
+                    if (deleted) {
+                        repository.countDelivered(expoId, participantId)
+                        return@withDeliveryLock true
+                    }
+                    try {
+                        send(expoId, participantId)
+                    } catch (ex: org.springframework.web.server.ResponseStatusException) {
+                        repository.countRetry(expoId, participantId)
+                        return@withDeliveryLock false
+                    }
                     repository.countDelivered(expoId, participantId)
-                    return@withDeliveryLock
+                    true
                 }
-                try {
-                    send(expoId, participantId)
-                } catch (ex: org.springframework.web.server.ResponseStatusException) {
-                    repository.countRetry(expoId, participantId)
-                    return@withDeliveryLock
-                }
-                repository.countDelivered(expoId, participantId)
-            }
+            if (delivered == false) return
         }
     }
 

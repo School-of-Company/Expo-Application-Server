@@ -711,7 +711,26 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
-    fun `busy or failed count delivery does not starve another Expo`() {
+    fun `count delivery stops starting rows at the tick budget and resumes pending rows next tick`() {
+        reservations.enqueueCounts(EXPO, listOf(42L, 43L))
+        val delivered = mutableListOf<Long>()
+        var elapsed = 0L
+
+        reservations.deliverCounts(nanoTime = { elapsed }) { _, participantId ->
+            delivered.add(participantId)
+            elapsed = TimeUnit.SECONDS.toNanos(5)
+        }
+
+        assertEquals(listOf(42L), delivered)
+        assertEquals(1, count("tb_preregister_count_outbox"))
+        assertEquals(0, jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox", Int::class.java))
+        reservations.deliverCounts { _, participantId -> delivered.add(participantId) }
+        assertEquals(listOf(42L, 43L), delivered)
+        assertEquals(0, count("tb_preregister_count_outbox"))
+    }
+
+    @Test
+    fun `failed count delivery backs off only that row and resumes another Expo next tick`() {
         val anotherExpo = UUID.randomUUID()
         reservations.enqueueCounts(EXPO, listOf(42L))
         reservations.enqueueCounts(anotherExpo, listOf(43L))
@@ -739,6 +758,17 @@ class PreregisterRegistrationHttpTests {
                     )
                 }
             }
+            assertEquals(listOf(42L), delivered)
+            assertEquals(2, count("tb_preregister_count_outbox"))
+            assertEquals(
+                1,
+                jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox WHERE participant_id = 42", Int::class.java),
+            )
+            assertEquals(
+                0,
+                jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox WHERE participant_id = 43", Int::class.java),
+            )
+            reservations.deliverCounts { _, participantId -> delivered.add(participantId) }
             assertEquals(listOf(42L, 43L), delivered)
             assertEquals(1, count("tb_preregister_count_outbox"))
             release.countDown()
