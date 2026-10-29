@@ -179,6 +179,13 @@ class PreregisterSessionRepository(
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
     }
 
+    fun registrationLock(expoId: UUID) {
+        val previous = jdbc.queryForObject("SHOW lock_timeout", String::class.java)
+        jdbc.execute("SET LOCAL lock_timeout = '3s'")
+        lock(expoId)
+        jdbc.queryForObject("SELECT set_config('lock_timeout', ?, true)", String::class.java, previous)
+    }
+
     fun readLock(expoId: UUID) {
         jdbc.queryForObject("SELECT CAST(pg_advisory_xact_lock_shared(34, hashtext(?)) AS text)", String::class.java, expoId.toString())
     }

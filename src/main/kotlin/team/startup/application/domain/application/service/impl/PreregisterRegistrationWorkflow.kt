@@ -57,7 +57,7 @@ class PreregisterRegistrationWorkflow(
         val fingerprint = fingerprint(command)
         val saved =
             ledger.transactions.execute {
-                ledger.lock(expoId)
+                ledger.registrationLock(expoId)
                 reservations.find(expoId, command.idempotencyKey, fingerprint)?.also {
                     if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
                 }
@@ -71,7 +71,7 @@ class PreregisterRegistrationWorkflow(
         requestId: String,
     ): PreregisterRegistrationReceipt {
         try {
-            recover(expoId, requestId)
+            recover(expoId, requestId, registrationRequest = true)
         } catch (ex: ResponseStatusException) {
             if (ex is WaitlistWithdrawnException) throw ex
             val current = ledger.transactions.execute { reservations.find(expoId, requestId, "") }
@@ -116,7 +116,7 @@ class PreregisterRegistrationWorkflow(
         val reserved =
             requireNotNull(
                 ledger.transactions.execute {
-                    ledger.lock(expoId)
+                    ledger.registrationLock(expoId)
                     reservations.find(expoId, command.idempotencyKey, fingerprint)?.let {
                         if (it.command != fingerprint) conflict("같은 신청 키의 내용이 다릅니다.")
                         return@execute it.requestId
@@ -465,6 +465,7 @@ class PreregisterRegistrationWorkflow(
     fun recover(
         expoId: UUID,
         requestId: String,
+        registrationRequest: Boolean = false,
     ) {
         if (!attendanceEnabled) {
             throw ResponseStatusException(
@@ -475,7 +476,7 @@ class PreregisterRegistrationWorkflow(
         val reservation =
             requireNotNull(
                 ledger.transactions.execute {
-                    repository.lock(expoId)
+                    if (registrationRequest) repository.registrationLock(expoId) else repository.lock(expoId)
                     val saved =
                         reservations.find(expoId, requestId, "") ?: throw ResponseStatusException(
                             if (repository.expoDeleted(expoId)) HttpStatus.CONFLICT else HttpStatus.NOT_FOUND,
@@ -562,7 +563,7 @@ class PreregisterRegistrationWorkflow(
         val failure =
             ledger.transactions.execute {
                 // Serialize completion, cancellation and purge after the HTTP call.
-                repository.lock(expoId)
+                if (registrationRequest) repository.registrationLock(expoId) else repository.lock(expoId)
                 val reserved =
                     reservations.find(expoId, requestId, "") ?: return@execute ResponseStatusException(
                         if (repository.expoDeleted(expoId)) HttpStatus.CONFLICT else HttpStatus.NOT_FOUND,

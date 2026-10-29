@@ -19,6 +19,11 @@ class PreregisterSessionLedger(
 ) {
     val transactions = TransactionTemplate(transactionManager)
 
+    fun registrationLock(expoId: UUID) {
+        repository.registrationLock(expoId)
+        if (repository.expoDeleted(expoId)) conflict("삭제된 박람회입니다.")
+    }
+
     fun lock(expoId: UUID) {
         repository.lock(expoId)
         if (repository.expoDeleted(expoId)) conflict("삭제된 박람회입니다.")
