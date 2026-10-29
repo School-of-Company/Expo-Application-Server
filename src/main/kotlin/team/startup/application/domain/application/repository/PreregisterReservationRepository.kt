@@ -48,45 +48,43 @@ class PreregisterReservationRepository(
         Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
 ) {
-    fun deliverCounts(send: (UUID, Long) -> Unit) {
-        val candidates =
-            jdbc.query(
-                "SELECT expo_id, participant_id FROM tb_preregister_count_outbox WHERE next_attempt_at <= CURRENT_TIMESTAMP " +
-                    "ORDER BY next_attempt_at LIMIT 100",
-                { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
-            )
-        for ((expoId, participantId) in candidates) {
-            jdbc.withDeliveryLock(39, "$expoId:$participantId") { scoped ->
-                val due =
-                    scoped.queryForObject(
-                        "SELECT EXISTS(SELECT 1 FROM tb_preregister_count_outbox WHERE expo_id = ? AND participant_id = ? " +
-                            "AND next_attempt_at <= CURRENT_TIMESTAMP)",
-                        Boolean::class.java,
-                        expoId,
-                        participantId,
-                    ) == true
-                if (!due) return@withDeliveryLock
-                val repository = PreregisterReservationRepository(scoped, mapper)
-                val deleted =
-                    scoped.queryForObject(
-                        "SELECT EXISTS(SELECT 1 FROM tb_preregister_deleted_expo WHERE expo_id = ?)",
-                        Boolean::class.java,
-                        expoId,
-                    ) == true
-                if (deleted) {
-                    repository.countDelivered(expoId, participantId)
-                    return@withDeliveryLock
-                }
-                try {
-                    send(expoId, participantId)
-                } catch (ex: org.springframework.web.server.ResponseStatusException) {
-                    repository.countRetry(expoId, participantId)
-                    return@withDeliveryLock
-                }
-                repository.countDelivered(expoId, participantId)
-            }
-        }
+    fun dueCounts(excludedExpos: Set<UUID> = emptySet()): List<Pair<UUID, Long>> {
+        val exclusion = if (excludedExpos.isEmpty()) "" else "AND expo_id NOT IN (${excludedExpos.joinToString { "?" }}) "
+        return jdbc.query(
+            "SELECT expo_id, participant_id FROM tb_preregister_count_outbox WHERE next_attempt_at <= CURRENT_TIMESTAMP " +
+                exclusion + "ORDER BY next_attempt_at LIMIT 100",
+            { rs, _ -> rs.getObject(1, UUID::class.java) to rs.getLong(2) },
+            *excludedExpos.toTypedArray(),
+        )
     }
+
+    fun countDue(
+        expoId: UUID,
+        participantId: Long,
+    ): Boolean =
+        jdbc.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM tb_preregister_count_outbox WHERE expo_id = ? AND participant_id = ? " +
+                "AND next_attempt_at <= CURRENT_TIMESTAMP)",
+            Boolean::class.java,
+            expoId,
+            participantId,
+        ) == true
+
+    fun expoDeleted(expoId: UUID): Boolean =
+        jdbc.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM tb_preregister_deleted_expo WHERE expo_id = ?)",
+            Boolean::class.java,
+            expoId,
+        ) == true
+
+    fun <T> withCountDeliveryLock(
+        expoId: UUID,
+        participantId: Long,
+        action: (PreregisterReservationRepository) -> T,
+    ): T? =
+        jdbc.withDeliveryLock(39, "$expoId:$participantId") { scoped ->
+            action(PreregisterReservationRepository(scoped, mapper))
+        }
 
     fun find(
         expoId: UUID,

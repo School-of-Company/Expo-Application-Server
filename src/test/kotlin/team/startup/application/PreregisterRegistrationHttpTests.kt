@@ -711,6 +711,25 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
+    fun `count delivery stops starting rows at the tick budget and resumes pending rows next tick`() {
+        reservations.enqueueCounts(EXPO, listOf(42L, 43L))
+        val delivered = mutableListOf<Long>()
+        var elapsed = 0L
+
+        recovery.deliverCounts(nanoTime = { elapsed }) { _, participantId ->
+            delivered.add(participantId)
+            elapsed = TimeUnit.SECONDS.toNanos(5)
+        }
+
+        assertEquals(listOf(42L), delivered)
+        assertEquals(1, count("tb_preregister_count_outbox"))
+        assertEquals(0, jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox", Int::class.java))
+        recovery.deliverCounts { _, participantId -> delivered.add(participantId) }
+        assertEquals(listOf(42L, 43L), delivered)
+        assertEquals(0, count("tb_preregister_count_outbox"))
+    }
+
+    @Test
     fun `busy or failed count delivery does not starve another Expo`() {
         val anotherExpo = UUID.randomUUID()
         reservations.enqueueCounts(EXPO, listOf(42L))
@@ -729,7 +748,7 @@ class PreregisterRegistrationHttpTests {
                 }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val delivered = mutableListOf<Long>()
-            reservations.deliverCounts { _, participantId ->
+            recovery.deliverCounts { _, participantId ->
                 delivered.add(participantId)
                 if (participantId ==
                     42L
@@ -741,12 +760,47 @@ class PreregisterRegistrationHttpTests {
             }
             assertEquals(listOf(42L, 43L), delivered)
             assertEquals(1, count("tb_preregister_count_outbox"))
+            assertEquals(
+                1,
+                jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox WHERE participant_id = 42", Int::class.java),
+            )
             release.countDown()
             locked.get(5, TimeUnit.SECONDS)
         } finally {
             release.countDown()
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `failed Expo with a full candidate backlog does not delay another Expo in the same tick`() {
+        val anotherExpo = UUID.randomUUID()
+        reservations.enqueueCounts(EXPO, (1000L..1099L).toList())
+        reservations.enqueueCounts(anotherExpo, listOf(43L))
+        jdbc.update(
+            "UPDATE tb_preregister_count_outbox SET next_attempt_at = clock_timestamp() - INTERVAL '1 minute' WHERE expo_id = ?",
+            EXPO,
+        )
+        val attempted = mutableListOf<UUID>()
+
+        recovery.deliverCounts { expoId, _ ->
+            attempted.add(expoId)
+            if (expoId == EXPO) {
+                throw org.springframework.web.server
+                    .ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+            }
+        }
+
+        assertEquals(listOf(EXPO, anotherExpo), attempted)
+        assertEquals(100, count("tb_preregister_count_outbox"))
+        assertEquals(1L, jdbc.queryForObject("SELECT sum(attempts) FROM tb_preregister_count_outbox", Long::class.java))
+        assertEquals(
+            99,
+            jdbc.queryForObject("SELECT count(*) FROM tb_preregister_count_outbox WHERE attempts = 0", Int::class.java),
+        )
+        recovery.deliverCounts { expoId, _ -> attempted.add(expoId) }
+        assertEquals(101, attempted.size)
+        assertEquals(1, count("tb_preregister_count_outbox"))
     }
 
     @Test
