@@ -882,7 +882,8 @@ class PreregisterCompanionHttpTests {
                             }
 
                             path.contains("cancellation-status") -> {
-                                503 to "{}"
+                                // 취소 상태 미제공은 유지하되, 장애 표본이 누적돼 동행자 API까지 차단하지 않도록 한다.
+                                200 to "{}"
                             }
 
                             path.endsWith("/preregister-session") || path.contains("/standard-registrations/") ||

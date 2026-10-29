@@ -15,6 +15,7 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationsResponse
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ManagedParticipantRepository
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
@@ -43,8 +44,9 @@ class GetOwnerApplicationsServiceImpl(
 
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: GetOwnerApplicationsCommand): OwnerApplicationsResponse {
-        val party = gateway.managedParty(command.expoId, command.sessionId)
-        val fields = fieldCancellation.items(command.expoId, command.sessionId, party)
+        val phone = gateway.participantSessionPhone(command.expoId.toString(), command.sessionId)
+        val party = gateway.managedParty(command.expoId, command.sessionId, phone)
+        val fields = fieldCancellation.items(command.expoId, command.sessionId, party, phone)
         val stored = requireNotNull(reads.execute { repository.applications(command.expoId, party) })
         val definitions =
             stored
@@ -82,7 +84,7 @@ class GetOwnerApplicationsServiceImpl(
         val observations =
             applications.filter { it.applied }.map { it.participantId }.distinct().associateWith { participantId ->
                 runCatching {
-                    val verified = user.verify(GetOwnerCancellationStatusCommand(command.expoId, command.sessionId, participantId))
+                    val verified = user.verify(GetOwnerCancellationStatusCommand(command.expoId, command.sessionId, participantId), phone)
                     verified to attendance.find(command.expoId, participantId, verified.phoneNumber)
                 }
             }
@@ -117,7 +119,13 @@ class GetOwnerApplicationsServiceImpl(
                             }
 
                             else -> {
-                                blockedReason(command, party, application, verified.status.linkedTraineeId)
+                                blockedReason(
+                                    command,
+                                    party,
+                                    application,
+                                    verified.status.linkedTraineeId,
+                                    definitions[application.type.name to application.sessionOrProgramId],
+                                )
                             }
                         }
                     } catch (exception: ResponseStatusException) {
@@ -178,12 +186,19 @@ class GetOwnerApplicationsServiceImpl(
         party: OwnerApplicationParty,
         application: OwnerApplicationItem,
         traineeId: Long?,
+        definition: ProgramSessionDefinition?,
     ): String? {
         val deadline =
             if (application.type == OwnerApplicationType.PREREGISTER) {
                 deadlines.preregister(command.expoId, application.sessionOrProgramId)
-            } else {
+            } else if (definition == null) {
                 deadlines.program(command.expoId, application.type, application.sessionOrProgramId)
+            } else {
+                if (definition.pendingRevision != null) {
+                    throw ResponseStatusException(HttpStatus.CONFLICT, "프로그램 정책 변경 중입니다.")
+                }
+                definition.policy?.cancelEndedAt
+                    ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 취소 기한을 확인할 수 없습니다.")
             }
         if (!clock.instant().isBefore(deadline)) return "DEADLINE_EXPIRED"
         return reads.execute {

@@ -36,26 +36,34 @@ class OwnerCancellationGateway(
     fun find(command: GetOwnerCancellationStatusCommand): OwnerCancellationStatus = verify(command).status
 
     @Transactional(propagation = Propagation.NEVER)
-    fun verify(command: GetOwnerCancellationStatusCommand): VerifiedStatus {
+    fun verify(
+        command: GetOwnerCancellationStatusCommand,
+        resolvedPhone: String? = null,
+    ): VerifiedStatus {
         if (command.sessionId.isBlank()) throw ParticipantSessionException("SESSION_REQUIRED")
         if (command.participantId <= 0) throw ResponseStatusException(HttpStatus.NOT_FOUND)
-        val session =
-            post(
-                "/internal/participant-sessions/resolve",
-                mapOf("expoId" to command.expoId, "sessionId" to command.sessionId),
-                session = true,
-            )
-        val expo = session.get("expoId")
-        val phone = session.get("phoneNumber")
-        if (expo == null || !expo.isString || expo.stringValue() != command.expoId.toString() ||
-            phone == null || !phone.isString || phone.stringValue().isBlank() || phone.stringValue().length > 20
-        ) {
-            invalidResponse()
-        }
+        val phoneNumber =
+            resolvedPhone ?: run {
+                val session =
+                    post(
+                        "/internal/participant-sessions/resolve",
+                        mapOf("expoId" to command.expoId, "sessionId" to command.sessionId),
+                        session = true,
+                    )
+                val expo = session.get("expoId")
+                val phone = session.get("phoneNumber")
+                if (expo == null || !expo.isString || expo.stringValue() != command.expoId.toString() ||
+                    phone == null || !phone.isString
+                ) {
+                    invalidResponse()
+                }
+                phone.stringValue()
+            }
+        if (phoneNumber.isBlank() || phoneNumber.length > 20) invalidResponse()
         val status =
             post(
                 "/internal/standard-participants/cancellation-status",
-                mapOf("expoId" to command.expoId, "phoneNumber" to phone.stringValue(), "participantId" to command.participantId),
+                mapOf("expoId" to command.expoId, "phoneNumber" to phoneNumber, "participantId" to command.participantId),
             )
         val id = status.get("participantId")
         val representative = status.get("representative")
@@ -71,7 +79,7 @@ class OwnerCancellationGateway(
             invalidResponse()
         }
         return VerifiedStatus(
-            phone.stringValue(),
+            phoneNumber,
             OwnerCancellationStatus(
                 id.asLong(),
                 representative.asBoolean(),
