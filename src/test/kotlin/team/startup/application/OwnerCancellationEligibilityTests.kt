@@ -27,6 +27,9 @@ import team.startup.application.domain.application.presentation.dto.OwnerApplica
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
 import team.startup.application.domain.application.presentation.dto.OwnerCancellationStatus
+import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
+import team.startup.application.domain.application.presentation.dto.ProgramSessionPolicy
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ManagedParticipantRepository
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
@@ -73,7 +76,8 @@ class OwnerCancellationEligibilityTests {
 
     @BeforeEach
     fun start() {
-        `when`(gateway.managedParty(EXPO, COMMAND.sessionId)).thenReturn(PARTY)
+        `when`(gateway.participantSessionPhone(EXPO.toString(), COMMAND.sessionId)).thenReturn(PHONE)
+        `when`(gateway.managedParty(EXPO, COMMAND.sessionId, PHONE)).thenReturn(PARTY)
         configure(APPLICATION)
     }
 
@@ -92,7 +96,7 @@ class OwnerCancellationEligibilityTests {
                 false,
                 "CANCELLED",
             )
-        `when`(fieldCancellation.items(EXPO, COMMAND.sessionId, PARTY)).thenReturn(listOf(cancelled))
+        `when`(fieldCancellation.items(EXPO, COMMAND.sessionId, PARTY, PHONE)).thenReturn(listOf(cancelled))
         `when`(repository.applications(EXPO, PARTY)).thenReturn(emptyList())
         val hidden = service().execute(COMMAND)
         assertEquals(listOf(1L), hidden.participants.map { it.participantId })
@@ -119,7 +123,7 @@ class OwnerCancellationEligibilityTests {
         assertEquals(APPLICATION.history, response.applications[1].history)
         assertTrue(response.applications[1].cancellable)
         assertEquals("", response.applications[1].cancellationBlockedReason)
-        verify(user, times(1)).verify(STATUS_COMMAND)
+        verify(user, times(1)).verify(STATUS_COMMAND, PHONE)
         verify(attendance, times(1)).find(EXPO, 2, PHONE)
     }
 
@@ -133,7 +137,7 @@ class OwnerCancellationEligibilityTests {
                     ManagedOwnerParticipant(3, "Waiting", null, false),
                 ),
             )
-        `when`(gateway.managedParty(EXPO, COMMAND.sessionId)).thenReturn(party)
+        `when`(gateway.managedParty(EXPO, COMMAND.sessionId, PHONE)).thenReturn(party)
         `when`(repository.applications(EXPO, party)).thenReturn(emptyList())
         `when`(managed.qrAvailable(EXPO, 1, 1, true)).thenReturn(true)
         `when`(managed.qrAvailable(EXPO, 2, 1, true)).thenReturn(true)
@@ -205,7 +209,7 @@ class OwnerCancellationEligibilityTests {
         val training = APPLICATION.copy(applicationId = UUID.randomUUID().toString(), type = OwnerApplicationType.TRAINING)
         configure(standard, training)
         assertTrue(service().execute(COMMAND).applications.all { it.cancellable })
-        verify(user, times(1)).verify(STATUS_COMMAND)
+        verify(user, times(1)).verify(STATUS_COMMAND, PHONE)
         verify(attendance, times(1)).find(EXPO, 2, PHONE)
         `when`(repository.cancellationTarget(cancel(training), PARTY))
             .thenReturn(OwnerApplicationRepository.CancellationTarget(training.applicationId, 2, 7, "CONFIRMED", 503))
@@ -215,11 +219,44 @@ class OwnerCancellationEligibilityTests {
     }
 
     @Test
+    fun `loaded standard and training definitions preserve blocking without deadline refetch`() {
+        for (type in ProgramSessionType.entries) {
+            val application = APPLICATION.copy(applicationId = UUID.randomUUID().toString(), type = OwnerApplicationType.valueOf(type.name))
+            configure(application)
+            for ((definition, reason) in listOf(
+                DEFINITION to null,
+                DEFINITION.copy(pendingRevision = 2) to "PROGRAM_CHANGE_PENDING",
+                DEFINITION.copy(policy = null) to "EXTERNAL_CONTRACT_REQUIRED",
+                DEFINITION.copy(policy = requireNotNull(DEFINITION.policy).copy(cancelEndedAt = NOW)) to "DEADLINE_EXPIRED",
+            )) {
+                `when`(gateway.programDefinitions(EXPO.toString(), type, listOf(7), existing = true))
+                    .thenReturn(listOf(definition.copy(programType = type)))
+                val result = service().execute(COMMAND).applications.single()
+                assertEquals(reason == null, result.cancellable)
+                assertEquals(reason.orEmpty(), result.cancellationBlockedReason)
+            }
+        }
+        verifyNoInteractions(deadlines)
+    }
+
+    @Test
+    fun `deleted program definitions retain authoritative lookup and not found response`() {
+        for (type in ProgramSessionType.entries) {
+            val application = APPLICATION.copy(applicationId = UUID.randomUUID().toString(), type = OwnerApplicationType.valueOf(type.name))
+            configure(application)
+            `when`(deadlines.program(EXPO, application.type, 7)).thenThrow(ResponseStatusException(HttpStatus.NOT_FOUND))
+
+            assertEquals(HttpStatus.NOT_FOUND, assertThrows(ResponseStatusException::class.java) { service().execute(COMMAND) }.statusCode)
+            verify(deadlines).program(EXPO, application.type, 7)
+        }
+    }
+
+    @Test
     fun `provider outage is conservative but expired session and lost ownership retain errors`() {
         `when`(attendance.find(EXPO, 2, PHONE)).thenThrow(ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE))
         blocked("EXTERNAL_CONTRACT_REQUIRED")
         for (status in listOf(HttpStatus.UNAUTHORIZED, HttpStatus.NOT_FOUND)) {
-            doThrow(ResponseStatusException(status)).`when`(user).verify(STATUS_COMMAND)
+            doThrow(ResponseStatusException(status)).`when`(user).verify(STATUS_COMMAND, PHONE)
             assertEquals(status, assertThrows(ResponseStatusException::class.java) { service().execute(COMMAND) }.statusCode)
         }
     }
@@ -265,7 +302,7 @@ class OwnerCancellationEligibilityTests {
                     ),
                 )
             val id = application.participantId
-            `when`(user.verify(GetOwnerCancellationStatusCommand(EXPO, COMMAND.sessionId, id))).thenAnswer {
+            `when`(user.verify(GetOwnerCancellationStatusCommand(EXPO, COMMAND.sessionId, id), PHONE)).thenAnswer {
                 assertFalse(reading)
                 OwnerCancellationGateway.VerifiedStatus(PHONE, OwnerCancellationStatus(id, id == 1L, false, true, 502))
             }
@@ -335,5 +372,24 @@ class OwnerCancellationEligibilityTests {
                 listOf(OwnerApplicationHistory("CONFIRMED")),
             )
         private val OBSERVATION = AttendanceCancellationStatusGateway.Status(2, false, false, false, true, 502, "NONE")
+        private val DEFINITION =
+            ProgramSessionDefinition(
+                EXPO.toString(),
+                ProgramSessionType.STANDARD,
+                7,
+                UUID(0, 7),
+                1,
+                ProgramSessionPolicy(
+                    UUID(0, 1),
+                    setOf("TEACHER"),
+                    5,
+                    0,
+                    NOW.minusSeconds(100),
+                    NOW.plusSeconds(100),
+                    false,
+                    NOW.plusSeconds(100),
+                    NOW.plusSeconds(100),
+                ),
+            )
     }
 }

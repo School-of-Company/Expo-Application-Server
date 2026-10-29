@@ -110,6 +110,7 @@ class FieldVisitCancellation(
         expoId: UUID,
         sessionId: String,
         party: OwnerApplicationParty,
+        resolvedPhone: String? = null,
     ): List<OwnerFieldVisitItem> =
         visits.findByParticipants(expoId, party.participants.map { it.participantId }).map { visit ->
             val reason =
@@ -132,7 +133,11 @@ class FieldVisitCancellation(
 
                     else -> {
                         try {
-                            val verified = user.verify(GetOwnerCancellationStatusCommand(expoId, sessionId, visit.participantId))
+                            val verified =
+                                user.verify(
+                                    GetOwnerCancellationStatusCommand(expoId, sessionId, visit.participantId),
+                                    resolvedPhone,
+                                )
                             if (verified.status.representative !=
                                 party.participants.single { it.participantId == visit.participantId }.representative
                             ) {
