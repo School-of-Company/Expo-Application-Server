@@ -716,7 +716,7 @@ class PreregisterRegistrationHttpTests {
         val delivered = mutableListOf<Long>()
         var elapsed = 0L
 
-        reservations.deliverCounts(nanoTime = { elapsed }) { _, participantId ->
+        recovery.deliverCounts(nanoTime = { elapsed }) { _, participantId ->
             delivered.add(participantId)
             elapsed = TimeUnit.SECONDS.toNanos(5)
         }
@@ -724,7 +724,7 @@ class PreregisterRegistrationHttpTests {
         assertEquals(listOf(42L), delivered)
         assertEquals(1, count("tb_preregister_count_outbox"))
         assertEquals(0, jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox", Int::class.java))
-        reservations.deliverCounts { _, participantId -> delivered.add(participantId) }
+        recovery.deliverCounts { _, participantId -> delivered.add(participantId) }
         assertEquals(listOf(42L, 43L), delivered)
         assertEquals(0, count("tb_preregister_count_outbox"))
     }
@@ -748,7 +748,7 @@ class PreregisterRegistrationHttpTests {
                 }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val delivered = mutableListOf<Long>()
-            reservations.deliverCounts { _, participantId ->
+            recovery.deliverCounts { _, participantId ->
                 delivered.add(participantId)
                 if (participantId ==
                     42L
@@ -768,7 +768,7 @@ class PreregisterRegistrationHttpTests {
                 0,
                 jdbc.queryForObject("SELECT attempts FROM tb_preregister_count_outbox WHERE participant_id = 43", Int::class.java),
             )
-            reservations.deliverCounts { _, participantId -> delivered.add(participantId) }
+            recovery.deliverCounts { _, participantId -> delivered.add(participantId) }
             assertEquals(listOf(42L, 43L), delivered)
             assertEquals(1, count("tb_preregister_count_outbox"))
             release.countDown()
