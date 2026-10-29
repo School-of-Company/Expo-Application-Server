@@ -1,17 +1,14 @@
 package team.startup.application.domain.application.service.impl
 
-import org.springframework.dao.DataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.transaction.PlatformTransactionManager
-import org.springframework.transaction.support.TransactionCallback
 import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterChangeOperation
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.presentation.dto.sameAs
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
-import java.sql.SQLException
 import java.util.UUID
 
 @Component
@@ -20,18 +17,12 @@ class PreregisterSessionLedger(
     private val gateway: PreregisterSessionGateway,
     transactionManager: PlatformTransactionManager,
 ) {
-    val transactions =
-        object : TransactionTemplate(transactionManager) {
-            override fun <T> execute(action: TransactionCallback<T>): T =
-                try {
-                    super.execute(action)
-                } catch (ex: DataAccessException) {
-                    if (generateSequence<Throwable>(ex) { it.cause }.filterIsInstance<SQLException>().any { it.sqlState == "55P03" }) {
-                        throw ResponseStatusException(HttpStatus.CONFLICT, "신청이 몰려 처리하지 못했습니다. 같은 멱등 키로 재시도해 주세요.", ex)
-                    }
-                    throw ex
-                }
-        }
+    val transactions = TransactionTemplate(transactionManager)
+
+    fun registrationLock(expoId: UUID) {
+        repository.registrationLock(expoId)
+        if (repository.expoDeleted(expoId)) conflict("삭제된 박람회입니다.")
+    }
 
     fun lock(expoId: UUID) {
         repository.lock(expoId)

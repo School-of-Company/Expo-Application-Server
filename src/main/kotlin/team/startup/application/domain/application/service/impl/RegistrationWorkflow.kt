@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
+import org.springframework.dao.DataAccessException
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
@@ -7,6 +8,7 @@ import team.startup.application.domain.application.presentation.dto.PreregisterR
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.RegistrationCommand
 import tools.jackson.databind.ObjectMapper
+import java.sql.SQLException
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -28,6 +30,23 @@ class RegistrationWorkflow(
     private val regions = CompanionAnswers.regions
 
     fun register(
+        command: RegistrationCommand,
+        participantType: String,
+        applicationType: String,
+    ): PreregisterRegistrationReceipt? =
+        try {
+            registerRequest(command, participantType, applicationType)
+        } catch (ex: DataAccessException) {
+            if (participantType == "STANDARD" && applicationType == "PRE" &&
+                generateSequence<Throwable>(ex) { it.cause }.filterIsInstance<SQLException>().any { it.sqlState == "55P03" }
+            ) {
+                val retry = if (command.idempotencyKey != null) " 같은 멱등 키로 재시도해 주세요." else " 잠시 후 다시 시도해 주세요."
+                throw ResponseStatusException(HttpStatus.CONFLICT, "신청이 몰려 처리하지 못했습니다.$retry", ex)
+            }
+            throw ex
+        }
+
+    private fun registerRequest(
         command: RegistrationCommand,
         participantType: String,
         applicationType: String,
