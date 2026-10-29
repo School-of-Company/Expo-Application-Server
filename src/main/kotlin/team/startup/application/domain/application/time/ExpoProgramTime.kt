@@ -15,13 +15,18 @@ object ExpoProgramTime {
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
     private val weekdays = listOf("월", "화", "수", "목", "금", "토", "일")
 
-    fun parse(value: String): OffsetDateTime =
-        try {
+    fun parse(value: String): OffsetDateTime {
+        if (value.length == 16 && (value[10] == 'T' || value[10] == ' ')) {
+            val format = if (value[10] == ' ') spaceFormat else DateTimeFormatter.ISO_LOCAL_DATE_TIME
+            return LocalDateTime.parse(value, format).atZone(seoul).toOffsetDateTime()
+        }
+        return try {
             OffsetDateTime.parse(value)
         } catch (_: DateTimeParseException) {
             val format = if (' ' in value) spaceFormat else DateTimeFormatter.ISO_LOCAL_DATE_TIME
             LocalDateTime.parse(value, format).atZone(seoul).toOffsetDateTime()
         }
+    }
 
     // #251: 표기만 다른 같은 시각은 같은 시각이다. 읽을 수 없는 값은 문자열로 비교한다.
     fun same(
