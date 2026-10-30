@@ -36,6 +36,7 @@ class FieldCancellationPersistenceTests {
         val source = DriverManagerDataSource(postgres.jdbcUrl, postgres.username, postgres.password)
         Flyway
             .configure()
+            .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
             .dataSource(source)
             .load()
             .migrate()

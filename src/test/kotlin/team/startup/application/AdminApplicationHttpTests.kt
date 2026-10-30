@@ -470,6 +470,7 @@ class AdminApplicationHttpTests {
                     )
                     Flyway
                         .configure()
+                        .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
                         .dataSource(source)
                         .schemas(schema)
                         .defaultSchema(schema)
@@ -541,6 +542,7 @@ class AdminApplicationHttpTests {
                     )
                     Flyway
                         .configure()
+                        .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
                         .dataSource(source)
                         .schemas(schema)
                         .defaultSchema(schema)

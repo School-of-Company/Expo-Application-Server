@@ -8,6 +8,9 @@ spring:
     hikari:
       maximum-pool-size: 15
       connection-timeout: ${APPLICATION_DB_CONNECTION_TIMEOUT_MS:3000}
+  flyway:
+    postgresql:
+      transactional-lock: false
   jpa:
     open-in-view: false
     hibernate:

@@ -123,6 +123,7 @@ class FieldVisitPoolTests {
         pool(15).use { ds ->
             Flyway
                 .configure()
+                .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
                 .dataSource(ds)
                 .load()
                 .migrate()
