@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.service
 
 import team.startup.application.domain.application.presentation.dto.ApplyProgramSessionCommand
+import team.startup.application.domain.application.presentation.dto.ProgramFormSnapshot
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.StudentGuardianEligibilityQuery
 
@@ -14,5 +15,5 @@ interface StudentGuardianEligibilityProvider {
         command: ApplyProgramSessionCommand,
         definition: ProgramSessionDefinition,
         occupation: String?,
-    )
+    ): ProgramFormSnapshot?
 }

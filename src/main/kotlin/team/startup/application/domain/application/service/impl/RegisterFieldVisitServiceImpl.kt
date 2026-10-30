@@ -57,7 +57,7 @@ class RegisterFieldVisitServiceImpl(
         val phone = gateway.participantSessionPhone(command.expoId.toString(), command.sessionId)
         val ownerHash = MessageDigest.getInstance("SHA-256").digest(phone.toByteArray()).joinToString("") { "%02x".format(it) }
         return requests.withLock(command.expoId, ownerHash) {
-            val party = gateway.managedParty(command.expoId, command.sessionId)
+            val party = gateway.managedParty(command.expoId, command.sessionId, phone)
             if (!party.participants.map { it.participantId }.containsAll(request.participantIds)) {
                 throw ResponseStatusException(HttpStatus.NOT_FOUND)
             }

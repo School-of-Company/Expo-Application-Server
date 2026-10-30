@@ -88,7 +88,6 @@ tasks.withType<Test> {
     providers.gradleProperty("ciTestShard").orNull?.let { shard ->
         require(shard == "1" || shard == "2") { "Unknown ciTestShard: $shard" }
         inputs.property("ciTestShard", shard)
-        testLogging.events("started", "passed", "failed", "skipped")
         exclude { element ->
             val className = element.name.substringBefore('$').removeSuffix(".class")
             !element.isDirectory && ((className.hashCode() and 1) + 1) != shard.toInt()

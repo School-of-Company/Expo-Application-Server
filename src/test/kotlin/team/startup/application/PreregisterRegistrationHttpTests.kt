@@ -9,23 +9,29 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.Mockito.doAnswer
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.dao.DataAccessResourceFailureException
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.repository.PreregisterSessionRepository
+import team.startup.application.domain.application.repository.ProgramSessionApplicationRepository
+import team.startup.application.domain.application.service.impl.ParticipantSaveRejectedException
 import team.startup.application.domain.application.service.impl.PreregisterRecoveryScheduler
 import team.startup.application.domain.application.service.impl.PreregisterRegistrationWorkflow
 import team.startup.application.domain.application.service.impl.PreregisterSessionLedger
@@ -33,6 +39,8 @@ import team.startup.application.domain.application.service.impl.SessionAttendanc
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
+import java.sql.DriverManager
+import java.sql.SQLException
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -40,6 +48,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 
 @SpringBootTest(
@@ -65,9 +74,11 @@ class PreregisterRegistrationHttpTests {
 
     @Autowired private lateinit var reservations: PreregisterReservationRepository
 
-    @Autowired private lateinit var repository: PreregisterSessionRepository
+    @MockitoSpyBean private lateinit var repository: PreregisterSessionRepository
 
     @Autowired private lateinit var ledger: PreregisterSessionLedger
+
+    @Autowired private lateinit var programs: ProgramSessionApplicationRepository
 
     @BeforeEach
     fun reset() {
@@ -804,7 +815,7 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
-    fun `capacity readers share a lock while submission waits for all readers`() {
+    fun `shared ledger locks allow capacity reads while submissions wait`() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(3)
@@ -1074,6 +1085,174 @@ class PreregisterRegistrationHttpTests {
         assertEquals(listOf("PUT:42", "PUT:43", "DELETE:43", "DELETE:42", "PUT:42", "PUT:43"), attendanceRequests.toList())
         assertEquals(200, cancel("test-token", null))
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE status = 'CONFIRMED'", Int::class.java))
+    }
+
+    @Test
+    fun `field cancellation lock order preserves its five second timeout`() {
+        ledger.transactions.executeWithoutResult {
+            programs.limitLockWait()
+            ledger.lock(EXPO)
+            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+            programs.lockParticipant(1)
+            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+        }
+        ledger.transactions.executeWithoutResult {
+            programs.limitLockWait()
+            repository.registrationLock(EXPO)
+            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+        }
+    }
+
+    @Test
+    fun `User rejection waits for failure recording and releases reserved seats`() {
+        userStatus.set(503)
+        assertEquals(503, submit("reject-lock"))
+        userStatus.set(409)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        userGate.set(entered to release)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending =
+                pool.submit<ResponseStatusException> {
+                    assertThrows(ParticipantSaveRejectedException::class.java) {
+                        workflow.recover(EXPO, "reject-lock")
+                    }
+                }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            withExpoLock {
+                release.countDown()
+                assertThrows(TimeoutException::class.java) { pending.get(3500, TimeUnit.MILLISECONDS) }
+            }
+            assertEquals(409, pending.get(5, TimeUnit.SECONDS).statusCode.value())
+            assertEquals("REJECTED", jdbc.queryForObject("SELECT state FROM tb_preregister_reservation", String::class.java))
+            assertEquals(5, capacity().get("remaining").intValue())
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `recovery failure recording does not convert lock timeout to conflict`() {
+        userStatus.set(503)
+        assertEquals(503, submit("recover-lock"))
+        userStatus.set(409)
+        val failure = DataAccessResourceFailureException("lock timeout", SQLException("timeout", "55P03"))
+        val locks = AtomicInteger()
+        doAnswer { invocation ->
+            if (locks.incrementAndGet() == 2) throw failure
+            invocation.callRealMethod()
+        }.`when`(repository).lock(EXPO)
+        val thrown =
+            assertThrows(DataAccessResourceFailureException::class.java) {
+                workflow.recover(EXPO, "recover-lock")
+            }
+        assertEquals(failure, thrown)
+        assertEquals("RESERVED", jdbc.queryForObject("SELECT state FROM tb_preregister_reservation", String::class.java))
+    }
+
+    @Test
+    fun `exclusive lock contention returns 409 and the same key can retry`() {
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            withExpoLock {
+                val pending = pool.submit<Int> { submit("lock-retry") }
+                assertEquals(409, pending.get(8, TimeUnit.SECONDS))
+                assertEquals(0, count("tb_preregister_reservation"))
+                assertTrue(userRequests.isEmpty())
+            }
+            assertEquals(201, submit("lock-retry"))
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `completion lock timeout retains seats and replays the original User request`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        userGate.set(entered to release)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit<Int> { submit("completion-lock") }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            withExpoLock {
+                release.countDown()
+                assertEquals(409, pending.get(8, TimeUnit.SECONDS))
+                assertEquals("RESERVED", jdbc.queryForObject("SELECT state FROM tb_preregister_reservation", String::class.java))
+                assertEquals(0, count("tb_preregister_application"))
+                assertEquals(0, count("tb_session_attendance_outbox"))
+                assertEquals(0, count("tb_preregister_count_outbox"))
+            }
+            assertEquals(4, capacity().get("remaining").intValue())
+            val original = userRequests.single()
+            assertEquals(201, submit("completion-lock"))
+            assertEquals(listOf(original, original), userRequests.toList())
+            assertEquals(1, stored.size)
+            assertEquals(1, count("tb_preregister_application"))
+            assertEquals(1, count("tb_session_attendance_outbox"))
+            assertEquals(1, count("tb_preregister_count_outbox"))
+        } finally {
+            release.countDown()
+            userGate.set(null)
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `public capacity does not wait for an exclusive expo lock`() {
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            withExpoLock {
+                assertEquals(5, pool.submit<Int> { capacity().get("remaining").intValue() }.get(8, TimeUnit.SECONDS))
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    private fun withExpoLock(action: () -> Unit) {
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("SELECT pg_advisory_xact_lock(34, hashtext(?))").use {
+                    it.setString(1, EXPO.toString())
+                    it.execute()
+                }
+                action()
+            } finally {
+                connection.rollback()
+            }
+        }
+    }
+
+    @Test
+    fun `capacity uses one snapshot when a waiting reservation is promoted between counts`() {
+        jdbc.update(
+            "INSERT INTO tb_preregister_reservation " +
+                "(expo_id, request_id, session_id, command, user_request, applicants, state, queue_seq) " +
+                "VALUES (?, 'reserved', 1, 'reserved', '{}', 1, 'RESERVED', NULL), " +
+                "(?, 'waiting', 1, 'waiting', '{}', 1, 'WAITING', 1)",
+            EXPO,
+            EXPO,
+        )
+        doAnswer { invocation ->
+            val occupied = invocation.callRealMethod()
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use {
+                    assertEquals(
+                        1,
+                        it.executeUpdate("UPDATE tb_preregister_reservation SET state = 'RESERVED' WHERE request_id = 'waiting'"),
+                    )
+                }
+            }
+            occupied
+        }.`when`(repository).occupied(EXPO, 1)
+        val snapshot = capacity()
+        assertEquals(1, snapshot.get("confirmed").intValue())
+        assertEquals(1, snapshot.get("waiting").intValue())
+        assertEquals(0, snapshot.get("remaining").intValue())
     }
 
     @Test

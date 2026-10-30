@@ -38,22 +38,7 @@ jobs:
           cp .env.example .env
           docker compose up -d --wait
       - name: Build, test and check formatting
-        run: |
-          (
-            sleep 480
-            jps -l | while read -r pid main; do
-              if [[ "$main" == *GradleWorkerMain ]]; then
-                jcmd "$pid" Thread.print || true
-              fi
-            done
-            for db in $(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}'); do
-              docker exec "$db" psql -U test -d test -c \
-                "SELECT pid,state,wait_event_type,wait_event,pg_blocking_pids(pid),left(query,200) FROM pg_stat_activity WHERE datname='test';" || true
-            done
-          ) &
-          diagnostics_pid=$!
-          trap 'kill "$diagnostics_pid" 2>/dev/null || true' EXIT
-          ./gradlew build ktlintCheck spotlessCheck --build-cache -PciTestShard=${{ matrix.shard }} --no-daemon
+        run: ./gradlew build ktlintCheck spotlessCheck --build-cache -PciTestShard=${{ matrix.shard }} --no-daemon
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4

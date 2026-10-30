@@ -1,6 +1,7 @@
 package team.startup.application.domain.application.repository
 
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.PreparedStatementSetter
 import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
@@ -118,6 +119,24 @@ class FieldVisitRegistrationRepository(
                 participantId,
                 visitDate,
             ).singleOrNull()
+
+    fun findToday(
+        expoId: UUID,
+        participantIds: Collection<Long>,
+        visitDate: LocalDate,
+    ): Map<Long, FieldVisitRegistration> {
+        if (participantIds.isEmpty()) return emptyMap()
+        return jdbc
+            .query(
+                "SELECT * FROM tb_field_visit_registration WHERE expo_id=? AND participant_id=ANY(?) AND visit_date=?",
+                PreparedStatementSetter { ps ->
+                    ps.setObject(1, expoId)
+                    ps.setArray(2, ps.connection.createArrayOf("bigint", participantIds.toTypedArray()))
+                    ps.setObject(3, visitDate)
+                },
+                row,
+            ).associateBy { it.participantId }
+    }
 
     fun findByParticipants(
         expoId: UUID,
