@@ -1,7 +1,7 @@
 ---
 name: write-pr
 description: Generate PR title, body, and labels from commits since the base branch, then create the PR on GitHub. Handles base branch detection, label selection, and PR creation end-to-end.
-allowed-tools: Bash(git *:*), Bash(bash *create-pr.sh:*), Bash(cat *:*), Read, Write
+allowed-tools: Bash(git *:*), Bash(gh *:*), Bash(bash *create-pr.sh:*), Bash(cat *:*), Bash(rm PR_BODY.md:*), AskUserQuestion, Read, Write
 ---
 
 ## Step 1 — Find the Base Branch
@@ -27,10 +27,11 @@ git diff "origin/$BASE...HEAD"
 cat .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null
 ```
 
-## Step 3 — Read This Project's Conventions
+## Step 3 — Learn This Project's Scope Vocabulary
 
-Read `.claude/shared/commit-conventions.md` for the repo's commit convention and PR title rule.
-Commit scopes do not become PR title prefixes.
+Read `.claude/shared/commit-conventions.md` — it holds the commands for reading the repo's existing
+scope vocabulary, the fallback for deriving one from the changed paths, and the title format. It ships
+with this skill, so it is always present.
 
 ## Step 4 — Determine Labels
 
@@ -45,16 +46,14 @@ matches, attach none — a wrong label is worse than no label, and an undefined 
 
 ## Step 5 — Generate PR Content
 
-**Title** — Generate 3 concise Korean descriptions of the change:
+**Title** — Generate 3 options in the format `[scope] description`:
 
-- No leading `[scope]` or other bracketed prefix. Do not copy a Conventional Commit prefix into the PR title.
-- No emojis; max 50 characters total.
+- Scope: from Step 3. Lowercase, in brackets — `[member]`, `[expo]`, `[global]`
+- Description: Korean, concise, no emojis, max 50 characters total
 - Wrap class names, method names, annotations, file names, and technical terms in backticks (e.g., `@Transactional`, `MemberService`, `SKILL.md`)
 
-**Body** — Start from the repository's `.github/PULL_REQUEST_TEMPLATE.md` and fill it in:
+**Body** — Follow the `.github/PULL_REQUEST_TEMPLATE.md` structure:
 
-- Keep every template heading in its original order. Replace instructional placeholders with actual change details in every section, including review notes and related issues (`관련 이슈 없음` when none apply).
-- Mark checklist items `[x]` only when verified; leave others `[ ]` with a short reason. Never submit an empty template section or the untouched template.
 - Korean 합쇼체: `~하였습니다`, `~되었습니다`, `~추가하였습니다`
 - No emojis
 - Max 2500 characters
@@ -62,7 +61,7 @@ matches, attach none — a wrong label is worse than no label, and an undefined 
 
 ## Step 6 — Write Body & Show Preview
 
-Write the completed template to `PR_BODY.md`, verify it against `.github/PULL_REQUEST_TEMPLATE.md`, then display:
+Write the body to `PR_BODY.md`, then display:
 
 ```
 ## PR 제목 후보

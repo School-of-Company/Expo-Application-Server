@@ -34,7 +34,8 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 ### Security
 
 - Use specific digest tags, not `latest`
-- Run as non-root: `RUN adduser --disabled-password app && USER app`
+- Run as non-root: create the user in a `RUN adduser --disabled-password app` step, then switch with a
+  separate `USER app` instruction (`USER` can't be chained after `&&`)
 - Never `COPY . .` before installing dependencies
 
 ### Node / TypeScript

@@ -8,6 +8,9 @@ allowed-tools: Agent, Bash(git *:*), Bash(grep *:*), Bash(ls *:*), Bash(find *:*
 
 ## Step 1 — Gather the Diff and This Project's Rules
 
+`BASE` is the repo's integration branch if it has one, otherwise its default branch — find it the way
+the `write-pr` skill's Step 1 does instead of assuming `develop` or `main`.
+
 ```bash
 git branch --show-current
 git diff --stat                          # uncommitted
@@ -23,10 +26,20 @@ is not.
 
 ## Step 2 — Decide Whether to Fan Out
 
-| Diff size                                      | How to review                                             |
-| ---------------------------------------------- | --------------------------------------------------------- |
-| A handful of files, one concern                | Review directly. Spawning agents costs more than it saves |
-| Many files, or several concerns mixed together | Fan out — one subagent per lens (Step 3)                  |
+Measure before deciding — the stat from Step 1 already has the numbers:
+
+```bash
+git diff --shortstat "origin/$BASE...HEAD"
+```
+
+| Diff size                                                              | How to review                                              |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Up to ~10 files and ~500 changed lines, or a single concern            | Review directly. Spawning agents costs more than it saves  |
+| More than that **and** at least two independent concerns mixed together | Fan out — one subagent per lens that applies (Step 3)      |
+
+**Every subagent re-reads the diff and the rules in its own context, so fanning out multiplies the
+input cost by the number of lenses.** A large diff of one concern (a rename, a generated file, a bulk
+config change) is still a direct review — the gain below only exists when the lenses really differ.
 
 The reason to fan out isn't speed. **One context holding bugs, security, tests, and performance at once
 reviews all four shallowly** — attention gets split and the later lenses get whatever is left. A
@@ -35,20 +48,36 @@ the main context at all.
 
 ## Step 3 — Fan Out, One Lens per Subagent
 
-Spawn these in **one message** so they run concurrently (the limit is 20; four is plenty). Use
-`subagent_type: "general-purpose"` — a target repo won't have custom agent types defined.
+Spawn only the lenses the diff actually touches, in **one message** so they run concurrently. Use
+`subagent_type: "general-purpose"` — a target repo won't have custom agent types defined — and
+`model: "sonnet"`: a lens is a focused read, not open-ended reasoning, so the largest model isn't worth
+its price here.
 
-Give every subagent the same three things: the diff range, its single lens, and the output format below.
-Tell each one explicitly: **read only, change nothing, and report `파일:줄` for every finding.**
+Which lenses to spawn:
+
+- **correctness** — whenever the diff changes logic
+- **security** — only if it touches input handling, auth, secrets, logging of values, or shell/path/query construction
+- **tests** — only if it adds or changes behavior, or touches test files
+- **performance** — only if it touches data access, loops over I/O, or a hot path
+
+Give every subagent the same things, **as pointers rather than pasted content** — the diff range
+(`origin/$BASE...HEAD`) and the changed-file list from Step 1, its single lens, and the rule file *paths*
+(not their text). Each reads the diff itself and opens only the rule sections its lens needs.
+Tell each one explicitly:
+
+- **Read only, change nothing, report `파일:줄` for every finding.**
+- Read the files the diff touches, not the whole repository; open a callee only to confirm a suspicion.
+- **Reply in at most 10 lines**: one line per finding (`파일:줄 — what breaks`), no code quoted back, no
+  restating the task. "No findings" is a complete answer and should be one line.
 
 | Lens            | What it looks for                                                                                                                                                                                                                                                                        |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **correctness** | Promise created but not awaited; a failure path that returns success; an exception swallowed into a generic 500; a status code contradicting the documented contract; off-by-one, empty collection, `null`, first and last iteration; a value read before it's set                       |
+| **correctness** | Promise created but not awaited; a failure path that returns success; an exception swallowed into a generic 500; a status code contradicting the documented contract; off-by-one, empty collection, `null`, first and last iteration; a value read before it's set; an interface, protocol, or DTO changed without its implementations or callers updated |
 | **security**    | Input reaching a filesystem path, URL path, query, or shell command without validation; secrets or tokens in source, logs, or client-facing errors; an endpoint whose shape changed but not its authorization check; whether changing an id in the request can reach another user's data |
 | **tests**       | New behavior with no test; failure paths with no test; a test that would pass even if the code were wrong — the classic being an assertion that "X wins over Y" with fixtures that don't collide, which proves union and not precedence; a test that depends on another having run first |
 | **performance** | Blocking I/O on an async path; a network or filesystem call inside a loop that could be batched; a query added without an index; an N+1. Skip this lens entirely when the diff has no data access or hot path                                                                            |
 
-Also pass each subagent the rules from Step 1, and ask it to flag violations of those by name.
+Ask each subagent to flag violations of the Step 1 rules by name.
 
 ## Step 4 — Verify Before You Report
 

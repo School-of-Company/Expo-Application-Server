@@ -49,7 +49,8 @@ a change that wasn't run isn't done.
 **If the same feedback comes up a second time, the problem is the rule, not the change.** Fix it where it
 won't come back:
 
-- A convention → the matching file under `.claude/rules/`
+- A convention → wherever this repo keeps them (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, or
+  `.claude/rules/*.md` if it has them — check which exist before assuming)
 - Something a skill should have caught → that skill
 - Something a hook could catch mechanically → a hook module
 

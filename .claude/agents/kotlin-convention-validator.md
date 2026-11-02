@@ -41,19 +41,20 @@ Use the rules you find as the authoritative source. Do not assume or infer rules
 
 ## Step 3: Fix Violations
 
-For each violation found, fix it directly using the Edit tool:
+For each violation of a rule you read in Step 2, fix it directly using the Edit tool. The categories
+below are what this validator usually meets — apply one only when the loaded rules actually state it,
+and follow the rules' wording over the examples here:
 
-1. **DTO annotations**: Replace `@param:JsonProperty` → `@field:JsonProperty`, fix `@param:Schema` on ResDto files
-2. **Logging**: Rewrite log messages to English verb-led sentences with `{}` placeholders
-3. **ExpectedException**: Remove dynamic data from message strings (keep Korean 합쇼체 + period)
-4. **Kotlin style**: Convert `var` to `val` where safe; refactor field injection to constructor injection
-5. **Transactional**: Move class-level `@Transactional` to method level; add `readOnly = true` to read methods
+1. **DTO annotations**: e.g. `@param:JsonProperty` → `@field:JsonProperty`, `@param:Schema` on ResDto files
+2. **Logging**: e.g. English verb-led sentences with `{}` placeholders
+3. **ExpectedException**: e.g. no dynamic data in the message string (Korean 합쇼체 + period)
+4. **Kotlin style**: `var` → `val` where safe; field injection → constructor injection
+5. **Transactional**: e.g. class-level `@Transactional` → method level; `readOnly = true` on read methods
 
-After all edits, run:
+After all edits, run the formatter only if the project defines one:
 ```bash
-./gradlew ktlintFormat
+./gradlew tasks --all 2>/dev/null | grep -q '^ktlintFormat' && ./gradlew ktlintFormat
 ```
-to apply final formatting cleanup.
 
 ## Step 4: Output Report
 

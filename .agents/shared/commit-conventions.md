@@ -30,6 +30,8 @@ history is consistent and different, follow it and skip the rest of this section
 - **Scope**: see "Choosing the Scope" below
 - **Description**: 한글, 명사형 종결, 마침표 없음
   - Good: `레포 선택 드롭다운 구현`, `PR 생성 시 base branch 조회 실패 처리`
+  - **Say the intent, not the implementation.** The diff already shows what was edited; the subject says
+    what is different now. `빈 저장소에서 PR 생성이 500으로 끝나던 문제 해결` over `try/catch 추가`
 - Subject line only (no body) — except for a breaking change, which gets a `BREAKING CHANGE: <설명>` body
 - Never add AI as a co-author
 
@@ -57,6 +59,8 @@ The scope is not a fixed list. **Reuse the vocabulary the repo already uses:**
 ```bash
 # scopes in commit history:  feat(member): ... -> member
 git log --pretty=%s -200 | grep -oE '^[a-z]+\(([^)]+)\)' | sed -E 's/.*\((.*)\)/\1/' | sort | uniq -c | sort -rn
+# scopes in past PR titles:  [member] ... -> member
+gh pr list --state all --limit 100 --json title -q '.[].title' | grep -oE '^\[[^]]+\]' | sort | uniq -c | sort -rn
 ```
 
 **If the history shows a vocabulary, reuse it verbatim** — matching the project beats a more accurate
@@ -76,7 +80,7 @@ change spans several scopes, use `global`; for build/CI-only changes, `ci`.
 
 ## PR Title Format
 
-`description`
+`[scope] description`
 
-- Describe the change directly in Korean, without a leading bracketed scope or Conventional Commit prefix.
-- No emojis; max 50 characters total. Commit scopes remain in commit messages only.
+- Same vocabulary as the commit scope, lowercase in brackets: `[member]`, `[expo]`, `[global]`
+- Description: Korean, concise, no emojis, max 50 characters total

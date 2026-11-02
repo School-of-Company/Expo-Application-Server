@@ -45,6 +45,12 @@ a fake passed into the constructor, the runner's mocking API, a temp directory w
 Prefer injecting a fake over patching a global — the test then reads as "this collaborator returns X"
 rather than "the world is monkeypatched".
 
+Replace only what is slow, external, or nondeterministic, and keep everything the test actually depends on
+real — a mock of your own logic proves the mock works. If you're unsure whether something needs a double,
+run the test with the real one first. Two signs you've gone too far: the double's setup is longer than the
+test itself, or you can't say why this one has to be faked. A faked response carries the real shape in
+full, not just the fields this test reads.
+
 ## Step 4 — Make Each Test Stand Alone
 
 - Runnable by itself, in any order. No test may depend on another having run
