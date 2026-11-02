@@ -29,7 +29,8 @@ block() {
     block "dd" "dd 는 대상을 덮어씁니다."
 [[ "$COMMAND" =~ (^|[[:space:]])mkfs ]] &&
     block "mkfs" "파일시스템을 새로 만드는 명령입니다."
-echo "$COMMAND" | grep -qE '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh' &&
+# `sh` 뒤에 단어가 이어지면(`| sha256sum`, `| shfmt`) 셸이 아니라 다른 도구다 — 끝을 확인한다.
+echo "$COMMAND" | grep -qE '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba)?sh([[:space:]]|$|[;&)])' &&
     block "pipe to shell" "내려받은 스크립트를 바로 실행합니다. 파일로 받아 읽어본 뒤 실행하세요."
 
 # ── 삭제: 위험한 대상만 ──────────────────────────────────────────────────────
@@ -43,10 +44,14 @@ fi
 
 # ── git: 복구 불가한 작업 ────────────────────────────────────────────────────
 # --force-with-lease 는 원격이 예상 커밋일 때만 덮으므로 허용한다. 맨 --force 는 남의 커밋을 날린다.
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+push' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
-    echo "$COMMAND" | grep -qE '(--force([[:space:]]|$)|-f([[:space:]]|$))' &&
+#
+# 플래그는 **그 push 명령의 인자**에서만 찾는다. 같은 줄의 `tail -f`·`curl -f` 까지 push 의
+# 강제 옵션으로 읽으면 멀쩡한 명령이 막힌다. `-uf` 같은 묶음 플래그와 `+main` 강제 refspec 도 덮어쓰기다.
+while IFS= read -r push_args; do
+    [[ "$push_args" == *force-with-lease* ]] && continue
+    echo "$push_args" | grep -qE '(^|[[:space:]])(--force|-[a-zA-Z]*f[a-zA-Z]*|\+[^[:space:]]+)([[:space:]]|$)' &&
         block "git push --force" "다른 사람의 커밋을 덮어쓸 수 있습니다. --force-with-lease 를 쓰거나, 정말 필요하면 직접 실행하세요."
-fi
+done < <(echo "$COMMAND" | grep -oE 'git[[:space:]]+push[^;&|]*')
 echo "$COMMAND" | grep -qE 'git[[:space:]]+reset[[:space:]]+[^|;]*--hard' &&
     block "git reset --hard" "커밋하지 않은 변경이 사라집니다. git stash 로 치워두고 진행하세요."
 echo "$COMMAND" | grep -qE 'git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f' &&
