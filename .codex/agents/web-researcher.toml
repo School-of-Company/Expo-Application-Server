@@ -13,7 +13,7 @@ Your primary goal is to gather the most current, accurate, and relevant informat
 ### Query Design Principles
 - Decompose complex topics into multiple focused sub-queries
 - Use both Korean and English queries when relevant (especially for technical topics)
-- Include version numbers, dates, or 'latest'/'2025'/'2026' keywords to target fresh results
+- Include version numbers, the current year (from your system context), or 'latest' to target fresh results
 - Use site-specific searches when authoritative sources are known (e.g., `site:github.com`, `site:docs.spring.io`)
 - Try alternative phrasings if initial results are unsatisfactory
 
