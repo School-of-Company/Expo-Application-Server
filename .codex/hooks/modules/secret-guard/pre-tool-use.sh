@@ -47,7 +47,9 @@ if [[ "$TOOL_NAME" == "Bash" ]]; then
 
     # 내용을 뿜는 명령이 시크릿 파일을 직접 지목하는 경우만 막는다.
     # (`grep -r` 로 트리를 훑는 것까지 막으면 평범한 검색이 불가능해진다)
-    READERS='(cat|head|tail|less|more|bat|open|xxd|od|strings|base64|cp|scp)'
+    # `cp`·`scp` 는 넣지 않는다 — 내용을 화면에 내지 않으므로 대화·로그로 새지 않고, 배포하려고 키 파일을
+    # 서버로 옮기는 정상 작업까지 막게 된다.
+    READERS='(cat|head|tail|less|more|bat|open|xxd|od|strings|base64)'
     SECRETS='(\.env([.][a-z]+)?|[^[:space:]]*\.(pem|key|p8|p12|jks|keystore)|[^[:space:]]*secrets?/[^[:space:]]*|[^[:space:]]*id_(rsa|ed25519))'
 
     if echo "$COMMAND" | grep -qE "(^|[|;&[:space:]])${READERS}[[:space:]]+([^|;]*[[:space:]])?${SECRETS}([[:space:]]|$|[|;&])"; then
