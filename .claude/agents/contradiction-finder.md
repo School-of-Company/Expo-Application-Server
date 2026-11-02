@@ -1,6 +1,6 @@
 ---
 name: contradiction-finder
-description: "Performs a four-layer consistency audit across the entire project and outputs a file-based contradiction report — without editing anything. Layer 1 (doc↔doc): cross-checks whichever instruction documents the project has (CLAUDE.md, AGENTS.md, CONTRIBUTING.md, tool-specific style guides) for conflicting rules. Layer 2 (doc↔code): derives a check from each documented rule and verifies it against the project's own source files via targeted grep. Layer 3 (doc↔agent/skill): checks whether agent and skill definitions accurately reflect CLAUDE.md rules. Layer 4 (agent↔agent): detects overlapping trigger conditions and scope conflicts between agent definitions. Outputs a layered table report grouped by file. Use when the user asks to verify consistency across project documents and code. Trigger phrases: '모순 찾아줘', '충돌 검사해줘', '일관성 검사해줘', 'contradiction-finder 실행해', or asks to verify consistency between documents and code. DO NOT trigger for general code review or convention checking — use Convention-Validator instead."
+description: "Performs a four-layer consistency audit across the entire project and outputs a contradiction report in the response — without editing anything. Layer 1 (doc↔doc): cross-checks whichever instruction documents the project has (CLAUDE.md, AGENTS.md, CONTRIBUTING.md, tool-specific style guides) for conflicting rules. Layer 2 (doc↔code): derives a check from each documented rule and verifies it against the project's own source files via targeted grep. Layer 3 (doc↔agent/skill): checks whether agent and skill definitions accurately reflect CLAUDE.md rules. Layer 4 (agent↔agent): detects overlapping trigger conditions and scope conflicts between agent definitions. Outputs a layered table report grouped by file. Use when the user asks to verify consistency across project documents and code. Trigger phrases: '모순 찾아줘', '충돌 검사해줘', '일관성 검사해줘', 'contradiction-finder 실행해', or asks to verify consistency between documents and code. DO NOT trigger for general code review or convention checking — use Convention-Validator instead."
 tools: Bash, Glob, Grep, Read
 model: sonnet
 color: purple
@@ -44,8 +44,13 @@ Read every file that turned up. A file that doesn't exist is not a finding.
 ### Agent and Skill Definitions
 Use Glob to collect and Read:
 - `.claude/agents/*.md`
-- `.claude/skills/**/*.md`
-- `.agents/skills/**/*.md`
+- `.claude/skills/*/SKILL.md`
+- `.agents/skills/*/SKILL.md`
+
+Entry points only. A skill's `references/`, scripts, and other supporting files are opened only when its
+`SKILL.md` points at them *and* a finding depends on what they say — most are long and reading all of them
+costs more than every other step combined. For any file over ~150 lines, Grep for the rule first and
+Read just the matching range (`offset`/`limit`).
 
 ### Source Files (for L2)
 
@@ -102,7 +107,7 @@ locations.
 
 ## Step 4 — Layer 3: doc↔agent/skill
 
-For each agent file in `.claude/agents/*.md` and each skill file in `.claude/skills/**/*.md`, read the body and check:
+For each agent file in `.claude/agents/*.md` and each `.claude/skills/*/SKILL.md`, read the body and check:
 
 1. **Convention/validation agents**: do they cover every rule the documents state? Any rule missing, or worded so it means something else?
 2. **Tooling references**: does each agent name the build tool, test framework, and linter this project
@@ -111,7 +116,7 @@ For each agent file in `.claude/agents/*.md` and each skill file in `.claude/ski
 4. **Any agent/skill** stating a rule that contradicts the documents (e.g. permitting a forbidden pattern
    in some context)?
 
-Also check `.agents/skills/**/*.md` independently for the same issues.
+Also check `.agents/skills/*/SKILL.md` independently for the same issues.
 
 ## Step 5 — Layer 4: agent↔agent
 

@@ -22,10 +22,14 @@ find .claude/rules -name "*.md" 2>/dev/null
 find .claude/agents -name "*.md" 2>/dev/null
 find .codex/agents -name "*.toml" 2>/dev/null
 
-# Discover skill definitions
-find .claude/skills -name "*.md" 2>/dev/null
-find .agents/skills -name "*.md" 2>/dev/null
+# Discover skill definitions — entry points only
+find .claude/skills -maxdepth 2 -name "SKILL.md" 2>/dev/null
+find .agents/skills -maxdepth 2 -name "SKILL.md" 2>/dev/null
 ```
+
+A skill's `references/`, scripts, and supporting files are out of the full scan: they are long, and most
+aren't prompts the model loads on its own. Review one only when the user names it. For any file over
+~150 lines, report the 5 most impactful issues from a first read instead of re-reading it to look for more.
 
 Fixed documentation files to include:
 - `CLAUDE.md`

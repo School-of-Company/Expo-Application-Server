@@ -27,10 +27,14 @@ find .claude/rules -name "*.md" 2>/dev/null
 # Discover agent definitions
 find .claude/agents -name "*.md" 2>/dev/null
 
-# Discover skill definitions
-find .claude/skills -name "*.md" 2>/dev/null
-find .agents/skills -name "*.md" 2>/dev/null
+# Discover skill definitions — entry points only
+find .claude/skills -maxdepth 2 -name "SKILL.md" 2>/dev/null
+find .agents/skills -maxdepth 2 -name "SKILL.md" 2>/dev/null
 ```
+
+A skill's `references/`, scripts, and supporting files are out of the full scan: they are long, and most
+aren't prompts the model loads on its own. Review one only when the user names it. For any file over
+~150 lines, report the 5 most impactful issues from a first read instead of re-reading it to look for more.
 
 Fixed documentation files to include:
 - `CLAUDE.md`
@@ -72,7 +76,7 @@ Flag when:
 For agent `.md` files with frontmatter:
 - All required fields present? (`name`, `description`, `tools`, `model`, `color`, `memory`, `maxTurns`, `permissionMode`)
 - `model` is one of: `haiku`, `sonnet`, `opus`
-- `color` is one of: `green`, `yellow`, `pink`, `blue`, `orange`, `red`, `purple`
+- `color` is one of: `green`, `yellow`, `pink`, `blue`, `orange`, `red`, `purple`, `cyan`
 - Body follows a logical flow: Role statement → Context/Scope → Steps → Output Format → Constraints
 
 For skill `SKILL.md` files:

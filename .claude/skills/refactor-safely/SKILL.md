@@ -23,7 +23,7 @@ either the goal is too broad, or it's really several refactors that should land 
 Run the tests **before touching anything**, with the project's own command (the `test` skill works out
 what that is).
 
-Two outcomes decide what happens next:
+Three outcomes decide what happens next:
 
 - **Green** — that's the baseline. Note how long it takes; you'll run it repeatedly
 - **Already failing** — fix or stash that first. You cannot tell what your refactor broke if something

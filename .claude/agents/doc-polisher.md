@@ -33,8 +33,11 @@ Work on the files that exist. A missing file is not an issue to fix.
 ### Agent and Skill Definitions (treated independently)
 Use Glob to collect:
 - `.claude/agents/*.md`
-- `.claude/skills/**/*.md`
-- `.agents/skills/**/*.md`
+- `.claude/skills/*/SKILL.md`
+- `.agents/skills/*/SKILL.md`
+
+Entry points only. A skill's `references/` and supporting files are opened when its `SKILL.md` links to
+a snippet that Step 1 shows is stale, or when the user names them — not by default.
 
 ### Configuration
 - `.claude/hooks/*.sh`
