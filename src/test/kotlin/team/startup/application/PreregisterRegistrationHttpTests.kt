@@ -171,7 +171,15 @@ class PreregisterRegistrationHttpTests {
     @Test
     fun `target sessions require a representative occupation and take no waiting party`() {
         target(teacher = 2, nonTeacher = 3)
-        assertEquals(400, submit())
+        val response = submitResponse()
+        assertEquals(400, response.status)
+        val body = mapper.readTree(response.contentAsString)
+        assertEquals(400, body["status"].asInt())
+        assertEquals("OCCUPATION_REQUIRED", body["code"].asString())
+        assertEquals(
+            "대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.",
+            body["message"].asString(),
+        )
         assertEquals(0, count("tb_preregister_reservation"))
         jdbc.update(
             "INSERT INTO tb_preregister_reservation " +

@@ -64,7 +64,7 @@ class RegistrationWorkflow(
         if (expoId != command.expoId.lowercase()) {
             badRequest("박람회 ID가 올바르지 않습니다.")
         }
-        if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.")
+        if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
         if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
         if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
@@ -98,7 +98,7 @@ class RegistrationWorkflow(
                 throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 날짜 응답이 올바르지 않습니다.", ex)
             }
         if (applicationType == "FIELD" && (today.isBefore(started) || today.isAfter(finished))) {
-            badRequest("박람회 등록 기간이 아닙니다.")
+            badRequest("박람회 등록 기간이 아닙니다.", "REGISTRATION_NOT_OPEN")
         }
         // #261: 사전등록 이력이 있는 번호의 현장등록. 그날 회차 확정이면 받은 QR로 입장하게 거절하고, 아니면 applicationType FIELD 저장으로 User가 기존 PRE 대표자를 FIELD로 바꾼다.
         val reregistration =
@@ -110,7 +110,7 @@ class RegistrationWorkflow(
         if (reregistration == true) throw ResponseStatusException(HttpStatus.CONFLICT, PREREGISTERED_TODAY)
         // 일반 사전등록 신규 접수는 행사 시작일 00:00 KST에 닫는다(#171). 기존 예약의 멱등·복구는 위 resume이 먼저 처리한다.
         if (sessionRegistration && !today.isBefore(started)) {
-            badRequest("사전 등록 기간이 아닙니다.")
+            badRequest("사전 등록 기간이 아닙니다.", "REGISTRATION_NOT_OPEN")
         }
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
@@ -123,7 +123,7 @@ class RegistrationWorkflow(
                     throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "폼 날짜 응답이 올바르지 않습니다.", ex)
                 }
             if (now.isBefore(start) || now.isAfter(end)) {
-                badRequest("사전 등록 기간이 아닙니다.")
+                badRequest("사전 등록 기간이 아닙니다.", "REGISTRATION_NOT_OPEN")
             }
         }
         val answers =
@@ -150,10 +150,10 @@ class RegistrationWorkflow(
             if (field == null) return null
             val value = answers.get(field.title)
             if (value == null || value.isNull || (value.isString && value.stringValue().isBlank())) {
-                if (field.requiredStatus) badRequest("${field.title} 답변이 필요합니다.")
+                if (field.requiredStatus) badRequest("${field.title} 답변이 필요합니다.", "ANSWER_REQUIRED")
                 return null
             }
-            if (!value.isString || value.stringValue() !in allowed) badRequest("${field.title} 답변이 올바르지 않습니다.")
+            if (!value.isString || value.stringValue() !in allowed) badRequest("${field.title} 답변이 올바르지 않습니다.", "ANSWER_INVALID")
             return value.stringValue()
         }
         val occupation = choice(form?.dynamicForm?.firstOrNull { it.dynamicFormType == "OCCUPATION" }, occupations)
@@ -224,7 +224,10 @@ class RegistrationWorkflow(
     // Null keeps the existing 201 contract for confirmed registrations.
     private fun PreregisterRegistrationReceipt?.pendingOrNull() = this?.takeIf { it.status != "CONFIRMED" }
 
-    private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+    private fun badRequest(
+        message: String,
+        code: String = "INVALID_REQUEST",
+    ): Nothing = throw RegistrationRequestRejectedException(message, code)
 
     companion object {
         // RegistrationController가 이 사유를 409 ALREADY_PREREGISTERED_TODAY로 바꾼다.

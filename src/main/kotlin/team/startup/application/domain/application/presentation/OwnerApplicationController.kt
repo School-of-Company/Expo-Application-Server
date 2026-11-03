@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.core.annotation.Order
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.web.csrf.CsrfToken
@@ -297,6 +298,7 @@ class OwnerApplicationController(
 // 동행자 추가 차단에 companionAddBlockedReason과 같은 code를(#271) 싣는다.
 // 다른 상태와 응답은 건드리지 않는다.
 @RestControllerAdvice(assignableTypes = [OwnerApplicationController::class])
+@Order(0)
 class OwnerApplicationSessionExceptionHandler {
     @ExceptionHandler(ParticipantSessionException::class)
     fun sessionError(ex: ParticipantSessionException): ResponseEntity<Map<String, Any>> =
@@ -314,7 +316,13 @@ class OwnerApplicationSessionExceptionHandler {
 
     @ExceptionHandler(OwnerApplicationRejectedException::class)
     fun rejected(ex: OwnerApplicationRejectedException): ResponseEntity<Map<String, Any>> =
-        ResponseEntity.status(ex.statusCode).body(mapOf("status" to ex.statusCode.value(), "code" to ex.code))
+        ResponseEntity.status(ex.statusCode).body(
+            if (ex.statusCode.value() == 400) {
+                mapOf("status" to 400, "code" to ex.code, "message" to ex.reason.orEmpty())
+            } else {
+                mapOf("status" to ex.statusCode.value(), "code" to ex.code)
+            },
+        )
 
     @ExceptionHandler(OwnerCompanionsActiveException::class)
     fun companionsActive(ex: OwnerCompanionsActiveException): ResponseEntity<Map<String, Any>> =

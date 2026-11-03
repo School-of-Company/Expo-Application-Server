@@ -96,12 +96,13 @@ class RegistrationController(
     fun withdrawn(): ResponseEntity<Map<String, Any>> =
         ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to "WAITLIST_WITHDRAWN"))
 
-    // #238: 409 사유별 code와 화면 문구를 싣는다. 409가 아니면 ResponseStatusExceptionResolver와 같이 sendError로 기본 오류 응답에 맡긴다.
+    // #390: 400은 참가자에게 공개 가능한 사유만, 409는 기존 계약대로 반환한다.
     @ExceptionHandler(ResponseStatusException::class)
     fun conflict(
         ex: ResponseStatusException,
         response: HttpServletResponse,
     ): ResponseEntity<Map<String, Any>>? {
+        if (ex.statusCode.value() == 400) return registrationBadRequest(ex)
         if (ex.statusCode.value() != 409) {
             response.sendError(ex.statusCode.value(), ex.reason)
             return null

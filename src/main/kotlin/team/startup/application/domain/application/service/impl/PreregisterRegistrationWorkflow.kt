@@ -140,7 +140,7 @@ class PreregisterRegistrationWorkflow(
                     val categories = PreregisterSeatCategory.counts(snapshot, mapper)
                     if (definition.targeted) {
                         if (categories.first + categories.second != applicants) {
-                            badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.")
+                            badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.", "OCCUPATION_REQUIRED")
                         }
                         val (teacher, other) = PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, sessionId))
                         // Target sessions take no waiting party; the whole party fits both categories or nothing is reserved (#173).
@@ -363,7 +363,7 @@ class PreregisterRegistrationWorkflow(
                     val waits =
                         if (definition.targeted) {
                             if (categories.first + categories.second != applicants) {
-                                badSessionRequest("대상별 정원 회차는 참석자 직업이 필요합니다.")
+                                badSessionRequest("대상별 정원 회차는 참석자 직업이 필요합니다.", "OCCUPATION_REQUIRED")
                             }
                             val (teacher, other) = PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, sessionId))
                             if (queued > 0 || teacher < categories.first || other < categories.second || free < applicants) {

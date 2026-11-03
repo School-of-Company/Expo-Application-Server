@@ -102,4 +102,7 @@ class PreregisterSessionLedger(
 
 internal fun conflict(message: String): Nothing = throw ResponseStatusException(HttpStatus.CONFLICT, message)
 
-internal fun badSessionRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+internal fun badSessionRequest(
+    message: String,
+    code: String = "INVALID_REQUEST",
+): Nothing = throw RegistrationRequestRejectedException(message, code)

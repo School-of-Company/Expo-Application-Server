@@ -36,7 +36,8 @@ class RegisterFieldVisitServiceImpl(
     override fun execute(command: FieldVisitCommand): FieldVisitReceipt {
         if (!enabled || !fieldVisitsEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val request = command.request
-        if (command.requestId.isBlank() || command.requestId.length > 100 || !request.personalInformationStatus ||
+        if (!request.personalInformationStatus) throw RegistrationRequestRejectedException("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
+        if (command.requestId.isBlank() || command.requestId.length > 100 ||
             request.participantIds.size + request.newParticipants.size !in 1..5 ||
             request.participantIds.any { it <= 0 } || request.participantIds.distinct().size != request.participantIds.size ||
             request.newParticipants
@@ -44,14 +45,14 @@ class RegisterFieldVisitServiceImpl(
                 .distinct()
                 .size != request.newParticipants.size
         ) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST)
+            throw RegistrationRequestRejectedException("방문일 신청 정보가 올바르지 않습니다. 참가자와 동행자 목록을 확인해 주세요.")
         }
         request.newParticipants.forEach {
             FieldVisitAnswers.assemble(null, it, mapper)
             if (it.occupation !in CompanionAnswers.occupations || it.region !in CompanionAnswers.regions ||
                 (it.occupation in setOf("TEACHER", "PRE_SERVICE_TEACHER") && it.school.isNullOrBlank())
             ) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST)
+                throw RegistrationRequestRejectedException("신규 참가자의 직업·지역·학교 답변을 확인해 주세요.", "ANSWER_INVALID")
             }
         }
         val phone = gateway.participantSessionPhone(command.expoId.toString(), command.sessionId)
@@ -72,7 +73,7 @@ class RegisterFieldVisitServiceImpl(
             if (!requests.exists(command.expoId, command.requestId) &&
                 (today.isBefore(period.first) || today.isAfter(period.second))
             ) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "박람회 등록 기간이 아닙니다.")
+                throw RegistrationRequestRejectedException("박람회 등록 기간이 아닙니다.", "REGISTRATION_NOT_OPEN")
             }
             if (!requests.exists(command.expoId, command.requestId)) {
                 transactions.execute {

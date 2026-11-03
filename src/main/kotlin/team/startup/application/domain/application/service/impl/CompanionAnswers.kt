@@ -63,5 +63,5 @@ internal object CompanionAnswers {
                 .takeIf(String::isNotEmpty),
         )
 
-    private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+    private fun badRequest(message: String): Nothing = throw RegistrationRequestRejectedException(message, "ANSWER_INVALID")
 }
