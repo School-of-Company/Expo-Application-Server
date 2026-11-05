@@ -5,9 +5,9 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.time.Clock
 import java.time.LocalDate
-import java.time.ZoneId
 import java.util.UUID
 
 @Component
@@ -23,7 +23,7 @@ class FieldVisitEligibility(
         requireToday: Boolean = false,
     ): Boolean {
         if (!enabled) return fallback
-        val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+        val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
         val visit = visits.find(expoId, participantId, today)
         if (visit?.cancellationPending == true) throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_CANCELLATION_PENDING")
         val field = visit?.status == "ACTIVE" && !visit.deliveryPending
@@ -38,7 +38,7 @@ class FieldVisitEligibility(
         participantId: Long,
     ): Boolean {
         if (!enabled) return true
-        val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+        val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
         val visit = visits.find(expoId, participantId, today)
         if (visit?.cancellationPending == true) return false
         return (visit?.status == "ACTIVE" && !visit.deliveryPending) || visits.preregistered(expoId, participantId, today)

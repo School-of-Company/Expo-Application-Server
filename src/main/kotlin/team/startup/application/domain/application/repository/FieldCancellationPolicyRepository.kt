@@ -6,7 +6,6 @@ import team.startup.application.domain.application.presentation.dto.FieldVisitRe
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.time.ExpoProgramTime
 import java.time.LocalDate
-import java.time.ZoneId
 
 @Repository
 class FieldCancellationPolicyRepository(
@@ -69,5 +68,5 @@ class FieldCancellationPolicyRepository(
         date: LocalDate,
     ): Boolean =
         value == null ||
-            runCatching { ExpoProgramTime.parse(value).atZoneSameInstant(ZoneId.of("Asia/Seoul")).toLocalDate() == date }.getOrDefault(true)
+            runCatching { ExpoProgramTime.parse(value).atZoneSameInstant(ExpoProgramTime.seoul).toLocalDate() == date }.getOrDefault(true)
 }

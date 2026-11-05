@@ -17,12 +17,14 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.RegisterFieldVisitRequest
 import team.startup.application.domain.application.presentation.dto.hasValidPlace
 import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Clock
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -141,6 +143,7 @@ class RegistrationGateway(
     @Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled: Boolean = false,
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
@@ -344,7 +347,7 @@ class RegistrationGateway(
         return type.stringValue() == "FIELD"
     }
 
-    private fun fieldVisitToday() = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))
+    private fun fieldVisitToday() = java.time.LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
 
     fun managedParty(
         expoId: UUID,

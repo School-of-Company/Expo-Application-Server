@@ -12,14 +12,14 @@ import team.startup.application.domain.application.presentation.dto.RecordApplic
 import team.startup.application.domain.application.repository.ApplicationPageViewRepository
 import team.startup.application.domain.application.service.GetAdminApplicationPageViewsService
 import team.startup.application.domain.application.service.RecordApplicationPageViewService
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
 import java.util.UUID
 
-private val SEOUL = ZoneId.of("Asia/Seoul")
+private val SEOUL = ExpoProgramTime.seoul
 
 @Service
 class RecordApplicationPageViewServiceImpl(

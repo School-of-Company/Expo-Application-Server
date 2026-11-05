@@ -6,9 +6,9 @@ import team.startup.application.domain.application.presentation.dto.FieldVisitPa
 import team.startup.application.domain.application.presentation.dto.GetOwnerApplicationsCommand
 import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
 import team.startup.application.domain.application.service.GetFieldVisitPartyService
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.time.Clock
 import java.time.LocalDate
-import java.time.ZoneId
 
 @Service
 class GetFieldVisitPartyServiceImpl(
@@ -18,7 +18,7 @@ class GetFieldVisitPartyServiceImpl(
 ) : GetFieldVisitPartyService {
     override fun execute(command: GetOwnerApplicationsCommand): FieldVisitParty {
         val party = gateway.managedParty(command.expoId, command.sessionId)
-        val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+        val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
         return FieldVisitParty(
             today,
             party.participants.map {

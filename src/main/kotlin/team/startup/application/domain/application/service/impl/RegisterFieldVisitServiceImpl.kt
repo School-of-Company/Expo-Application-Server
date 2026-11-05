@@ -12,10 +12,10 @@ import team.startup.application.domain.application.repository.FieldVisitRegistra
 import team.startup.application.domain.application.repository.FieldVisitRequestRepository
 import team.startup.application.domain.application.repository.StoredFieldVisitRequest
 import team.startup.application.domain.application.service.RegisterFieldVisitService
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.security.MessageDigest
 import java.time.Clock
 import java.time.LocalDate
-import java.time.ZoneId
 import java.util.UUID
 
 @Service
@@ -63,7 +63,7 @@ class RegisterFieldVisitServiceImpl(
                 throw ResponseStatusException(HttpStatus.NOT_FOUND)
             }
             val expo = gateway.expoPeriod(command.expoId.toString())
-            val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+            val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
             val period =
                 try {
                     LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)

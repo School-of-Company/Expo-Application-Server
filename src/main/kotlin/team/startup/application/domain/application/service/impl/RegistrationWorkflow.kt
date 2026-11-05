@@ -7,12 +7,13 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.RegistrationCommand
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
 import java.sql.SQLException
+import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
@@ -25,6 +26,7 @@ class RegistrationWorkflow(
     private val reservations: PreregisterReservationRepository,
     @org.springframework.beans.factory.annotation.Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled:
         Boolean = false,
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     private val occupations = CompanionAnswers.occupations
     private val regions = CompanionAnswers.regions
@@ -90,7 +92,7 @@ class RegistrationWorkflow(
         if (sessionRegistration) {
             preregistration.resume(authenticatedCommand)?.let { return it.pendingOrNull() }
         }
-        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
         val (started, finished) =
             try {
                 LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)
@@ -115,7 +117,7 @@ class RegistrationWorkflow(
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {
-            val now = OffsetDateTime.now(ZoneId.of("Asia/Seoul"))
+            val now = OffsetDateTime.now(clock.withZone(ExpoProgramTime.seoul))
             val (start, end) =
                 try {
                     OffsetDateTime.parse(form.startDate) to OffsetDateTime.parse(form.endDate)
