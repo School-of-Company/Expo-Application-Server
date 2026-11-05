@@ -812,6 +812,7 @@ class ProgramSessionApplicationTests {
         enableGuardianPolicy(3, 0)
         val request = guardianBatch(1, 2, type = type)
         val receipt = batchService.execute(request)
+        assertEquals(0, formCallsInTransaction.get())
         assertEquals(3, receipt.applications.size)
         assertTrue(receipt.applications.all { it.application.status == "CONFIRMED" && !it.reused })
         assertEquals(
@@ -1243,6 +1244,8 @@ class ProgramSessionApplicationTests {
                     try {
                         batchService.execute(guardianBatch(2, key = "race", reuse = true))
                         "added"
+                    } catch (_: ProgramApplicationConflictException) {
+                        "retry"
                     } catch (exception: ResponseStatusException) {
                         assertEquals(400, exception.statusCode.value())
                         "guardian-cancelled"
@@ -2536,6 +2539,48 @@ class ProgramSessionApplicationTests {
             pool.shutdownNow()
             assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS))
         }
+    }
+
+    @Test
+    fun `guardian batch participant lock timeout returns conflict and same key retries atomically`() {
+        enableGuardianPolicy(3, 0)
+        val request = guardianBatch(1, 2)
+
+        fun submit() =
+            mvc.perform(
+                post("/application/expos/$EXPO/program-sessions/STANDARD/1/application-batches")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                    .header("Idempotency-Key", request.idempotencyKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(mapper.writeValueAsString(request.request)),
+            )
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.autoCommit = false
+            connection.createStatement().use {
+                it.execute("SELECT pg_advisory_xact_lock(43, hashtext('1'))")
+            }
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val attempt =
+                    pool.submit<Int> {
+                        submit()
+                            .andExpect(jsonPath("$.code").value("APPLICATION_CONFLICT"))
+                            .andReturn()
+                            .response.status
+                    }
+                assertEquals(409, attempt.get(12, TimeUnit.SECONDS))
+                assertEquals(0L, count("tb_program_guardian_batch"))
+                assertEquals(0L, count("tb_program_session_application"))
+            } finally {
+                connection.rollback()
+                pool.shutdownNow()
+                assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS))
+            }
+        }
+        submit().andExpect(status().isCreated)
+        assertEquals(3L, count("tb_program_session_application"))
+        assertEquals(1L, count("tb_program_guardian_batch"))
     }
 
     @Test

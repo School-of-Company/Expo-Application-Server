@@ -22,7 +22,7 @@ class StudentGuardianBatchRepository(
         key: String,
     ) {
         jdbc.queryForObject(
-            "SELECT CAST(pg_advisory_xact_lock(46, hashtext(?)) AS text)",
+            "SELECT CAST(pg_advisory_xact_lock(50, hashtext(?)) AS text)",
             String::class.java,
             "$expoId:$owner:$key",
         )
