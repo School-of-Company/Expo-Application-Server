@@ -3,9 +3,7 @@ package team.startup.application.domain.application.service.impl
 import com.fasterxml.jackson.annotation.JsonInclude
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.Producer
-import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.serialization.StringSerializer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
@@ -53,16 +51,7 @@ class ApplicationNotificationKafkaConfig {
     ): Producer<String, String> {
         require(servers.isNotBlank()) { "APPLICATION_NOTIFICATIONS_BOOTSTRAP_SERVERS must be configured" }
         return KafkaProducer(
-            mapOf(
-                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG to servers,
-                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG to StringSerializer::class.java,
-                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG to StringSerializer::class.java,
-                ProducerConfig.ACKS_CONFIG to "all",
-                ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG to true,
-                ProducerConfig.MAX_BLOCK_MS_CONFIG to 5000,
-                ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG to 10000,
-                ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG to 30000,
-            ),
+            kafkaProducerProperties(servers),
         )
     }
 }
