@@ -189,7 +189,7 @@ class PreregisterReservationRepository(
                 "SELECT r.* FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
                     "ON st.expo_id = r.expo_id AND st.session_id = r.session_id WHERE r.expo_id = ? AND r.session_id <> ? " +
                     "AND ${reservationPhoneSql("r.")} = ? " +
-                    "AND r.state IN (${states.joinToString { "'$it'" }}) AND r.companion_representative_id IS NULL " +
+                    "AND r.state IN (${states.joinToString { "?" }}) AND r.companion_representative_id IS NULL " +
                     "AND (st.definition::jsonb ->> 'closed')::boolean = FALSE " +
                     "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
                     "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
@@ -198,6 +198,7 @@ class PreregisterReservationRepository(
                 expoId,
                 sessionId,
                 phone,
+                *states.toTypedArray(),
                 java.sql.Timestamp.from(now),
                 java.sql.Timestamp.from(window.endedAt),
                 java.sql.Timestamp.from(window.startedAt),
