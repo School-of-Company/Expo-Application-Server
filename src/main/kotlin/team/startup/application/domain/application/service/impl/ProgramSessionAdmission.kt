@@ -56,7 +56,10 @@ class ProgramSessionAdmission(
             }
         val command = request.copy(expoId = expoId, onsite = onsite)
         require(command.expoId.isNotBlank() && command.programId > 0 && command.participantId > 0 && command.formVersion > 0)
-        require(command.sessionId.isNotBlank() && command.idempotencyKey.isNotBlank() && command.idempotencyKey.length <= PROGRAM_IDEMPOTENCY_KEY_MAX_LENGTH)
+        require(
+            command.sessionId.isNotBlank() && command.idempotencyKey.isNotBlank() &&
+                command.idempotencyKey.length <= PROGRAM_IDEMPOTENCY_KEY_MAX_LENGTH,
+        )
         require(command.answers.isObject)
         val managed = gateway.managedParticipant(command.expoId, command.sessionId, command.participantId)
         val occupation = managed.occupation

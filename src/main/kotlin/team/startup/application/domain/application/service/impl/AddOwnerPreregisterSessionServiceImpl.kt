@@ -15,7 +15,9 @@ class AddOwnerPreregisterSessionServiceImpl(
     // 예약과 확정은 예약 복구 경로가 각자 트랜잭션으로 나눠 처리한다.
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: AddOwnerPreregisterSessionCommand): OwnerPreregisterSessionResult {
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)) {
+        if (command.idempotencyKey != null &&
+            (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)
+        ) {
             throw RegistrationRequestRejectedException("Idempotency-Key는 1~100자여야 합니다.")
         }
         if (command.participantIds.distinct().size != command.participantIds.size) {

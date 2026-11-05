@@ -143,9 +143,10 @@ class PreregisterRegistrationWorkflow(
                     if (definition.targeted && categories.first + categories.second != applicants) {
                         badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.", "OCCUPATION_REQUIRED")
                     }
-                    val waits = repository.preregisterWaits(definition, applicants, categories, queued) {
-                        waitlistIntake && waitlist.accepts(definition)
-                    }
+                    val waits =
+                        repository.preregisterWaits(definition, applicants, categories, queued) {
+                            waitlistIntake && waitlist.accepts(definition)
+                        }
                     if (waits) {
                         reservations.insertWaiting(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
                     } else {
@@ -356,9 +357,10 @@ class PreregisterRegistrationWorkflow(
                     if (definition.targeted && categories.first + categories.second != applicants) {
                         badSessionRequest("대상별 정원 회차는 참석자 직업이 필요합니다.", "OCCUPATION_REQUIRED")
                     }
-                    val waits = repository.preregisterWaits(definition, applicants, categories, queued) {
-                        waitlistIntake && waitlist.accepts(definition)
-                    }
+                    val waits =
+                        repository.preregisterWaits(definition, applicants, categories, queued) {
+                            waitlistIntake && waitlist.accepts(definition)
+                        }
                     reservations.insertSessionAddition(
                         expoId,
                         key,

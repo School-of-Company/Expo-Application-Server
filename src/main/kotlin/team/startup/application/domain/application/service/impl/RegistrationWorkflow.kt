@@ -68,7 +68,9 @@ class RegistrationWorkflow(
         }
         if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
         if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)) {
+        if (command.idempotencyKey != null &&
+            (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)
+        ) {
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
         val sessionRegistration = participantType == "STANDARD" && applicationType == "PRE"

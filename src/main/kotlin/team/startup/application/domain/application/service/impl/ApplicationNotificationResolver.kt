@@ -96,7 +96,8 @@ class ApplicationNotificationResolver(
         if (app.status != required) return skip(row, "STATE_CHANGED")
         val contact = source.contact(app.expoId, app.participantId)
         val phone = phone(contact.representativePhone) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
-        val session = session(row, app.sessionId, notificationLabel(contact.name, 100), result = row.result) ?: return skip(row, "UNSENDABLE_TEXT")
+        val session =
+            session(row, app.sessionId, notificationLabel(contact.name, 100), result = row.result) ?: return skip(row, "UNSENDABLE_TEXT")
         // 일행에 다른 활성 신청이 남아 있으면 일부 취소다. 전체 취소처럼 안내하지 않는다.
         val scope =
             if (row.type == "PREREGISTER_CANCELLED") {
@@ -114,7 +115,8 @@ class ApplicationNotificationResolver(
         val contact = source.contact(row.expoId, requireNotNull(row.participantId))
         val phone = phone(contact.representativePhone) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
         val item =
-            session(row, reservation.sessionId, notificationLabel(contact.name, 100), result = "WAITLISTED") ?: return skip(row, "UNSENDABLE_TEXT")
+            session(row, reservation.sessionId, notificationLabel(contact.name, 100), result = "WAITLISTED")
+                ?: return skip(row, "UNSENDABLE_TEXT")
         return ResolvedNotification.Ready(row, phone, "STANDARD", item)
     }
 
