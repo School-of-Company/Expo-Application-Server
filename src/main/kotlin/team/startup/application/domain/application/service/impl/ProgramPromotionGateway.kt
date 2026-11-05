@@ -220,23 +220,6 @@ class ProgramPromotionGateway(
         field: String,
     ): String = node.get(field)?.takeIf { it.isString }?.stringValue() ?: invalid()
 
-    private fun label(
-        node: JsonNode,
-        field: String,
-    ): String {
-        val value = text(node, field)
-        if (value.isBlank() || value.codePointCount(0, value.length) > 255 ||
-            value.any {
-                Character.isISOControl(it) ||
-                    Character.getType(it) in
-                    listOf(Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt())
-            }
-        ) {
-            invalid()
-        }
-        return value
-    }
-
     private fun time(
         node: JsonNode,
         field: String,
