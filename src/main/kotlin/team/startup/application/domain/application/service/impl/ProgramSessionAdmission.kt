@@ -227,9 +227,7 @@ class ProgramSessionAdmission(
         if (!waiting && traineeId == null) {
             standards.saveAndFlush(StandardProgramApplication(participantId = command.participantId, standardProgramId = command.programId))
         } else if (!waiting && traineeId != null) {
-            operations.lockVersion(traineeId)
-            trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = command.programId))
-            operations.incrementVersion(traineeId)
+            confirmTrainingProgram(operations, trainings, traineeId, command.programId)
         }
         ledger.save(command, definition, form, receipt, channel?.name)
         repository.event(receipt.applicationId, receipt.status)
@@ -283,3 +281,14 @@ private const val LOCK_NOT_AVAILABLE = "55P03"
 internal class ProgramSessionAdmissionDeadlineException(
     message: String,
 ) : ProgramApplicationConflictException(message)
+
+internal fun confirmTrainingProgram(
+    operations: TrainingOperationRepository,
+    trainings: TrainingProgramApplicationRepository,
+    traineeId: Long,
+    programId: Long,
+) {
+    operations.lockVersion(traineeId)
+    trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = programId))
+    operations.incrementVersion(traineeId)
+}

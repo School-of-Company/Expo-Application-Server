@@ -6,7 +6,6 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
-import team.startup.application.domain.application.entity.TrainingProgramApplication
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
@@ -211,9 +210,7 @@ class StudentGuardianBatchPromotion(
             if (trainee == null) {
                 standards.saveAndFlush(StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id))
             } else {
-                operations.lockVersion(trainee)
-                trainings.saveAndFlush(TrainingProgramApplication(traineeId = trainee, trainingProgramId = definition.id))
-                operations.incrementVersion(trainee)
+                confirmTrainingProgram(operations, trainings, trainee, definition.id)
             }
             if (acceptance == null) {
                 applications.transition(entry.id, "CONFIRMED", ApplicationActorType.SYSTEM, trainee)
