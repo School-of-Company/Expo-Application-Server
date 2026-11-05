@@ -1,10 +1,12 @@
 package team.startup.application
 
+import feign.Client
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.cloud.openfeign.FeignClientFactory
 import org.springframework.context.ApplicationContext
 import org.springframework.test.util.AopTestUtils
 import org.testcontainers.junit.jupiter.Container
@@ -25,6 +27,8 @@ import team.startup.application.domain.application.service.impl.OwnerCancellatio
 import team.startup.application.domain.application.service.impl.PreregisterSessionGateway
 import team.startup.application.domain.application.service.impl.ProgramPromotionGateway
 import team.startup.application.domain.application.service.impl.RegistrationGateway
+import team.startup.application.global.client.DownstreamFeignClient
+import team.startup.application.global.client.attendance.AttendanceClient
 
 /** 게이트웨이가 기본값 대신 컨텍스트의 같은 DownstreamCircuits 빈을 받아야 서비스별 회로가 게이트웨이 사이에서 공유된다. */
 @SpringBootTest(properties = ["eureka.client.enabled=false", "management.health.redis.enabled=false"])
@@ -45,8 +49,6 @@ class DownstreamCircuitsWiringTests {
             OwnerCancellationDeadlineGateway::class.java,
             PreregisterSessionGateway::class.java,
             AttendanceCancellationAdapter::class.java,
-            AttendanceCancellationStatusGateway::class.java,
-            AdminAttendanceGateway::class.java,
             AdminExpoGateway::class.java,
             AdminParticipantGateway::class.java,
             AdminCancellationParticipantGateway::class.java,
@@ -55,6 +57,17 @@ class DownstreamCircuitsWiringTests {
             val target = AopTestUtils.getUltimateTargetObject<Any>(context.getBean(type))
             assertSame(circuits, circuitsOf(target), type.simpleName)
         }
+        val client = context.getBean(AttendanceClient::class.java)
+        listOf(AdminAttendanceGateway::class.java, AttendanceCancellationStatusGateway::class.java).forEach { type ->
+            val target = AopTestUtils.getUltimateTargetObject<Any>(context.getBean(type))
+            assertSame(client, read(target, "client"), type.simpleName)
+        }
+        val transport =
+            context
+                .getBean(
+                    FeignClientFactory::class.java,
+                ).getInstance("attendanceRead", Client::class.java) as DownstreamFeignClient
+        assertSame(circuits, read(transport, "circuits"))
     }
 
     // AdminSourceHttp를 거치는 게이트웨이는 http 필드 안에 circuits가 있다
