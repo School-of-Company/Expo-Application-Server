@@ -34,7 +34,8 @@ data class RegistrationRequest(
     @field:NotBlank @field:Size(max = 10) @field:Schema(description = "참가자 이름", example = "홍길동") val name: String,
     @field:NotBlank @field:Size(max = 15) @field:Schema(description = "입력 전화번호. 인증 대상 행사는 세션의 검증 번호를 사용", example = "01000000000")
     val phoneNumber: String,
-    @field:NotBlank @field:Schema(description = "문항 제목을 키로 한 JSON 문자열", example = "{}") val informationJson: String,
+    @field:NotBlank @field:Size(max = 65536)
+    @field:Schema(description = "문항 제목을 키로 한 JSON 문자열", example = "{}") val informationJson: String,
     @field:Schema(description = "개인정보 동의 여부", example = "true") val personalInformationStatus: Boolean,
     @field:Size(max = 15) @field:Schema(description = "연수자 등록에 사용하는 선택 값", example = "TRAINING-1")
     val trainingId: String? = null,

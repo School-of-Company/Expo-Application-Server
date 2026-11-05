@@ -133,6 +133,10 @@ class RegistrationWorkflow(
                 badRequest("폼 답변이 올바른 JSON이 아닙니다.")
             }
         if (!answers.isObject) badRequest("폼 답변은 JSON 객체여야 합니다.")
+        val titles = form?.dynamicForm?.map { it.title }?.toSet()
+        if (titles != null && !titles.containsAll(answers.propertyNames())) {
+            badRequest("폼에 없는 문항의 답변이 있습니다.", "ANSWER_INVALID")
+        }
 
         fun answer(type: String): String? {
             val title = form?.dynamicForm?.firstOrNull { it.dynamicFormType == type }?.title ?: return null
