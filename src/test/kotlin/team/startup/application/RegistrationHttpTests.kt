@@ -52,6 +52,24 @@ import kotlin.test.assertNull
 @AutoConfigureMockMvc
 @Testcontainers
 class RegistrationHttpTests {
+    @Test
+    fun `네 등록 경로는 동의 거절 사유를 400 본문에 반환한다`() {
+        listOf("/application", "/application/pre-standard", "/application/field", "/application/field/standard").forEach { path ->
+            mockMvc
+                .perform(
+                    post("$path/$EXPO_1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                            body("{}", "training-1").replace("\"personalInformationStatus\":true", "\"personalInformationStatus\":false"),
+                        ),
+                ).andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value("CONSENT_REQUIRED"))
+                .andExpect(jsonPath("$.message").value("개인정보 수집에 동의해야 합니다."))
+        }
+        org.mockito.Mockito.verifyNoInteractions(gateway)
+    }
+
     @Autowired private lateinit var mockMvc: MockMvc
 
     @Autowired private lateinit var mapper: ObjectMapper
@@ -214,6 +232,9 @@ class RegistrationHttpTests {
             mockMvc
                 .perform(post("/application/pre-standard/$EXPO_4").contentType(MediaType.APPLICATION_JSON).content(body("{}")))
                 .andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value("REGISTRATION_NOT_OPEN"))
+                .andExpect(jsonPath("$.message").value("사전 등록 기간이 아닙니다."))
         }
         verify(gateway, org.mockito.Mockito.times(2)).expoPeriod(EXPO_4)
         verifyNoMoreInteractions(gateway)
@@ -289,6 +310,8 @@ class RegistrationHttpTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("{\"직업\":$occupation}")),
                 ).andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.code").value("ANSWER_INVALID"))
+                .andExpect(jsonPath("$.message").value("직업 답변이 올바르지 않습니다."))
         }
         verify(gateway, org.mockito.Mockito.times(invalid.size)).expoPeriod(EXPO_1)
         verify(gateway, org.mockito.Mockito.times(invalid.size)).form(EXPO_1, "STANDARD", "FIELD", false)
@@ -353,6 +376,8 @@ class RegistrationHttpTests {
                 mockMvc
                     .perform(post("/application/field/standard/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body(answers)))
                     .andExpect(status().isBadRequest)
+                    .andExpect(jsonPath("$.code").value("ANSWER_REQUIRED"))
+                    .andExpect(jsonPath("$.message").value("${field.title} 답변이 필요합니다."))
             }
         }
         verify(gateway, org.mockito.Mockito.times(8)).expoPeriod(EXPO_1)

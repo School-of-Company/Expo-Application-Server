@@ -48,6 +48,59 @@ import java.util.UUID
 @TestPropertySource(properties = ["application.internal-token=test-token"])
 class OwnerApplicationHttpTests {
     @Test
+    fun `내 신청 조회와 회차 및 동행자 추가의 400은 사유를 반환한다`() {
+        val rejection =
+            team.startup.application.domain.application.service.impl.RegistrationRequestRejectedException(
+                "대상별 정원 회차는 참석자 직업이 필요합니다.",
+                "OCCUPATION_REQUIRED",
+            )
+        org.mockito.Mockito
+            .doAnswer { throw rejection }
+            .`when`(query)
+            .execute(GetOwnerApplicationsCommand(EXPO, "owner"))
+        org.mockito.Mockito.doAnswer { throw rejection }.`when`(addSession).execute(
+            org.mockito.ArgumentMatchers.any()
+                ?: team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterSessionCommand(
+                    EXPO,
+                    "owner",
+                    2,
+                    listOf(1),
+                    "key",
+                ),
+        )
+        org.mockito.Mockito.doAnswer { throw rejection }.`when`(addCompanions).execute(
+            org.mockito.ArgumentMatchers.any()
+                ?: team.startup.application.domain.application.presentation.dto.AddOwnerPreregisterCompanionsCommand(
+                    EXPO,
+                    "owner",
+                    "2",
+                    emptyList(),
+                    "key",
+                ),
+        )
+        listOf(
+            get(PATH),
+            post("$PATH/preregister-sessions")
+                .with(csrf())
+                .header("Idempotency-Key", "key")
+                .contentType("application/json")
+                .content("""{"sessionId":2,"participantIds":[1]}"""),
+            post("$PATH/PREREGISTER/2/companions")
+                .with(csrf())
+                .header("Idempotency-Key", "key")
+                .contentType("application/json")
+                .content("""{"companions":[{"name":"a","occupation":"GENERAL","region":"OTHER"}]}"""),
+        ).forEach { request ->
+            mvc
+                .perform(request.cookie(Cookie("PARTICIPANT_SESSION", "owner")))
+                .andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value("OCCUPATION_REQUIRED"))
+                .andExpect(jsonPath("$.message").value("대상별 정원 회차는 참석자 직업이 필요합니다."))
+        }
+    }
+
+    @Test
     fun `FIELD cancellation keeps owner cookie CSRF and exact generation contract`() {
         val id = UUID.randomUUID().toString()
         val path = "$PATH/FIELD/$id/cancellation"

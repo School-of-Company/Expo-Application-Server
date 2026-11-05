@@ -60,7 +60,7 @@ data class CompanionAvailability(
 
 /**
  * 내 신청 화면이 문구를 고를 code를 싣는 거절(#271). 응답 본문은 `{status, code}`이고 [code]는 조회의
- * `companionAddBlockedReason`과 같은 이름을 쓴다. [message]는 로그에만 남는다.
+ * `companionAddBlockedReason`과 같은 이름을 쓴다. 400에는 공개 가능한 [message]도 싣는다.
  */
 class OwnerApplicationRejectedException(
     status: HttpStatusCode,

@@ -1,7 +1,5 @@
 package team.startup.application.domain.application.service.impl
 
-import org.springframework.http.HttpStatus
-import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.NewFieldParticipant
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.node.ObjectNode
@@ -21,7 +19,7 @@ internal object FieldVisitAnswers {
             try {
                 mapper.readTree(person.informationJson)
             } catch (ex: Exception) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "폼 답변이 올바른 JSON이 아닙니다.", ex)
+                throw RegistrationRequestRejectedException("폼 답변이 올바른 JSON이 아닙니다.", "ANSWER_INVALID", ex)
             }
         if (answers !is ObjectNode) badRequest("폼 답변은 JSON 객체여야 합니다.")
         val fields = form?.dynamicForm.orEmpty()
@@ -51,5 +49,5 @@ internal object FieldVisitAnswers {
         return if (changed) mapper.writeValueAsString(answers) else person.informationJson
     }
 
-    private fun badRequest(message: String): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, message)
+    private fun badRequest(message: String): Nothing = throw RegistrationRequestRejectedException(message, "ANSWER_INVALID")
 }

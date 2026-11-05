@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import team.startup.application.domain.application.presentation.FieldVisitController
 import team.startup.application.domain.application.presentation.InternalFieldVisitController
@@ -37,6 +38,38 @@ import java.util.UUID
 @Import(InternalSecurityConfig::class, InternalTokenVerifier::class)
 @TestPropertySource(properties = ["application.internal-token=test-token", "application.registration.enabled=true"])
 class FieldVisitHttpTests {
+    @Test
+    fun `방문일 등록 400은 공개 사유만 본문에 싣는다`() {
+        val command = FieldVisitCommand(expoId, "owner", "key", RegisterFieldVisitRequest(listOf(1), emptyList(), true))
+        listOf(
+            team.startup.application.domain.application.service.impl.RegistrationRequestRejectedException(
+                "개인정보 수집에 동의해야 합니다.",
+                "CONSENT_REQUIRED",
+            ) to ("CONSENT_REQUIRED" to "개인정보 수집에 동의해야 합니다."),
+            org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.BAD_REQUEST,
+                "SQL participant phone=01012345678 questionId=123",
+            ) to ("INVALID_REQUEST" to "입력한 신청 정보가 올바르지 않습니다. 입력 내용을 확인해 주세요."),
+        ).forEach { (exception, expected) ->
+            org.mockito.Mockito
+                .doThrow(exception)
+                .`when`(register)
+                .execute(command)
+            mvc
+                .perform(
+                    post(path)
+                        .with(csrf())
+                        .cookie(Cookie("PARTICIPANT_SESSION", "owner"))
+                        .header("Idempotency-Key", "key")
+                        .contentType("application/json")
+                        .content(body),
+                ).andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.code").value(expected.first))
+                .andExpect(jsonPath("$.message").value(expected.second))
+        }
+    }
+
     @Autowired private lateinit var mvc: MockMvc
 
     @MockitoBean private lateinit var query: GetFieldVisitPartyService
@@ -78,6 +111,9 @@ class FieldVisitHttpTests {
                     .contentType("application/json")
                     .content(body),
             ).andExpect(status().isBadRequest)
+            .andExpect(jsonPath("$.status").value(400))
+            .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+            .andExpect(jsonPath("$.message").value("입력한 신청 정보가 올바르지 않습니다. 입력 내용을 확인해 주세요."))
         verifyNoInteractions(query, register)
     }
 

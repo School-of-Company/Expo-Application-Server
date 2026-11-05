@@ -19,7 +19,7 @@ class AddOwnerPreregisterCompanionsServiceImpl(
     override fun execute(command: AddOwnerPreregisterCompanionsCommand): OwnerPreregisterCompanionsResult {
         val applicationId = command.applicationId.toLongOrNull()?.takeIf { it > 0 } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
         if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key는 1~100자여야 합니다.")
+            throw RegistrationRequestRejectedException("Idempotency-Key는 1~100자여야 합니다.")
         }
         command.companions.forEach(CompanionAnswers::validate)
         if (command.companions
@@ -27,7 +27,7 @@ class AddOwnerPreregisterCompanionsServiceImpl(
                 .distinct()
                 .size != command.companions.size
         ) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 동행자를 두 번 입력했습니다.")
+            throw RegistrationRequestRejectedException("같은 동행자를 두 번 입력했습니다.")
         }
         val party = gateway.managedParty(command.expoId, command.sessionId)
         val added = workflow.addCompanions(command.expoId, applicationId, party, command.companions, command.idempotencyKey)
