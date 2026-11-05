@@ -66,7 +66,7 @@ class RegistrationWorkflow(
         }
         if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
         if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
+        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)) {
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
         val sessionRegistration = participantType == "STANDARD" && applicationType == "PRE"
@@ -238,3 +238,5 @@ class RegistrationWorkflow(
         const val PREREGISTERED_TODAY = "오늘 회차에 확정된 사전등록이 있습니다."
     }
 }
+
+internal const val PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH = 100

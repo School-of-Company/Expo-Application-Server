@@ -58,7 +58,7 @@ class StudentGuardianBatchAdmission(
         val students = request.links.map { it.studentId }
         val guardians = request.links.map { it.guardianId }.toSet()
         if (command.key.programId <= 0 || command.sessionId.isBlank() ||
-            command.idempotencyKey.isBlank() || command.idempotencyKey.length > 200 ||
+            command.idempotencyKey.isBlank() || command.idempotencyKey.length > PROGRAM_IDEMPOTENCY_KEY_MAX_LENGTH ||
             request.links.isEmpty() || ids.any { it <= 0 } || ids.toSet().size != ids.size || students.toSet().size != students.size ||
             students.any { it in guardians } || (students.toSet() + guardians) != ids.toSet()
         ) {

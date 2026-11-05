@@ -18,7 +18,7 @@ class AddOwnerPreregisterCompanionsServiceImpl(
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: AddOwnerPreregisterCompanionsCommand): OwnerPreregisterCompanionsResult {
         val applicationId = command.applicationId.toLongOrNull()?.takeIf { it > 0 } ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
+        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)) {
             throw RegistrationRequestRejectedException("Idempotency-Key는 1~100자여야 합니다.")
         }
         command.companions.forEach(CompanionAnswers::validate)

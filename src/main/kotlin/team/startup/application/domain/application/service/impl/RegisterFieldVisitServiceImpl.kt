@@ -37,7 +37,7 @@ class RegisterFieldVisitServiceImpl(
         if (!enabled || !fieldVisitsEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val request = command.request
         if (!request.personalInformationStatus) throw RegistrationRequestRejectedException("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
-        if (command.requestId.isBlank() || command.requestId.length > 100 ||
+        if (command.requestId.isBlank() || command.requestId.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH ||
             request.participantIds.size + request.newParticipants.size !in 1..5 ||
             request.participantIds.any { it <= 0 } || request.participantIds.distinct().size != request.participantIds.size ||
             request.newParticipants
