@@ -1,6 +1,5 @@
 plugins {
     kotlin("jvm") version "2.3.21"
-    kotlin("kapt") version "2.3.21"
     id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
     id("com.diffplug.spotless") version "8.10.2"
     kotlin("plugin.spring") version "2.3.21"
@@ -33,10 +32,6 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers-kafka")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
-    implementation("com.querydsl:querydsl-jpa:5.1.0:jakarta")
-    kapt("com.querydsl:querydsl-apt:5.1.0:jakarta")
-    kapt("jakarta.annotation:jakarta.annotation-api")
-    kapt("jakarta.persistence:jakarta.persistence-api")
     testImplementation("io.kotest:kotest-runner-junit5:5.9.1")
     testImplementation("io.kotest:kotest-assertions-core:5.9.1")
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
