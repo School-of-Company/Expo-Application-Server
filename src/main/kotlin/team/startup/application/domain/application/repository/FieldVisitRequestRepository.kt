@@ -1,6 +1,5 @@
 package team.startup.application.domain.application.repository
 
-import com.zaxxer.hikari.HikariDataSource
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
@@ -12,8 +11,6 @@ import team.startup.application.domain.application.service.impl.RegistrationForm
 import tools.jackson.databind.ObjectMapper
 import java.time.LocalDate
 import java.util.UUID
-import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 
 data class StoredFieldVisitRequest(
     val visitDate: LocalDate,
@@ -32,9 +29,6 @@ class FieldVisitRequestRepository(
     private val jdbc: JdbcTemplate,
     private val mapper: ObjectMapper,
 ) {
-    // shortcut: Hikari 동시 진입 상한은 (max-1)/2건(15→7, 5→2); 다른 DB 부하가 늘면 여유를 재산정한다.
-    private val entries = (jdbc.dataSource as? HikariDataSource)?.let { Semaphore((it.maximumPoolSize - 1) / 2) }
-
     fun <T> withLock(
         expoId: UUID,
         phoneHash: String,
@@ -53,20 +47,19 @@ class FieldVisitRequestRepository(
         waitSeconds: Long,
         action: () -> T,
     ): T? {
-        val acquired =
+        var rejected = false
+        val result =
             try {
-                entries?.tryAcquire(waitSeconds, TimeUnit.SECONDS) ?: true
+                jdbc.withDeliveryLock(75, "$expoId:$phoneHash", waitSeconds, {
+                    rejected = true
+                    null
+                }) { action() }
             } catch (ex: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, null, ex)
             }
-        if (!acquired) return null
-        try {
-            return jdbc.withDeliveryLock(75, "$expoId:$phoneHash") { action() }
-                ?: throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_REQUEST_PENDING")
-        } finally {
-            entries?.release()
-        }
+        if (rejected) return null
+        return result ?: throw ResponseStatusException(HttpStatus.CONFLICT, "FIELD_REQUEST_PENDING")
     }
 
     fun reserve(
