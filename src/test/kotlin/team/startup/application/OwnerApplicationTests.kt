@@ -136,6 +136,36 @@ class OwnerApplicationTests {
     }
 
     @Test
+    fun `slow program cancellation definition does not hold the preregistration expo lock`() {
+        val receipt = applyProgram.execute(programCommand())
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        definitionGate = entered to release
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val cancellation =
+                pool.submit {
+                    cancel.execute(
+                        cancelCommand(receipt.applicationId.toString(), OwnerApplicationType.STANDARD),
+                    )
+                }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            transactions.executeWithoutResult {
+                jdbc.execute("SET LOCAL lock_timeout = '1s'")
+                preregister.lock(EXPO)
+                preregister.insert(EXPO, 1, 100, 100, "CONFIRMED")
+            }
+            release.countDown()
+            cancellation.get(10, TimeUnit.SECONDS)
+        } finally {
+            release.countDown()
+            definitionGate = null
+            pool.shutdownNow()
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `only managed participants and owner snapshots are returned without session phone or QR`() {
         val own = applyProgram.execute(programCommand())
         val other = applyProgram.execute(programCommand(99).copy(sessionId = "other"))
@@ -857,6 +887,8 @@ class OwnerApplicationTests {
         @Volatile private var deadline = END
 
         @Volatile private var traineeId: Long? = null
+
+        @Volatile private var definitionGate: Pair<CountDownLatch, CountDownLatch>? = null
         private val closedPermits = AtomicInteger()
         private val adminGuards = CopyOnWriteArrayList<Long>()
         private val server =
@@ -899,6 +931,10 @@ class OwnerApplicationTests {
                             }
 
                             path.contains("standard-programs/") -> {
+                                definitionGate?.let { (entered, release) ->
+                                    entered.countDown()
+                                    check(release.await(15, TimeUnit.SECONDS))
+                                }
                                 ObjectMapper().writeValueAsString(currentDefinition)
                             }
 

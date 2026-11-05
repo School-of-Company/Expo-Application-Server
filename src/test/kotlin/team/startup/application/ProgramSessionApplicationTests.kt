@@ -2511,6 +2511,34 @@ class ProgramSessionApplicationTests {
     }
 
     @Test
+    fun `guardian cancellation fetches Expo before taking participant locks`() {
+        enableGuardianPolicy(3, 0)
+        val receipt = batchService.execute(guardianBatch(1))
+        val student =
+            receipt.applications
+                .single { it.application.participantId == 1L }
+                .application.applicationId
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        definitionGate = entered to release
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val cancellation = pool.submit { cancelGuardianStudent(student) }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            transactions.executeWithoutResult {
+                assertTrue(context.getBean(ProgramSessionApplicationRepository::class.java).tryLockParticipant(1))
+            }
+            release.countDown()
+            cancellation.get(10, TimeUnit.SECONDS)
+        } finally {
+            release.countDown()
+            definitionGate = null
+            pool.shutdownNow()
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
     fun `scheduler skips Expo when settled sessions have no waiter or no free seat`() {
         waitingCapacity = 1
         var before = batchCalls.get()
@@ -5002,6 +5030,8 @@ class ProgramSessionApplicationTests {
                 """{"id":"a","label":"First"},{"id":"b","label":"Second"}]}]"""
         private val linkCalls = AtomicInteger()
         private val linkRequests = ConcurrentLinkedQueue<String>()
+
+        @Volatile private var definitionGate: Pair<CountDownLatch, CountDownLatch>? = null
         private val batchCalls = AtomicInteger()
         private val lockChecks = AtomicInteger()
         private val formCallsInTransaction = AtomicInteger()
@@ -5236,6 +5266,10 @@ class ProgramSessionApplicationTests {
                             }
 
                             path.contains("standard-programs/") -> {
+                                definitionGate?.let { (entered, release) ->
+                                    entered.countDown()
+                                    check(release.await(15, TimeUnit.SECONDS))
+                                }
                                 val id = path.substringAfterLast('/').toLong()
                                 when {
                                     definitionConflict -> {

@@ -88,6 +88,9 @@ class CancelStudentGuardianApplicationServiceImpl(
                     }
                 permits.add(entry to permit)
             }
+            val definition =
+                gateway.programDefinition(original.key.expoId.toString(), original.key.programType, original.key.programId)
+                    ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
             transactions.executeWithoutResult {
                 if (!plannedComponent.map { it.participantId }.distinct().sorted().all(
                         ledger::tryLockParticipant,
@@ -95,9 +98,6 @@ class CancelStudentGuardianApplicationServiceImpl(
                 ) {
                     conflict("신청 변경 중입니다. 취소를 재시도해 주세요.")
                 }
-                val definition =
-                    gateway.programDefinition(original.key.expoId.toString(), original.key.programType, original.key.programId)
-                        ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
                 waitlist.lock(definition)
                 applications.observe(definition)
                 val current = requireNotNull(applications.entry(original.id))
