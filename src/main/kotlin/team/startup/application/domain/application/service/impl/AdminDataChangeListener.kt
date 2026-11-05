@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.SmartLifecycle
 import org.springframework.stereotype.Component
+import java.sql.SQLException
 import java.util.UUID
 import javax.sql.DataSource
 
@@ -53,6 +54,7 @@ class AdminDataChangeListener(
                     listening = true
                     if (interrupted) stream.resyncAll()
                     backoff = INITIAL_BACKOFF_MS
+                    var polls = 0
                     while (running) {
                         notifications
                             .getNotifications(POLL_MS)
@@ -60,6 +62,11 @@ class AdminDataChangeListener(
                             .mapNotNull { runCatching { UUID.fromString(it.parameter) }.getOrNull() }
                             .distinct()
                             .forEach(stream::changed)
+                        polls++
+                        if (polls == VALIDATION_POLLS) {
+                            polls = 0
+                            if (!connection.isValid(2)) throw SQLException("Admin data change listener connection is invalid")
+                        }
                     }
                 }
             } catch (exception: Exception) {
@@ -81,6 +88,7 @@ class AdminDataChangeListener(
     private companion object {
         const val CHANNEL = "application_admin_changes"
         const val POLL_MS = 1_000
+        const val VALIDATION_POLLS = 10
         const val INITIAL_BACKOFF_MS = 1_000L
         const val MAX_BACKOFF_MS = 30_000L
     }
