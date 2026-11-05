@@ -48,7 +48,7 @@ class AdminPreregistrationRepository(
             conditions.add(
                 "($confirmed OR (reservation IS NOT NULL AND (" +
                     "position(lower(:q) in lower(reservation ->> 'name')) > 0 OR " +
-                    "(:phone <> '' AND position(:phone in regexp_replace(reservation ->> 'phoneNumber', '[^0-9]', '', 'g')) > 0))))",
+                    "(:phone <> '' AND position(:phone in ${normalizedPhoneSql("reservation ->> 'phoneNumber'")}) > 0))))",
             )
         }
         val source =

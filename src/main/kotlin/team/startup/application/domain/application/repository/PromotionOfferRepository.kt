@@ -248,7 +248,7 @@ class PromotionOfferRepository(
         jdbc.query(
             "SELECT DISTINCT ON (o.request_id) o.* FROM tb_promotion_offer o JOIN tb_preregister_reservation r " +
                 "ON r.expo_id = o.expo_id AND r.request_id = o.request_id WHERE o.expo_id = ? AND o.target = 'PREREGISTER' " +
-                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND ${reservationPhoneSql("r.")} = ? " +
                 "ORDER BY o.request_id, o.created_at DESC, o.id",
             mapper,
             expoId,
