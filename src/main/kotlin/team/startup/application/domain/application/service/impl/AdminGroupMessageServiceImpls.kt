@@ -15,6 +15,7 @@ import team.startup.application.domain.application.service.GetAdminGroupMessageJ
 import team.startup.application.domain.application.service.RetryAdminGroupMessageService
 import java.util.UUID
 
+// Remote proxy operations deliberately open no local database transaction; each target keeps its own boundary.
 @Service
 class GetAdminGroupMessageConfigServiceImpl(
     private val gateway: AdminGroupMessageGateway,
