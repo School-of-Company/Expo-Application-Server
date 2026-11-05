@@ -220,6 +220,19 @@ class AdminApplicationHttpTests {
         assertEquals(404, targets("""{"kind":"SELECTED","keys":["RESERVATION:${UUID.randomUUID()}:wait"]}""").status)
         assertEquals(400, targets("""{"kind":"FILTERED","filter":{"programType":"STANDARD"}}""").status)
         assertEquals(400, targets("""{"kind":"SELECTED","keys":["$key","$key"]}""").status)
+        listOf("", "k".repeat(161)).forEach { invalid ->
+            assertEquals(400, targets(mapper.writeValueAsString(mapOf("kind" to "SELECTED", "keys" to listOf(invalid)))).status)
+            val cancellation =
+                mvc
+                    .perform(
+                        post("$path/cancellation")
+                            .header("Authorization", "Bearer original-admin-jwt")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(mapOf("keys" to listOf(invalid)))),
+                    ).andReturn()
+                    .response
+            assertEquals(400, cancellation.status)
+        }
         assertEquals(400, targets("""{"kind":"FILTERED","filter":{"page":1}}""").status)
         assertEquals(400, readLedger("?programType=STANDARD").status)
         assertEquals(400, readLedger("?q=a&q=b").status)

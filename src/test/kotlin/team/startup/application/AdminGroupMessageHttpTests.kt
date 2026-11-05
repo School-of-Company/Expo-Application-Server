@@ -159,6 +159,8 @@ class AdminGroupMessageHttpTests {
             """{"kind":"FILTERED","preregistrationFilter":{"q":" "}}""",
             """{"kind":"FILTERED","preregistrationFilter":{"page":1}}""",
             preregistrationScope(keys.first(), keys.first()),
+            preregistrationScope(""),
+            preregistrationScope("k".repeat(161)),
         ).forEach { assertEquals(400, preview(it, "공통").status, it) }
         listOf(standard.toString(), "APPLICATION:${UUID.randomUUID()}:1", "RESERVATION:$expo:missing").forEach {
             assertEquals(404, preview(preregistrationScope(it), "공통").status)
