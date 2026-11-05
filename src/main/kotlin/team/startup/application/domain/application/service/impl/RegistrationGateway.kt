@@ -347,7 +347,7 @@ class RegistrationGateway(
         return type.stringValue() == "FIELD"
     }
 
-    private fun fieldVisitToday() = java.time.LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
+    private fun fieldVisitToday() = java.time.LocalDate.ofInstant(clock.instant(), ExpoProgramTime.seoul)
 
     fun managedParty(
         expoId: UUID,

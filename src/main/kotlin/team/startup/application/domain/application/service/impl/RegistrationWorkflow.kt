@@ -94,7 +94,7 @@ class RegistrationWorkflow(
         if (sessionRegistration) {
             preregistration.resume(authenticatedCommand)?.let { return it.pendingOrNull() }
         }
-        val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
+        val today = LocalDate.ofInstant(clock.instant(), ExpoProgramTime.seoul)
         val (started, finished) =
             try {
                 LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)
@@ -119,7 +119,7 @@ class RegistrationWorkflow(
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {
-            val now = OffsetDateTime.now(clock.withZone(ExpoProgramTime.seoul))
+            val now = OffsetDateTime.ofInstant(clock.instant(), ExpoProgramTime.seoul)
             val (start, end) =
                 try {
                     OffsetDateTime.parse(form.startDate) to OffsetDateTime.parse(form.endDate)
