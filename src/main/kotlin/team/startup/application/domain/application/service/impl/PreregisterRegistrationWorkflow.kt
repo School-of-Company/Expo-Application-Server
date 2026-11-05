@@ -69,9 +69,10 @@ class PreregisterRegistrationWorkflow(
     private fun deliver(
         expoId: UUID,
         requestId: String,
+        registrationRequest: Boolean = true,
     ): PreregisterRegistrationReceipt {
         try {
-            recover(expoId, requestId, registrationRequest = true)
+            recover(expoId, requestId, registrationRequest)
         } catch (ex: ResponseStatusException) {
             if (ex is WaitlistWithdrawnException) throw ex
             val current = ledger.transactions.execute { reservations.find(expoId, requestId, "") }
@@ -255,7 +256,7 @@ class PreregisterRegistrationWorkflow(
                     key
                 },
             )
-        recover(expoId, reserved)
+        deliver(expoId, reserved, registrationRequest = false)
         return requireNotNull(
             ledger.transactions.execute {
                 val saved = reservations.find(expoId, reserved, "") ?: return@execute CompanionAddition("CONFIRMED", emptyList(), null)

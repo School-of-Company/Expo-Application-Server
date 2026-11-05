@@ -6,6 +6,7 @@ import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityQuery
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionCapacityResponse
 import team.startup.application.domain.application.presentation.dto.PreregisterTargetSeats
@@ -26,12 +27,15 @@ class GetPreregisterSessionCapacityServiceImpl(
     override fun execute(query: PreregisterSessionCapacityQuery): PreregisterSessionCapacityResponse {
         if (query.sessionId <= 0) badSessionRequest("회차 ID가 올바르지 않습니다.")
         val observation = ledger.observe(query.expoId, query.sessionId)
-        // An expired or invalid session only loses the owner view; the public seats stay readable.
+        // An invalid session or unavailable User only loses the owner view; the public seats stay readable.
         val party =
             query.participantSession?.takeIf { observation?.targeted == true }?.let {
                 try {
                     gateway.managedParty(query.expoId, it)
                 } catch (_: ParticipantSessionException) {
+                    null
+                } catch (ex: ResponseStatusException) {
+                    if (!ex.statusCode.is5xxServerError) throw ex
                     null
                 }
             }
