@@ -79,14 +79,14 @@ class ApplicationNotificationResolver(
         val contact = source.contact(row.expoId, entry.participantId)
         val phone = phone(contact.representativePhone) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
         val notice = source.programNotice(row.expoId, entry.key.programType, entry.key.programId)
-        val name = label(contact.name, 100)
-        val title = label(notice.title, 100)
+        val name = notificationLabel(contact.name, 100)
+        val title = notificationLabel(notice.title, 100)
         if (name == null || title == null) return skip(row, "UNSENDABLE_TEXT")
         return ResolvedNotification.Ready(
             row,
             phone,
             if (entry.key.programType == ProgramSessionType.TRAINING) "TRAINEE" else "STANDARD",
-            ApplicationNotificationItem(name, title, notice.startedAt, notice.endedAt, notice.location?.let { label(it, 255) }),
+            ApplicationNotificationItem(name, title, notice.startedAt, notice.endedAt, notice.location?.let { notificationLabel(it, 255) }),
         )
     }
 
@@ -96,7 +96,7 @@ class ApplicationNotificationResolver(
         if (app.status != required) return skip(row, "STATE_CHANGED")
         val contact = source.contact(app.expoId, app.participantId)
         val phone = phone(contact.representativePhone) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
-        val session = session(row, app.sessionId, label(contact.name, 100), result = row.result) ?: return skip(row, "UNSENDABLE_TEXT")
+        val session = session(row, app.sessionId, notificationLabel(contact.name, 100), result = row.result) ?: return skip(row, "UNSENDABLE_TEXT")
         // 일행에 다른 활성 신청이 남아 있으면 일부 취소다. 전체 취소처럼 안내하지 않는다.
         val scope =
             if (row.type == "PREREGISTER_CANCELLED") {
@@ -114,7 +114,7 @@ class ApplicationNotificationResolver(
         val contact = source.contact(row.expoId, requireNotNull(row.participantId))
         val phone = phone(contact.representativePhone) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
         val item =
-            session(row, reservation.sessionId, label(contact.name, 100), result = "WAITLISTED") ?: return skip(row, "UNSENDABLE_TEXT")
+            session(row, reservation.sessionId, notificationLabel(contact.name, 100), result = "WAITLISTED") ?: return skip(row, "UNSENDABLE_TEXT")
         return ResolvedNotification.Ready(row, phone, "STANDARD", item)
     }
 
@@ -123,7 +123,7 @@ class ApplicationNotificationResolver(
         val reservation = reservations.find(row.expoId, row.requestId, "") ?: return skip(row, "RESERVATION_MISSING")
         if (!reservation.withdrawn) return skip(row, "STATE_CHANGED")
         val phone = phone(reservation.userRequest.phoneNumber.filter { it in '0'..'9' }) ?: return skip(row, "NO_REPRESENTATIVE_PHONE")
-        val name = label(partyName(reservation), 100) ?: return skip(row, "UNSENDABLE_TEXT")
+        val name = notificationLabel(partyName(reservation), 100) ?: return skip(row, "UNSENDABLE_TEXT")
         val item = session(row, reservation.sessionId, name, result = null) ?: return skip(row, "UNSENDABLE_TEXT")
         val scope =
             if (row.type == "PREREGISTER_CANCELLED") {
@@ -144,14 +144,14 @@ class ApplicationNotificationResolver(
         result: String?,
     ): ApplicationNotificationItem? {
         val definition = preregister.definition(row.expoId, sessionId)
-        val title = definition?.title?.let { label(it, 100) }
+        val title = definition?.title?.let { notificationLabel(it, 100) }
         if (name == null || definition == null || title == null) return null
         return ApplicationNotificationItem(
             name,
             title,
             kst(definition.startedAt),
             kst(definition.endedAt),
-            label(definition.place, 255),
+            notificationLabel(definition.place, 255),
             result,
         )
     }
@@ -168,19 +168,19 @@ class ApplicationNotificationResolver(
         fun kst(instant: Instant): String = instant.atOffset(KST).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
         fun phone(value: String?): String? = value?.takeIf { PHONE.matches(it) }
-
-        // Notification 라벨 규칙(앞뒤 공백 제거, 제어·줄바꿈 문자 없음, 최대 길이)에 맞춘다. 줄바꿈은 공백이 된다.
-        val BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
-        val HIDDEN = Regex("""\p{C}""")
-
-        fun label(
-            value: String,
-            max: Int,
-        ): String? =
-            value
-                .replace(BREAKS, " ")
-                .replace(HIDDEN, "")
-                .trim()
-                .takeIf { it.isNotEmpty() && it.length <= max }
     }
 }
+
+private val NOTIFICATION_BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
+private val NOTIFICATION_HIDDEN = Regex("""\p{C}""")
+
+// Notification labels use UTF-16 length; line breaks become spaces and invisible characters are dropped.
+internal fun notificationLabel(
+    value: String,
+    max: Int,
+): String? =
+    value
+        .replace(NOTIFICATION_BREAKS, " ")
+        .replace(NOTIFICATION_HIDDEN, "")
+        .trim()
+        .takeIf { it.isNotEmpty() && it.length <= max }

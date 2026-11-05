@@ -100,8 +100,8 @@ class CheckPromotionOfferServiceImpl(
         endedAt: String,
         location: String?,
     ): PromotionOfferCheck? {
-        val recipientName = label(name, 100) ?: return null
-        val programTitle = label(title, 100) ?: return null
+        val recipientName = notificationLabel(name, 100) ?: return null
+        val programTitle = notificationLabel(title, 100) ?: return null
         return PromotionOfferCheck(
             eligible = true,
             eventId = offer.eventId,
@@ -113,7 +113,7 @@ class CheckPromotionOfferServiceImpl(
             title = programTitle,
             startedAt = startedAt,
             endedAt = endedAt,
-            location = location?.let { label(it, 255) },
+            location = location?.let { notificationLabel(it, 255) },
             seats = offer.seats,
             responseUrl = policy.responseUrl(offer.expoId),
             hardDeadline = offer.hardDeadline,
@@ -124,20 +124,5 @@ class CheckPromotionOfferServiceImpl(
 
     private companion object {
         const val NOT_CURRENT = "NOT_CURRENT_OFFER"
-
-        // Notification labels are trimmed, at most max UTF-16 units and free of \p{C}, \p{Zl} and \p{Zp}. Line breaks
-        // become spaces and invisible format characters are dropped; nothing else is rewritten or cut.
-        val BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
-        val HIDDEN = Regex("""\p{C}""")
-
-        fun label(
-            value: String,
-            max: Int,
-        ): String? =
-            value
-                .replace(BREAKS, " ")
-                .replace(HIDDEN, "")
-                .trim()
-                .takeIf { it.isNotEmpty() && it.length <= max }
     }
 }

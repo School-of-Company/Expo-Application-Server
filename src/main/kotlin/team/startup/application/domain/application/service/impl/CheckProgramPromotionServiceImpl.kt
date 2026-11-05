@@ -32,8 +32,8 @@ class CheckProgramPromotionServiceImpl(
         if (!clock.instant().isBefore(OffsetDateTime.parse(requireNotNull(details.startedAt)).toInstant())) {
             return ProgramPromotionCheck(false, NOT_CURRENT)
         }
-        val participantName = label(requireNotNull(details.participantName), 100)
-        val programName = label(requireNotNull(details.programName), 100)
+        val participantName = notificationLabel(requireNotNull(details.participantName), 100)
+        val programName = notificationLabel(requireNotNull(details.programName), 100)
         if (participantName == null || programName == null) {
             log.warn("Program promotion notice has no sendable name or title: {}", event.applicationId)
             return ProgramPromotionCheck(false, NOT_CURRENT)
@@ -42,7 +42,7 @@ class CheckProgramPromotionServiceImpl(
         return details.copy(
             participantName = participantName,
             programName = programName,
-            location = details.location?.let { label(it, 255) },
+            location = details.location?.let { notificationLabel(it, 255) },
         )
     }
 
@@ -60,21 +60,5 @@ class CheckProgramPromotionServiceImpl(
 
     private companion object {
         const val NOT_CURRENT = "NOT_CURRENT_PROMOTION"
-
-        // Same rule as CheckPromotionOfferServiceImpl (#243): Notification labels are trimmed, at most max UTF-16 units
-        // and free of \p{C}, \p{Zl} and \p{Zp}. Line breaks become spaces and invisible format characters are dropped.
-        // ponytail: duplicated until #243 merges, then share one helper.
-        val BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
-        val HIDDEN = Regex("""\p{C}""")
-
-        fun label(
-            value: String,
-            max: Int,
-        ): String? =
-            value
-                .replace(BREAKS, " ")
-                .replace(HIDDEN, "")
-                .trim()
-                .takeIf { it.isNotEmpty() && it.length <= max }
     }
 }
