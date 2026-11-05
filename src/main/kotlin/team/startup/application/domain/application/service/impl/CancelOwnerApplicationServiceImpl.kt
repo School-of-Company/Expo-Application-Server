@@ -11,6 +11,7 @@ import team.startup.application.domain.application.presentation.dto.CancelOwnerA
 import team.startup.application.domain.application.presentation.dto.CancelProgramSessionCommand
 import team.startup.application.domain.application.presentation.dto.CancelStudentGuardianApplicationCommand
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationType
+import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.StudentGuardianBatchRepository
 import team.startup.application.domain.application.service.CancelOwnerApplicationService
@@ -57,6 +58,17 @@ class CancelOwnerApplicationServiceImpl(
             guards.ifAvailable ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "소유권·입장·출석·취소 기한 보호 계약이 준비되지 않았습니다.")
         guard.recover(command)
         if (original.status == "CANCELLED") return
+        val definition =
+            if (command.type == OwnerApplicationType.PREREGISTER) {
+                null
+            } else {
+                gateway.programDefinition(
+                    command.expoId.toString(),
+                    ProgramSessionType.valueOf(command.type.name),
+                    original.sessionOrProgramId,
+                )
+                    ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정의 공급자가 준비되지 않았습니다.")
+            }
         guard.acquire(command, original.participantId, party).use { permit ->
             ledger.transactions.executeWithoutResult {
                 ledger.lock(command.expoId)
@@ -92,6 +104,7 @@ class CancelOwnerApplicationServiceImpl(
                             UUID.fromString(current.applicationId),
                             ApplicationActorType.USER,
                             actorParticipantId = requireNotNull(party.representativeId),
+                            definition = definition,
                         ),
                     )
                     permit.committed()

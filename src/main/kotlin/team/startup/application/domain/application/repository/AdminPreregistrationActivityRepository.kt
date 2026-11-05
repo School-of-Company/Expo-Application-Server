@@ -58,7 +58,7 @@ class AdminPreregistrationActivityRepository(
             filters +=
                 "($confirmed OR (reservation_name IS NOT NULL AND (" +
                 "position(lower(:q) in lower(reservation_name)) > 0 OR " +
-                "(:phone <> '' AND position(:phone in regexp_replace(coalesce(reservation_phone, ''), '[^0-9]', '', 'g')) > 0))))"
+                "(:phone <> '' AND position(:phone in ${normalizedPhoneSql("coalesce(reservation_phone, '')")}) > 0))))"
         }
         val where = if (filters.isEmpty()) "" else "WHERE ${filters.joinToString(" AND ")}"
         val source =

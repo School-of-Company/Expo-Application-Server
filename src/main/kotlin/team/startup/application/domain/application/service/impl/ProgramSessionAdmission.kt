@@ -56,7 +56,10 @@ class ProgramSessionAdmission(
             }
         val command = request.copy(expoId = expoId, onsite = onsite)
         require(command.expoId.isNotBlank() && command.programId > 0 && command.participantId > 0 && command.formVersion > 0)
-        require(command.sessionId.isNotBlank() && command.idempotencyKey.isNotBlank() && command.idempotencyKey.length <= 200)
+        require(
+            command.sessionId.isNotBlank() && command.idempotencyKey.isNotBlank() &&
+                command.idempotencyKey.length <= PROGRAM_IDEMPOTENCY_KEY_MAX_LENGTH,
+        )
         require(command.answers.isObject)
         val managed = gateway.managedParticipant(command.expoId, command.sessionId, command.participantId)
         val occupation = managed.occupation
@@ -227,9 +230,7 @@ class ProgramSessionAdmission(
         if (!waiting && traineeId == null) {
             standards.saveAndFlush(StandardProgramApplication(participantId = command.participantId, standardProgramId = command.programId))
         } else if (!waiting && traineeId != null) {
-            operations.lockVersion(traineeId)
-            trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = command.programId))
-            operations.incrementVersion(traineeId)
+            confirmTrainingProgram(operations, trainings, traineeId, command.programId)
         }
         ledger.save(command, definition, form, receipt, channel?.name)
         repository.event(receipt.applicationId, receipt.status)
@@ -283,3 +284,16 @@ private const val LOCK_NOT_AVAILABLE = "55P03"
 internal class ProgramSessionAdmissionDeadlineException(
     message: String,
 ) : ProgramApplicationConflictException(message)
+
+internal fun confirmTrainingProgram(
+    operations: TrainingOperationRepository,
+    trainings: TrainingProgramApplicationRepository,
+    traineeId: Long,
+    programId: Long,
+) {
+    operations.lockVersion(traineeId)
+    trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = programId))
+    operations.incrementVersion(traineeId)
+}
+
+internal const val PROGRAM_IDEMPOTENCY_KEY_MAX_LENGTH = 200

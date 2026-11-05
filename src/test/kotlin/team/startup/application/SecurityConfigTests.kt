@@ -9,7 +9,9 @@ import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc
+import org.springframework.context.ApplicationContext
 import org.springframework.http.MediaType
+import org.springframework.security.core.userdetails.UserDetailsService
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
 import org.springframework.test.web.servlet.MockMvc
@@ -26,6 +28,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer
     properties = [
         "eureka.client.enabled=false",
         "application.registration.enabled=false",
+        "spring.security.user.name=user",
+        "spring.security.user.password=password",
         "management.endpoints.web.exposure.include=health,prometheus,info,env",
         "management.endpoint.health.show-components=always",
         "management.health.redis.enabled=false",
@@ -36,6 +40,31 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 @AutoConfigureMockMvc
 @Testcontainers
 class SecurityConfigTests {
+    @Autowired
+    private lateinit var context: ApplicationContext
+
+    @Test
+    fun `기본 사용자와 생성 비밀번호를 만들지 않는다`() {
+        assertTrue(context.getBeansOfType(UserDetailsService::class.java).isEmpty())
+    }
+
+    @Test
+    fun `기본 로그인 페이지는 401을 반환한다`() {
+        mockMvc.perform(get("/login")).andExpect(status().isUnauthorized)
+    }
+
+    @Test
+    fun `HTML 요청도 로그인 리다이렉트 대신 401을 반환한다`() {
+        mockMvc.perform(get("/actuator/info").header("Accept", "text/html")).andExpect(status().isUnauthorized)
+    }
+
+    @Test
+    fun `설정된 기본 사용자 Basic 인증도 보호 경로를 열지 못한다`() {
+        mockMvc
+            .perform(get("/actuator/info").header("Authorization", "Basic dXNlcjpwYXNzd29yZA=="))
+            .andExpect(status().isUnauthorized)
+    }
+
     @Autowired
     private lateinit var mockMvc: MockMvc
 

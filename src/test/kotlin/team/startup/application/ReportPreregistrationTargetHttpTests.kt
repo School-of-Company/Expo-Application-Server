@@ -291,6 +291,8 @@ class ReportPreregistrationTargetHttpTests {
         }
         listOf(
             """{"keys":[]}""",
+            mapper.writeValueAsString(mapOf("keys" to listOf(""))),
+            mapper.writeValueAsString(mapOf("keys" to listOf("k".repeat(161)))),
             """{"keys":["a","a"]}""",
             """{"keys":["a"],"filter":{}}""",
         ).forEach { assertEquals(400, send("${base()}/selection", it).status, it) }

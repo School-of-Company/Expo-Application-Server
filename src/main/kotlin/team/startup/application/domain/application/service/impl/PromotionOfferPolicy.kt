@@ -65,7 +65,7 @@ class PromotionOfferPolicy(
     fun responseUrl(expoId: UUID): String = responseUrl.replace("{expoId}", expoId.toString())
 
     companion object {
-        val KST: ZoneId = ZoneId.of("Asia/Seoul")
+        val KST: ZoneId = ExpoProgramTime.seoul
         val RESPONSE: Duration = Duration.ofHours(6)
         private val OPEN: LocalTime = LocalTime.of(9, 0)
         private val CLOSE: LocalTime = LocalTime.of(18, 0)

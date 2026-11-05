@@ -4,17 +4,17 @@ import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.AdminPreregisterSeatUsage
 import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 class OccupationNotOpenException(
     openAt: OffsetDateTime,
 ) : ResponseStatusException(
         HttpStatus.BAD_REQUEST,
-        "교원·예비교사 외 유형은 ${openAt.atZoneSameInstant(ZoneId.of("Asia/Seoul")).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))}" +
+        "교원·예비교사 외 유형은 ${openAt.atZoneSameInstant(ExpoProgramTime.seoul).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))}" +
             "(KST)부터 신청할 수 있습니다.",
     )
 

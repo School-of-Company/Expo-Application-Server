@@ -6,7 +6,6 @@ import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.entity.StandardProgramApplication
-import team.startup.application.domain.application.entity.TrainingProgramApplication
 import team.startup.application.domain.application.presentation.dto.ApplicationActorType
 import team.startup.application.domain.application.presentation.dto.ProgramSessionDefinition
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
@@ -100,9 +99,7 @@ class ProgramWaitlist(
                 val promotionTime = now()
                 if (!policy.autoPromotionOpen(promotionTime)) return
                 if (traineeId != null) {
-                    operations.lockVersion(traineeId)
-                    trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
-                    operations.incrementVersion(traineeId)
+                    confirmTrainingProgram(operations, trainings, traineeId, definition.id)
                 } else {
                     standards.saveAndFlush(
                         StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id),
@@ -225,9 +222,7 @@ class ProgramWaitlist(
         // User/Expo calls above can cross the final deadline; a manual confirmation never lands after it.
         if (offerId == null) policy.manualPromotionBlock(now())?.let { return it }
         if (traineeId != null) {
-            operations.lockVersion(traineeId)
-            trainings.saveAndFlush(TrainingProgramApplication(traineeId = traineeId, trainingProgramId = definition.id))
-            operations.incrementVersion(traineeId)
+            confirmTrainingProgram(operations, trainings, traineeId, definition.id)
         } else {
             standards.saveAndFlush(StandardProgramApplication(participantId = entry.participantId, standardProgramId = definition.id))
         }

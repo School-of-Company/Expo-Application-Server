@@ -23,7 +23,8 @@ class ApplyPreregisterSessionServiceImpl(
 ) : ApplyPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: ApplyPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
-        if (command.sessionId <= 0 || command.representativeId <= 0 || command.requestId.isBlank() || command.requestId.length > 100 ||
+        if (command.sessionId <= 0 || command.representativeId <= 0 || command.requestId.isBlank() ||
+            command.requestId.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH ||
             command.participantIds.size !in 1..5 || command.participantIds.any { it <= 0 } ||
             command.participantIds.distinct().size != command.participantIds.size
         ) {

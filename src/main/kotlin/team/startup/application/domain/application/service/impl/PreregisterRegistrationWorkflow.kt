@@ -11,6 +11,7 @@ import team.startup.application.domain.application.presentation.dto.ApplicationA
 import team.startup.application.domain.application.presentation.dto.ManagedOwnerParticipant
 import team.startup.application.domain.application.presentation.dto.OwnerApplicationParty
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
+import team.startup.application.domain.application.presentation.dto.PreregisterSessionDefinition
 import team.startup.application.domain.application.presentation.dto.targeted
 import team.startup.application.domain.application.repository.PreregisterReservation
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
@@ -69,9 +70,10 @@ class PreregisterRegistrationWorkflow(
     private fun deliver(
         expoId: UUID,
         requestId: String,
+        registrationRequest: Boolean = true,
     ): PreregisterRegistrationReceipt {
         try {
-            recover(expoId, requestId, registrationRequest = true)
+            recover(expoId, requestId, registrationRequest)
         } catch (ex: ResponseStatusException) {
             if (ex is WaitlistWithdrawnException) throw ex
             val current = ledger.transactions.execute { reservations.find(expoId, requestId, "") }
@@ -138,24 +140,17 @@ class PreregisterRegistrationWorkflow(
                     val queued = reservations.waitingApplicants(expoId, sessionId)
                     // New parties never overtake a waiting party, even when confirmed seats are free (#99 P3).
                     val categories = PreregisterSeatCategory.counts(snapshot, mapper)
-                    if (definition.targeted) {
-                        if (categories.first + categories.second != applicants) {
-                            badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.", "OCCUPATION_REQUIRED")
+                    if (definition.targeted && categories.first + categories.second != applicants) {
+                        badSessionRequest("대상별 정원 회차는 대표자 직업 답변이 필요합니다. 사전등록 폼의 직업 문항을 확인해 주세요.", "OCCUPATION_REQUIRED")
+                    }
+                    val waits =
+                        repository.preregisterWaits(definition, applicants, categories, queued) {
+                            waitlistIntake && waitlist.accepts(definition)
                         }
-                        val (teacher, other) = PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, sessionId))
-                        // Target sessions take no waiting party; the whole party fits both categories or nothing is reserved (#173).
-                        if (queued > 0 || teacher < categories.first || other < categories.second ||
-                            definition.capacity.toLong() - repository.occupied(expoId, sessionId) < applicants
-                        ) {
-                            conflict("일행 전원을 수용할 수 없습니다.")
-                        }
-                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
-                    } else if (queued == 0L && definition.capacity.toLong() - repository.occupied(expoId, sessionId) >= applicants) {
-                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
-                    } else if (waitlistIntake && waitlist.accepts(definition) && (definition.waitingCapacity ?: 0) - queued >= applicants) {
+                    if (waits) {
                         reservations.insertWaiting(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
                     } else {
-                        conflict("일행 전원을 수용할 수 없습니다.")
+                        reservations.insert(expoId, key, sessionId, fingerprint, snapshot, applicants, categories)
                     }
                     key
                 },
@@ -255,7 +250,7 @@ class PreregisterRegistrationWorkflow(
                     key
                 },
             )
-        recover(expoId, reserved)
+        deliver(expoId, reserved, registrationRequest = false)
         return requireNotNull(
             ledger.transactions.execute {
                 val saved = reservations.find(expoId, reserved, "") ?: return@execute CompanionAddition("CONFIRMED", emptyList(), null)
@@ -359,25 +354,12 @@ class PreregisterRegistrationWorkflow(
                         }
                     val applicants = participantIds.size
                     val queued = reservations.waitingApplicants(expoId, sessionId)
-                    val free = definition.capacity.toLong() - repository.occupied(expoId, sessionId)
+                    if (definition.targeted && categories.first + categories.second != applicants) {
+                        badSessionRequest("대상별 정원 회차는 참석자 직업이 필요합니다.", "OCCUPATION_REQUIRED")
+                    }
                     val waits =
-                        if (definition.targeted) {
-                            if (categories.first + categories.second != applicants) {
-                                badSessionRequest("대상별 정원 회차는 참석자 직업이 필요합니다.", "OCCUPATION_REQUIRED")
-                            }
-                            val (teacher, other) = PreregisterSeatCategory.remaining(definition, repository.seatUsage(expoId, sessionId))
-                            if (queued > 0 || teacher < categories.first || other < categories.second || free < applicants) {
-                                conflict("일행 전원을 수용할 수 없습니다.")
-                            }
-                            false
-                        } else if (queued == 0L && free >= applicants) {
-                            false
-                        } else if (waitlistIntake && waitlist.accepts(definition) &&
-                            (definition.waitingCapacity ?: 0) - queued >= applicants
-                        ) {
-                            true
-                        } else {
-                            conflict("일행 전원을 수용할 수 없습니다.")
+                        repository.preregisterWaits(definition, applicants, categories, queued) {
+                            waitlistIntake && waitlist.accepts(definition)
                         }
                     reservations.insertSessionAddition(
                         expoId,
@@ -768,3 +750,24 @@ data class CompanionAddition(
     val participantIds: List<Long>,
     val position: Int?,
 )
+
+internal fun PreregisterSessionRepository.preregisterWaits(
+    definition: PreregisterSessionDefinition,
+    applicants: Int,
+    categories: Pair<Int, Int>,
+    queued: Long,
+    waitingAllowed: () -> Boolean,
+): Boolean {
+    if (definition.targeted) {
+        val (teacher, other) = PreregisterSeatCategory.remaining(definition, seatUsage(definition.expoId, definition.id))
+        if (queued > 0 || teacher < categories.first || other < categories.second ||
+            definition.capacity.toLong() - occupied(definition.expoId, definition.id) < applicants
+        ) {
+            conflict("일행 전원을 수용할 수 없습니다.")
+        }
+        return false
+    }
+    if (queued == 0L && definition.capacity.toLong() - occupied(definition.expoId, definition.id) >= applicants) return false
+    if (waitingAllowed() && (definition.waitingCapacity ?: 0) - queued >= applicants) return true
+    conflict("일행 전원을 수용할 수 없습니다.")
+}

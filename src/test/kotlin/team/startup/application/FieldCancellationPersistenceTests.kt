@@ -1,17 +1,19 @@
 package team.startup.application
 
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.dao.InvalidDataAccessApiUsageException
 import org.springframework.jdbc.core.JdbcTemplate
-import org.springframework.jdbc.datasource.DataSourceTransactionManager
-import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.springframework.transaction.support.TransactionTemplate
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
@@ -19,35 +21,27 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.repository.FieldCancellationDeliveryRepository
 import team.startup.application.domain.application.repository.FieldCancellationPolicyRepository
 import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
-import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
 import team.startup.application.domain.application.service.impl.FieldCancellationTarget
 import java.time.LocalDate
 import java.util.UUID
 
+@SpringBootTest(properties = ["eureka.client.enabled=false", "spring.jpa.hibernate.ddl-auto=validate"])
 @Testcontainers
 class FieldCancellationPersistenceTests {
-    private lateinit var jdbc: JdbcTemplate
-    private lateinit var visits: FieldVisitRegistrationRepository
-    private lateinit var deliveries: FieldCancellationDeliveryRepository
-    private lateinit var tx: TransactionTemplate
+    @Autowired private lateinit var jdbc: JdbcTemplate
+
+    @Autowired private lateinit var visits: FieldVisitRegistrationRepository
+
+    @Autowired private lateinit var deliveries: FieldCancellationDeliveryRepository
+
+    @Autowired private lateinit var tx: TransactionTemplate
 
     @BeforeEach
     fun setup() {
-        val source = DriverManagerDataSource(postgres.jdbcUrl, postgres.username, postgres.password)
-        Flyway
-            .configure()
-            .configuration(mapOf("flyway.postgresql.transactional.lock" to "false"))
-            .dataSource(source)
-            .load()
-            .migrate()
-        jdbc = JdbcTemplate(source)
         jdbc.execute("TRUNCATE tb_field_visit_registration CASCADE")
         jdbc.execute(
             "TRUNCATE tb_program_session_application, tb_standard_program_application, tb_training_program_application, tb_preregister_session_state CASCADE",
         )
-        visits = FieldVisitRegistrationRepository(jdbc)
-        deliveries = FieldCancellationDeliveryRepository(jdbc, OwnerCancellationDeliveryRepository(jdbc, source))
-        tx = TransactionTemplate(DataSourceTransactionManager(source))
     }
 
     @Test
@@ -96,7 +90,7 @@ class FieldCancellationPersistenceTests {
         val operation = UUID.randomUUID()
         assertTrue(visits.beginCancellation(visit.id, 1, operation))
         assertTrue(visits.cancel(visit.id, 1, 2, operation))
-        assertThrows(IllegalStateException::class.java) { tx.execute { visits.activate(EXPO, 2, DATE, UUID.randomUUID()) } }
+        assertStateRejected { tx.execute { visits.activate(EXPO, 2, DATE, UUID.randomUUID()) } }
         assertFalse(visits.clearCancellation(visit.id, 1, UUID.randomUUID()))
         assertTrue(visits.clearCancellation(visit.id, 1, operation))
         val next = requireNotNull(tx.execute { visits.activate(EXPO, 2, DATE, UUID.randomUUID()) })
@@ -210,8 +204,51 @@ class FieldCancellationPersistenceTests {
     private fun count(type: String): Int =
         requireNotNull(jdbc.queryForObject("SELECT count(*) FROM tb_field_visit_event WHERE event_type=?", Int::class.java, type))
 
+    @Test
+    fun `committed decision cannot be aborted and reads in the same transaction see the decision`() {
+        val visit = requireNotNull(tx.execute { visits.activate(EXPO, 2, DATE, UUID.randomUUID()) })
+        val operation = UUID.randomUUID()
+        val delivery =
+            FieldCancellationDeliveryRepository.Delivery(FieldCancellationTarget(visit.id, EXPO, 2, DATE, 1), operation, 2, "ABORT")
+        tx.executeWithoutResult {
+            deliveries.insert(delivery)
+            assertEquals("ACQUIRING", deliveries.find(visit.id)?.action)
+            deliveries.commit(operation)
+            deliveries.abort(operation)
+            assertEquals(delivery.copy(action = "COMMIT"), deliveries.find(visit.id))
+        }
+        assertStateRejected { deliveries.commit(operation) }
+        assertStateRejected { deliveries.commit(UUID.randomUUID()) }
+    }
+
+    @Test
+    fun `aborted decision is terminal and deferred delivery is excluded until retry`() {
+        val visit = requireNotNull(tx.execute { visits.activate(EXPO, 2, DATE, UUID.randomUUID()) })
+        val operation = UUID.randomUUID()
+        val delivery =
+            FieldCancellationDeliveryRepository.Delivery(FieldCancellationTarget(visit.id, EXPO, 2, DATE, 1), operation, 2, "COMMIT")
+        deliveries.insert(delivery)
+        assertEquals(delivery.copy(action = "ACQUIRING"), deliveries.pending().single())
+        deliveries.abort(operation)
+        deliveries.abort(operation)
+        assertStateRejected { deliveries.commit(operation) }
+        assertEquals("ABORT", deliveries.find(visit.id)?.action)
+        deliveries.defer(operation)
+        assertTrue(deliveries.pending().isEmpty())
+        deliveries.delete(UUID.randomUUID())
+        assertEquals(operation, deliveries.find(visit.id)?.operationId)
+        deliveries.delete(operation)
+        assertNull(deliveries.find(visit.id))
+    }
+
+    private fun assertStateRejected(operation: () -> Unit) {
+        val failure = assertThrows(InvalidDataAccessApiUsageException::class.java) { operation() }
+        assertInstanceOf(IllegalStateException::class.java, failure.cause)
+    }
+
     companion object {
         @Container @JvmStatic
+        @ServiceConnection
         val postgres = PostgreSQLContainer("postgres:17-alpine")
         private val EXPO = UUID.randomUUID()
         private val DATE = LocalDate.of(2026, 10, 22)

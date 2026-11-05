@@ -35,7 +35,8 @@ class CancelProgramSessionServiceImpl(
         if (repository.entry(original.id)?.status == "CANCELLED") return
         if (guardianBatches.batchId(original.id) != null) throw ProgramApplicationConflictException("학생·보호자 신청은 소유자 또는 관리자 연계 취소가 필요합니다.")
         val definition =
-            gateway.programDefinition(original.key.expoId.toString(), original.key.programType, original.key.programId)
+            command.definition
+                ?: gateway.programDefinition(original.key.expoId.toString(), original.key.programType, original.key.programId)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정의 공급자가 준비되지 않았습니다.")
         original.traineeId?.let(trainings::lockTrainee)
         waitlist.lock(definition)

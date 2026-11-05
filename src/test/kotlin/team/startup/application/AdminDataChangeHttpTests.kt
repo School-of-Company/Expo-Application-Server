@@ -26,7 +26,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.service.impl.AdminDataChangeListener
 import team.startup.application.domain.application.service.impl.AdminDataChangeStream
 import tools.jackson.databind.ObjectMapper
+import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
+import java.sql.Connection
 import java.sql.DriverManager
 import java.time.Clock
 import java.time.Duration
@@ -214,6 +216,41 @@ class AdminDataChangeHttpTests {
         eventually { listener.isListening() }
         insertProgram(UUID.randomUUID(), expo, 1)
         eventually { events(result).size == 2 }
+    }
+
+    @Test
+    fun `invalid silent listener connection reconnects and resyncs before delivering later changes`() {
+        val connections = AtomicInteger()
+        val validations = AtomicInteger()
+        val wrapped =
+            object : DataSource by dataSource {
+                override fun getConnection(): Connection {
+                    val connection = dataSource.connection
+                    val first = connections.incrementAndGet() == 1
+                    return Proxy.newProxyInstance(Connection::class.java.classLoader, arrayOf(Connection::class.java)) { _, method, args ->
+                        if (method.name == "isValid" && first) {
+                            validations.incrementAndGet()
+                            false
+                        } else {
+                            method.invoke(connection, *(args ?: emptyArray()))
+                        }
+                    } as Connection
+                }
+            }
+        listener.stop()
+        val result = subscribe()
+        val otherListener = AdminDataChangeListener(wrapped, stream)
+        otherListener.start()
+        try {
+            eventually(seconds = 20) { events(result).size == 1 && otherListener.isListening() }
+            assertEquals(1, validations.get())
+            assertEquals(2, connections.get())
+            insertProgram(UUID.randomUUID(), expo, 1)
+            eventually { events(result).size == 2 }
+        } finally {
+            otherListener.stop()
+            listener.start()
+        }
     }
 
     @Test

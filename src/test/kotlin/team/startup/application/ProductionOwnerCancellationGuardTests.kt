@@ -28,10 +28,8 @@ import team.startup.application.domain.application.presentation.dto.ProgramSessi
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.OwnerApplicationRepository
 import team.startup.application.domain.application.repository.OwnerCancellationDeliveryRepository
-import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
 import team.startup.application.domain.application.service.impl.AdminCancellationParticipantGateway
 import team.startup.application.domain.application.service.impl.AttendanceCancellationAdapter
-import team.startup.application.domain.application.service.impl.AttendanceCancellationStatusGateway
 import team.startup.application.domain.application.service.impl.OwnerCancellationDeadlineGateway
 import team.startup.application.domain.application.service.impl.OwnerCancellationGateway
 import team.startup.application.domain.application.service.impl.ProductionOwnerCancellationGuard
@@ -452,9 +450,9 @@ class ProductionOwnerCancellationGuardTests {
             owners,
             deliveries,
             Clock.fixed(NOW, ZoneOffset.UTC),
-            AttendanceCancellationStatusGateway(mapper, base, "test-token"),
+            attendanceCancellationStatusGateway(mapper, base, "test-token"),
             AdminCancellationParticipantGateway(mapper, base, "test-token"),
-            AdminAttendanceGateway(mapper, base, "test-token"),
+            adminAttendanceGateway(mapper, base, "test-token"),
             attendanceEnabled,
         )
     }

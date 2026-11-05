@@ -221,6 +221,7 @@ data class CancelProgramSessionCommand(
     val actorType: ApplicationActorType = ApplicationActorType.UNKNOWN,
     val actorId: Long? = null,
     val actorParticipantId: Long? = null,
+    val definition: ProgramSessionDefinition? = null,
 ) {
     init {
         require((actorType == ApplicationActorType.ADMIN) == (actorId != null))

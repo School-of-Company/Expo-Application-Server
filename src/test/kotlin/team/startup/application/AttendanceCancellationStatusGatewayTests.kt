@@ -39,7 +39,7 @@ class AttendanceCancellationStatusGatewayTests {
             exchange.responseBody.use { if (code != 204) it.write(bytes) }
         }
         server.start()
-        gateway = AttendanceCancellationStatusGateway(jacksonObjectMapper(), "http://127.0.0.1:${server.address.port}/", "attendance-token")
+        gateway = attendanceCancellationStatusGateway(jacksonObjectMapper(), "http://127.0.0.1:${server.address.port}/", "attendance-token")
     }
 
     @AfterEach
@@ -117,7 +117,7 @@ class AttendanceCancellationStatusGatewayTests {
         assertThrows(IllegalArgumentException::class.java) { gateway.find(EXPO, 2, " ") }
         assertThrows(IllegalArgumentException::class.java) { gateway.find(EXPO, 2, "1".repeat(21)) }
         failure(HttpStatus.SERVICE_UNAVAILABLE) {
-            AttendanceCancellationStatusGateway(jacksonObjectMapper(), "", "attendance-token").find(EXPO, 2, "01012345678")
+            attendanceCancellationStatusGateway(jacksonObjectMapper(), "", "attendance-token").find(EXPO, 2, "01012345678")
         }
         assertEquals(0, calls)
         server.stop(0)

@@ -115,10 +115,8 @@ class InternalSecurityConfig(
                 requests
                     .anyRequest()
                     .authenticated()
-            }.exceptionHandling { it.defaultAuthenticationEntryPointFor(HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED), internal) }
+            }.exceptionHandling { it.authenticationEntryPoint(HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)) }
             .cors(withDefaults())
-            .httpBasic { }
-            .formLogin { }
             .build()
     }
 }

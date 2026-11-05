@@ -53,6 +53,55 @@ import kotlin.test.assertNull
 @Testcontainers
 class RegistrationHttpTests {
     @Test
+    fun `폼 없는 현장 등록은 65536자 답변을 원문 그대로 저장한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        val answers = mapper.writeValueAsString(mapOf("문항" to "가".repeat(65527)))
+        assertEquals(65536, answers.length)
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        val registration =
+            ParticipantRegistration(EXPO_2, "홍길동", "01012345678", answers, true, "FIELD", "training-1", null, null, "limit", null, null)
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_2")
+                    .header("Idempotency-Key", "limit")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body(answers, "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+    }
+
+    @Test
+    fun `네 등록 경로는 65536자를 넘는 답변을 외부 호출 전에 거절한다`() {
+        val answers = mapper.writeValueAsString(mapOf("문항" to "가".repeat(65528)))
+        listOf("/application", "/application/pre-standard", "/application/field", "/application/field/standard").forEach { path ->
+            mockMvc
+                .perform(post("$path/$EXPO_1").contentType(MediaType.APPLICATION_JSON).content(body(answers, "training-1")))
+                .andExpect(status().isBadRequest)
+        }
+        org.mockito.Mockito.verifyNoInteractions(gateway)
+    }
+
+    @Test
+    fun `기존 폼 제목에 없는 답변은 User 저장 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_1)).thenReturn(ExpoPeriod(today.toString(), today.toString()))
+        `when`(gateway.form(EXPO_1, "TRAINEE", "FIELD", false)).thenReturn(
+            registrationForm("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z", listOf(field(3, "학교", "SCHOOL"))),
+        )
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("""{"미지정":"답변"}""", "training-1")),
+            ).andExpect(status().isBadRequest)
+            .andExpect(jsonPath("$.code").value("ANSWER_INVALID"))
+        verify(gateway).expoPeriod(EXPO_1)
+        verify(gateway).form(EXPO_1, "TRAINEE", "FIELD", false)
+        verifyNoMoreInteractions(gateway)
+    }
+
+    @Test
     fun `네 등록 경로는 동의 거절 사유를 400 본문에 반환한다`() {
         listOf("/application", "/application/pre-standard", "/application/field", "/application/field/standard").forEach { path ->
             mockMvc

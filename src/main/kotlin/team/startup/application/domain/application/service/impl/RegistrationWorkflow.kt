@@ -7,12 +7,13 @@ import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.presentation.dto.PreregisterRegistrationReceipt
 import team.startup.application.domain.application.repository.PreregisterReservationRepository
 import team.startup.application.domain.application.service.RegistrationCommand
+import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
 import java.sql.SQLException
+import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeParseException
 import java.util.UUID
 
@@ -25,6 +26,7 @@ class RegistrationWorkflow(
     private val reservations: PreregisterReservationRepository,
     @org.springframework.beans.factory.annotation.Value("\${application.field-visits.enabled:false}") private val fieldVisitsEnabled:
         Boolean = false,
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     private val occupations = CompanionAnswers.occupations
     private val regions = CompanionAnswers.regions
@@ -66,7 +68,9 @@ class RegistrationWorkflow(
         }
         if (!request.personalInformationStatus) badRequest("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
         if (participantType == "TRAINEE" && request.trainingId.isNullOrBlank()) badRequest("연수 ID가 필요합니다.")
-        if (command.idempotencyKey != null && (command.idempotencyKey.isBlank() || command.idempotencyKey.length > 100)) {
+        if (command.idempotencyKey != null &&
+            (command.idempotencyKey.isBlank() || command.idempotencyKey.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH)
+        ) {
             badRequest("Idempotency-Key는 1~100자여야 합니다.")
         }
         val sessionRegistration = participantType == "STANDARD" && applicationType == "PRE"
@@ -90,7 +94,7 @@ class RegistrationWorkflow(
         if (sessionRegistration) {
             preregistration.resume(authenticatedCommand)?.let { return it.pendingOrNull() }
         }
-        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        val today = LocalDate.ofInstant(clock.instant(), ExpoProgramTime.seoul)
         val (started, finished) =
             try {
                 LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)
@@ -115,7 +119,7 @@ class RegistrationWorkflow(
 
         val form = gateway.form(expoId, participantType, applicationType, applicationType == "PRE")
         if (applicationType == "PRE" && form != null) {
-            val now = OffsetDateTime.now(ZoneId.of("Asia/Seoul"))
+            val now = OffsetDateTime.ofInstant(clock.instant(), ExpoProgramTime.seoul)
             val (start, end) =
                 try {
                     OffsetDateTime.parse(form.startDate) to OffsetDateTime.parse(form.endDate)
@@ -133,6 +137,10 @@ class RegistrationWorkflow(
                 badRequest("폼 답변이 올바른 JSON이 아닙니다.")
             }
         if (!answers.isObject) badRequest("폼 답변은 JSON 객체여야 합니다.")
+        val titles = form?.dynamicForm?.map { it.title }?.toSet()
+        if (titles != null && !titles.containsAll(answers.propertyNames())) {
+            badRequest("폼에 없는 문항의 답변이 있습니다.", "ANSWER_INVALID")
+        }
 
         fun answer(type: String): String? {
             val title = form?.dynamicForm?.firstOrNull { it.dynamicFormType == type }?.title ?: return null
@@ -234,3 +242,5 @@ class RegistrationWorkflow(
         const val PREREGISTERED_TODAY = "오늘 회차에 확정된 사전등록이 있습니다."
     }
 }
+
+internal const val PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH = 100

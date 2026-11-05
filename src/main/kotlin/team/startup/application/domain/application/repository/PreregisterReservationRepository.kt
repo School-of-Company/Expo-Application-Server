@@ -162,7 +162,7 @@ class PreregisterReservationRepository(
         requireNotNull(
             jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation WHERE expo_id = ? AND session_id = ? " +
-                    "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? AND state IN ('RESERVED', 'WAITING'))",
+                    "AND ${reservationPhoneSql()} = ? AND state IN ('RESERVED', 'WAITING'))",
                 Boolean::class.java,
                 expoId,
                 sessionId,
@@ -188,8 +188,8 @@ class PreregisterReservationRepository(
             .query(
                 "SELECT r.* FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +
                     "ON st.expo_id = r.expo_id AND st.session_id = r.session_id WHERE r.expo_id = ? AND r.session_id <> ? " +
-                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
-                    "AND r.state IN (${states.joinToString { "'$it'" }}) AND r.companion_representative_id IS NULL " +
+                    "AND ${reservationPhoneSql("r.")} = ? " +
+                    "AND r.state IN (${states.joinToString { "?" }}) AND r.companion_representative_id IS NULL " +
                     "AND (st.definition::jsonb ->> 'closed')::boolean = FALSE " +
                     "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ? " +
                     "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
@@ -198,6 +198,7 @@ class PreregisterReservationRepository(
                 expoId,
                 sessionId,
                 phone,
+                *states.toTypedArray(),
                 java.sql.Timestamp.from(now),
                 java.sql.Timestamp.from(window.endedAt),
                 java.sql.Timestamp.from(window.startedAt),
@@ -214,7 +215,7 @@ class PreregisterReservationRepository(
             "SELECT a.participant_id FROM tb_preregister_application a JOIN tb_preregister_reservation r " +
                 "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id JOIN tb_preregister_session_state st " +
                 "ON st.expo_id = a.expo_id AND st.session_id = a.session_id WHERE a.expo_id = ? AND a.session_id <> ? " +
-                "AND a.status = 'CONFIRMED' AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND a.status = 'CONFIRMED' AND ${reservationPhoneSql("r.")} = ? " +
                 "AND (st.definition::jsonb ->> 'startedAt')::timestamptz < ? " +
                 "AND ? < (st.definition::jsonb ->> 'endedAt')::timestamptz",
             { rs, _ -> rs.getLong(1) },
@@ -357,7 +358,7 @@ class PreregisterReservationRepository(
                 "ON r.expo_id = a.expo_id AND r.request_id = a.reservation_request_id LEFT JOIN tb_preregister_session_state st " +
                 "ON st.expo_id = a.expo_id AND st.session_id = a.session_id " +
                 "WHERE a.expo_id = ? AND a.participant_id = a.representative_id " +
-                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+                "AND ${reservationPhoneSql("r.")} = ?",
             Boolean::class.javaObjectType,
             day,
             expoId,
@@ -394,7 +395,7 @@ class PreregisterReservationRepository(
                 "AND a.participant_id <> a.representative_id AND a.representative_id IN (" +
                 "SELECT (r.result::jsonb ->> 'participantId')::bigint FROM tb_preregister_reservation r WHERE r.expo_id = a.expo_id " +
                 "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL " +
-                "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?) " +
+                "AND ${reservationPhoneSql("r.")} = ?) " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_preregister_application b WHERE b.expo_id = a.expo_id " +
                 "AND b.participant_id = a.participant_id AND b.status <> 'CANCELLED') " +
                 "AND NOT EXISTS(SELECT 1 FROM tb_field_visit_registration f WHERE f.expo_id=a.expo_id " +
@@ -418,7 +419,7 @@ class PreregisterReservationRepository(
             jdbc.query(
                 "SELECT DISTINCT (r.result::jsonb ->> 'participantId')::bigint FROM tb_preregister_reservation r WHERE r.expo_id = ? " +
                     "AND r.state = 'COMPLETED' AND r.companion_representative_id IS NULL AND NOT r.session_addition " +
-                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ?",
+                    "AND ${reservationPhoneSql("r.")} = ?",
                 { rs, _ -> rs.getLong(1) },
                 expoId,
                 phone,
@@ -446,7 +447,7 @@ class PreregisterReservationRepository(
                         "OR EXISTS(SELECT 1 FROM tb_standard_program_application s " +
                         "WHERE s.participant_id IN (SELECT jsonb_array_elements_text(?::jsonb)::bigint)) " +
                         "OR EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = ? AND r.request_id <> ? " +
-                        "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                        "AND ${reservationPhoneSql("r.")} = ? " +
                         "AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND EXISTS(SELECT 1 FROM tb_preregister_session_state st " +
                         "WHERE st.expo_id = r.expo_id AND st.session_id = r.session_id " +
                         "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ?))))",
@@ -584,7 +585,7 @@ class PreregisterReservationRepository(
     ): List<PreregisterReservation> =
         jdbc.query(
             "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
-                "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND ${reservationPhoneSql()} = ? " +
                 "AND queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED') ORDER BY queue_seq DESC",
             { rs, _ -> reservation(rs) },
             expoId,
@@ -599,7 +600,7 @@ class PreregisterReservationRepository(
     ): List<PreregisterReservation> =
         jdbc.query(
             "SELECT * FROM tb_preregister_reservation WHERE expo_id = ? " +
-                "AND regexp_replace(user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                "AND ${reservationPhoneSql()} = ? " +
                 "AND ((queue_seq IS NOT NULL AND state IN ('WAITING', 'RESERVED')) " +
                 "OR (state = 'RESERVED' AND NOT session_addition AND companion_representative_id IS NULL)) " +
                 "ORDER BY queue_seq DESC NULLS LAST, session_id DESC",
@@ -610,7 +611,8 @@ class PreregisterReservationRepository(
 
     fun promote(reservation: PreregisterReservation): Boolean =
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET state = 'RESERVED', attempts = 0, next_attempt_at = CURRENT_TIMESTAMP " +
+            "UPDATE tb_preregister_reservation SET state = 'RESERVED', attempts = 0, next_attempt_at = CURRENT_TIMESTAMP, " +
+                "retry_window_started_at = clock_timestamp(), retry_window_attempts = 0 " +
                 "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
             reservation.expoId,
             reservation.requestId,
@@ -685,7 +687,7 @@ class PreregisterReservationRepository(
         requireNotNull(
             jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM tb_preregister_reservation r WHERE r.expo_id = ? " +
-                    "AND regexp_replace(r.user_request::jsonb ->> 'phoneNumber', '[^0-9]', '', 'g') = ? " +
+                    "AND ${reservationPhoneSql("r.")} = ? " +
                     "AND (r.state = 'RESERVED' OR (r.state = 'WAITING' AND EXISTS(SELECT 1 FROM tb_preregister_session_state st " +
                     "WHERE st.expo_id = r.expo_id AND st.session_id = r.session_id " +
                     "AND (st.definition::jsonb ->> 'startedAt')::timestamptz > ?)) " +
@@ -796,3 +798,7 @@ class PreregisterReservationRepository(
         )
     }
 }
+
+internal fun normalizedPhoneSql(value: String): String = "regexp_replace($value, '[^0-9]', '', 'g')"
+
+internal fun reservationPhoneSql(alias: String = ""): String = normalizedPhoneSql("${alias}user_request::jsonb ->> 'phoneNumber'")

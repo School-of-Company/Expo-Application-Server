@@ -36,7 +36,6 @@ import team.startup.application.domain.application.presentation.dto.AdminApplica
 import team.startup.application.domain.application.presentation.dto.AdminApplicationSessionSummary
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.AdminApplicationQueryRepository
-import team.startup.application.domain.application.service.impl.AdminAttendanceGateway
 import team.startup.application.domain.application.service.impl.AdminParticipantGateway
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.node.ObjectNode
@@ -220,6 +219,19 @@ class AdminApplicationHttpTests {
         assertEquals(404, targets("""{"kind":"SELECTED","keys":["RESERVATION:${UUID.randomUUID()}:wait"]}""").status)
         assertEquals(400, targets("""{"kind":"FILTERED","filter":{"programType":"STANDARD"}}""").status)
         assertEquals(400, targets("""{"kind":"SELECTED","keys":["$key","$key"]}""").status)
+        listOf("", "k".repeat(161)).forEach { invalid ->
+            assertEquals(400, targets(mapper.writeValueAsString(mapOf("kind" to "SELECTED", "keys" to listOf(invalid)))).status)
+            val cancellation =
+                mvc
+                    .perform(
+                        post("$path/cancellation")
+                            .header("Authorization", "Bearer original-admin-jwt")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(mapOf("keys" to listOf(invalid)))),
+                    ).andReturn()
+                    .response
+            assertEquals(400, cancellation.status)
+        }
         assertEquals(400, targets("""{"kind":"FILTERED","filter":{"page":1}}""").status)
         assertEquals(400, readLedger("?programType=STANDARD").status)
         assertEquals(400, readLedger("?q=a&q=b").status)
@@ -1562,7 +1574,7 @@ class AdminApplicationHttpTests {
     fun `출석 조회 미설정과 연결 실패는 서비스 불가이며 중복 회차는 한 번만 요청한다`() {
         val session = AdminApplicationSessionSummary(ProgramSessionType.STANDARD, 7, groupId, 1, 1, emptyMap())
         val missing =
-            assertThrows(ResponseStatusException::class.java) { AdminAttendanceGateway(mapper, "", "").summarize(listOf(session)) }
+            assertThrows(ResponseStatusException::class.java) { adminAttendanceGateway(mapper, "", "").summarize(listOf(session)) }
         assertEquals(503, missing.statusCode.value())
         val stopped = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         val url = "http://127.0.0.1:${stopped.address.port}"
@@ -1570,11 +1582,11 @@ class AdminApplicationHttpTests {
         stopped.stop(0)
         val unavailable =
             assertThrows(ResponseStatusException::class.java) {
-                AdminAttendanceGateway(mapper, url, "attendance-token").summarize(listOf(session))
+                adminAttendanceGateway(mapper, url, "attendance-token").summarize(listOf(session))
             }
         assertEquals(503, unavailable.statusCode.value())
         val result =
-            AdminAttendanceGateway(mapper, "http://127.0.0.1:${attendance.address.port}", "attendance-token")
+            adminAttendanceGateway(mapper, "http://127.0.0.1:${attendance.address.port}", "attendance-token")
                 .summarize(listOf(session, session.copy(groupId = UUID.randomUUID())))
         assertEquals(1, result.size)
         assertEquals(1, mapper.readTree(attendanceRequests.single())["programs"].size())

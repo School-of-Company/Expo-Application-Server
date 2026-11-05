@@ -83,6 +83,7 @@ class PreregisterWaitlistHttpTests {
                 "tb_preregister_session_state, tb_preregister_deleted_expo RESTART IDENTITY CASCADE",
         )
         userRequests.clear()
+        userFailures.set(0)
         capacity.set(1)
         waitingCapacity.set(5)
         closed = false
@@ -115,6 +116,28 @@ class PreregisterWaitlistHttpTests {
         val request = post("/application/pre-standard/$EXPO").contentType(MediaType.APPLICATION_JSON).content(body)
         if (key != null) request.header("Idempotency-Key", key)
         return mvc.perform(request).andReturn().response
+    }
+
+    @Test
+    fun `promotion reopens the retry window after two hours of waiting`() {
+        assertEquals(201, submit("a", phone = "01000000001").status)
+        waiting(submit("b", phone = "01000000002"), 1)
+        jdbc.update(
+            "UPDATE tb_preregister_reservation SET retry_window_started_at = now() - interval '2 hours' WHERE request_id = 'b'",
+        )
+        cancel(1)
+        userFailures.set(1)
+        recovery.recover()
+        val saved =
+            jdbc.queryForMap(
+                "SELECT state, error_status, isfinite(next_attempt_at) AS retryable, retry_window_attempts " +
+                    "FROM tb_preregister_reservation WHERE request_id = 'b'",
+            )
+        assertEquals("RESERVED", saved["state"])
+        assertEquals(null, saved["error_status"])
+        assertEquals(true, saved["retryable"])
+        assertEquals(0, saved["retry_window_attempts"])
+        assertEquals(2, userRequests.size)
     }
 
     private fun waiting(
@@ -865,6 +888,7 @@ class PreregisterWaitlistHttpTests {
 
         @Volatile private var cancelAccess = 200
         private val userRequests = CopyOnWriteArrayList<JsonNode>()
+        private val userFailures = AtomicInteger(0)
         private val json =
             tools.jackson.module.kotlin
                 .jacksonObjectMapper()
@@ -908,6 +932,11 @@ class PreregisterWaitlistHttpTests {
                             path == "/internal/standard-participants" -> {
                                 val request = json.readTree(exchange.requestBody.bufferedReader().readText())
                                 userRequests.add(request)
+                                if (userFailures.getAndUpdate { (it - 1).coerceAtLeast(0) } > 0) {
+                                    exchange.sendResponseHeaders(503, -1)
+                                    exchange.close()
+                                    return@createContext
+                                }
                                 val first = 42L + 10 * (userRequests.size - 1)
                                 val count = 1 + json.readTree(request.get("informationJson").stringValue()).get("companions").size()
                                 val ids = (first until first + count).joinToString(",")

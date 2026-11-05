@@ -27,9 +27,12 @@ import team.startup.application.domain.application.service.impl.SessionAttendanc
 import tools.jackson.databind.JsonNode
 import tools.jackson.module.kotlin.jacksonObjectMapper
 import java.net.InetSocketAddress
+import java.time.Clock
+import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.test.assertEquals
 
@@ -332,8 +335,9 @@ class RegistrationIntegrationContractTests {
     fun `네 등록 경로는 현재 서비스 HTTP 계약과 동반자 스냅샷을 보존하고 집계 실패를 같은 키로 재시도한다`() {
         val mapper = jacksonObjectMapper()
         val expoId = "0199c000-0000-7000-8000-000000000001"
-        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
-        val now = OffsetDateTime.now()
+        val clock = Clock.fixed(Instant.parse("2035-10-22T15:00:00Z"), ZoneOffset.UTC)
+        val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+        val now = OffsetDateTime.now(clock)
         val start = now.minusDays(1).toString()
         val end = now.plusDays(1).toString()
         var startedDay = today
@@ -437,6 +441,7 @@ class RegistrationIntegrationContractTests {
                     preregistration,
                     org.mockito.Mockito.mock(SessionAttendanceOutbox::class.java),
                     org.mockito.Mockito.mock(PreregisterReservationRepository::class.java),
+                    clock = clock,
                 )
             val controller =
                 RegistrationController(
@@ -448,33 +453,34 @@ class RegistrationIntegrationContractTests {
                 )
             val mvc = MockMvcBuilders.standaloneSetup(controller).build()
             val answers = """{"거주 지역":"JEONNAM","동반자":[{"name":"동반자","occupation":"TEACHER","region":"GWANGJU","school":"광주고"}]}"""
-            val body =
-                mapper.writeValueAsString(
-                    mapOf(
-                        "name" to "홍길동",
-                        "phoneNumber" to "01012345678",
-                        "informationJson" to answers,
-                        "personalInformationStatus" to true,
-                        "trainingId" to "training-1",
-                        "sessionId" to 1,
-                    ),
+            val request =
+                mapOf(
+                    "name" to "홍길동",
+                    "phoneNumber" to "01012345678",
+                    "informationJson" to answers,
+                    "personalInformationStatus" to true,
+                    "trainingId" to "training-1",
+                    "sessionId" to 1,
                 )
+            val body = mapper.writeValueAsString(request)
             val routes = listOf("" to "TRAINEE", "/pre-standard" to "STANDARD", "/field" to "TRAINEE", "/field/standard" to "STANDARD")
             for ((index, route) in routes.withIndex()) {
                 // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
                 startedDay = if (route.first == "/pre-standard") today.plusDays(1) else today
+                val submittedAnswers = if (index == 0) "{}" else answers
+                val submittedBody = mapper.writeValueAsString(request + ("informationJson" to submittedAnswers))
                 mvc
                     .perform(
                         post(
                             "/application${route.first}/$expoId",
-                        ).header("Idempotency-Key", "request-$index").contentType(MediaType.APPLICATION_JSON).content(body),
+                        ).header("Idempotency-Key", "request-$index").contentType(MediaType.APPLICATION_JSON).content(submittedBody),
                     ).andExpect(status().isCreated)
                     .andExpect(content().string(""))
                 val (path, sent) = requests.last()
                 assertEquals(if (route.second == "STANDARD") "/internal/standard-participants" else "/internal/trainees", path)
                 assertEquals(if (index < 2) "PRE" else "FIELD", sent.get("applicationType").stringValue())
                 assertEquals("request-$index", sent.get("requestId").stringValue())
-                assertEquals(answers, sent.get("informationJson").stringValue())
+                assertEquals(submittedAnswers, sent.get("informationJson").stringValue())
                 assertEquals("type=${route.second}&applicationType=${if (index < 2) "PRE" else "FIELD"}", queries.last())
                 if (index == 1) {
                     assertEquals("JEONNAM", sent.path("region").stringValue())

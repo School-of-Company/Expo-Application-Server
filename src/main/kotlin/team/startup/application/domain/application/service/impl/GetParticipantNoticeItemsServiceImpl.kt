@@ -52,12 +52,12 @@ class GetParticipantNoticeItemsServiceImpl(
     }
 
     private fun session(definition: PreregisterSessionDefinition) =
-        label(definition.title, 100)?.let {
-            ParticipantNoticeSession(it, kst(definition.startedAt), kst(definition.endedAt), label(definition.place, 255))
+        notificationLabel(definition.title, 100)?.let {
+            ParticipantNoticeSession(it, kst(definition.startedAt), kst(definition.endedAt), notificationLabel(definition.place, 255))
         }
 
     private fun program(row: ParticipantNoticeRepository.ProgramRow): ParticipantNoticeProgram? {
-        val title = label(row.snapshot.path("title").asString(""), 100) ?: return null
+        val title = notificationLabel(row.snapshot.path("title").asString(""), 100) ?: return null
         val started = instant(row.snapshot.path("startedAt").asString(""))
         val ended = instant(row.snapshot.path("endedAt").asString(""))
         val both = started != null && ended != null
@@ -66,7 +66,7 @@ class GetParticipantNoticeItemsServiceImpl(
             title,
             started?.takeIf { both }?.let(::kst),
             ended?.takeIf { both }?.let(::kst),
-            label(row.snapshot.path("place").asString(""), 255),
+            notificationLabel(row.snapshot.path("place").asString(""), 255),
         )
     }
 
@@ -76,20 +76,7 @@ class GetParticipantNoticeItemsServiceImpl(
 
     private companion object {
         val KST: ZoneOffset = ZoneOffset.ofHours(9)
-        val BREAKS = Regex("""[\p{Cc}\p{Zl}\p{Zp}]+""")
-        val HIDDEN = Regex("""\p{C}""")
 
         fun kst(instant: Instant): String = OffsetDateTime.ofInstant(instant, KST).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-
-        // Notification 라벨 규칙(앞뒤 공백 제거, 제어·줄바꿈 문자 없음, 최대 길이)에 맞춘다. 줄바꿈은 공백이 된다.
-        fun label(
-            value: String,
-            max: Int,
-        ): String? =
-            value
-                .replace(BREAKS, " ")
-                .replace(HIDDEN, "")
-                .trim()
-                .takeIf { it.isNotEmpty() && it.length <= max }
     }
 }

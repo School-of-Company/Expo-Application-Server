@@ -195,6 +195,28 @@ class PreregisterCompanionHttpTests {
     }
 
     @Test
+    fun `promoted companion addition reports PROCESSING on User 503 and retries with the same request`() {
+        capacity.set(2)
+        assertEquals(201, register(PHONE, "first").status)
+        val id = representativeItem()["applicationId"].asString()
+        assertEquals(202, add(id, companion("second"), key = "pending").status)
+        capacity.set(3)
+        storedDefinition("capacity", "3")
+        recovery.promote()
+        waitlist.flush()
+        userReject.set(503)
+        val response = add(id, companion("second"), key = "pending")
+        assertEquals(202, response.status, response.contentAsString)
+        assertEquals("PROCESSING", mapper.readTree(response.contentAsString)["status"].asString())
+        assertEquals(0, mapper.readTree(response.contentAsString)["participantIds"].size())
+        val requestId = userRequests.last()["requestId"].asString()
+        userReject.set(0)
+        assertEquals(201, add(id, companion("second"), key = "pending").status)
+        assertEquals(requestId, userRequests.last()["requestId"].asString())
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application WHERE status = 'CONFIRMED'", Int::class.java))
+    }
+
+    @Test
     fun `a waiting addition is withdrawn by the owner and promotion of a stale one never saves to User`() {
         capacity.set(2)
         assertEquals(201, register(PHONE, "first").status)
@@ -672,8 +694,12 @@ class PreregisterCompanionHttpTests {
                     "personalInformationStatus" to true,
                     "informationJson" to
                         mapper.writeValueAsString(
-                            // Target sessions (#173) need the representative occupation.
-                            mapOf("companions" to companions, "occupation" to occupation) + listOfNotNull(school?.let { "school" to it }),
+                            mapOf("companions" to companions) +
+                                if (target.get() == null) {
+                                    emptyMap()
+                                } else {
+                                    mapOf("occupation" to occupation) + listOfNotNull(school?.let { "school" to it })
+                                },
                         ),
                     "sessionId" to 1,
                 ),

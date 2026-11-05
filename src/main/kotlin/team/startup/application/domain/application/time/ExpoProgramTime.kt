@@ -9,7 +9,7 @@ import java.time.format.DateTimeParseException
 import java.time.format.ResolverStyle
 
 object ExpoProgramTime {
-    private val seoul = ZoneId.of("Asia/Seoul")
+    val seoul: ZoneId = ZoneId.of("Asia/Seoul")
     private val spaceFormat = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm").withResolverStyle(ResolverStyle.STRICT)
     private val dateFormat = DateTimeFormatter.ofPattern("MM.dd")
     private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")

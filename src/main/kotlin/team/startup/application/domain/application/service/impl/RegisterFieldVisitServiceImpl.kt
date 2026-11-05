@@ -12,10 +12,10 @@ import team.startup.application.domain.application.repository.FieldVisitRegistra
 import team.startup.application.domain.application.repository.FieldVisitRequestRepository
 import team.startup.application.domain.application.repository.StoredFieldVisitRequest
 import team.startup.application.domain.application.service.RegisterFieldVisitService
+import team.startup.application.domain.application.time.ExpoProgramTime
 import java.security.MessageDigest
 import java.time.Clock
 import java.time.LocalDate
-import java.time.ZoneId
 import java.util.UUID
 
 @Service
@@ -37,7 +37,7 @@ class RegisterFieldVisitServiceImpl(
         if (!enabled || !fieldVisitsEnabled) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE)
         val request = command.request
         if (!request.personalInformationStatus) throw RegistrationRequestRejectedException("개인정보 수집에 동의해야 합니다.", "CONSENT_REQUIRED")
-        if (command.requestId.isBlank() || command.requestId.length > 100 ||
+        if (command.requestId.isBlank() || command.requestId.length > PREREGISTER_IDEMPOTENCY_KEY_MAX_LENGTH ||
             request.participantIds.size + request.newParticipants.size !in 1..5 ||
             request.participantIds.any { it <= 0 } || request.participantIds.distinct().size != request.participantIds.size ||
             request.newParticipants
@@ -63,7 +63,7 @@ class RegisterFieldVisitServiceImpl(
                 throw ResponseStatusException(HttpStatus.NOT_FOUND)
             }
             val expo = gateway.expoPeriod(command.expoId.toString())
-            val today = LocalDate.now(clock.withZone(ZoneId.of("Asia/Seoul")))
+            val today = LocalDate.now(clock.withZone(ExpoProgramTime.seoul))
             val period =
                 try {
                     LocalDate.parse(expo.startedDay) to LocalDate.parse(expo.finishedDay)
