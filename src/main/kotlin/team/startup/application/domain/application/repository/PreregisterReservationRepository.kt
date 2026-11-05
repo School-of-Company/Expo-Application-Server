@@ -610,7 +610,8 @@ class PreregisterReservationRepository(
 
     fun promote(reservation: PreregisterReservation): Boolean =
         jdbc.update(
-            "UPDATE tb_preregister_reservation SET state = 'RESERVED', attempts = 0, next_attempt_at = CURRENT_TIMESTAMP " +
+            "UPDATE tb_preregister_reservation SET state = 'RESERVED', attempts = 0, next_attempt_at = CURRENT_TIMESTAMP, " +
+                "retry_window_started_at = clock_timestamp(), retry_window_attempts = 0 " +
                 "WHERE expo_id = ? AND request_id = ? AND state = 'WAITING'",
             reservation.expoId,
             reservation.requestId,
