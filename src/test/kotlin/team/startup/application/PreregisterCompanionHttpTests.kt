@@ -694,8 +694,12 @@ class PreregisterCompanionHttpTests {
                     "personalInformationStatus" to true,
                     "informationJson" to
                         mapper.writeValueAsString(
-                            // Target sessions (#173) need the representative occupation.
-                            mapOf("companions" to companions, "occupation" to occupation) + listOfNotNull(school?.let { "school" to it }),
+                            mapOf("companions" to companions) +
+                                if (target.get() == null) {
+                                    emptyMap()
+                                } else {
+                                    mapOf("occupation" to occupation) + listOfNotNull(school?.let { "school" to it })
+                                },
                         ),
                     "sessionId" to 1,
                 ),

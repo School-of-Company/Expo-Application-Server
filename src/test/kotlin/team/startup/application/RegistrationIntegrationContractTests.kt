@@ -448,33 +448,34 @@ class RegistrationIntegrationContractTests {
                 )
             val mvc = MockMvcBuilders.standaloneSetup(controller).build()
             val answers = """{"거주 지역":"JEONNAM","동반자":[{"name":"동반자","occupation":"TEACHER","region":"GWANGJU","school":"광주고"}]}"""
-            val body =
-                mapper.writeValueAsString(
-                    mapOf(
-                        "name" to "홍길동",
-                        "phoneNumber" to "01012345678",
-                        "informationJson" to answers,
-                        "personalInformationStatus" to true,
-                        "trainingId" to "training-1",
-                        "sessionId" to 1,
-                    ),
+            val request =
+                mapOf(
+                    "name" to "홍길동",
+                    "phoneNumber" to "01012345678",
+                    "informationJson" to answers,
+                    "personalInformationStatus" to true,
+                    "trainingId" to "training-1",
+                    "sessionId" to 1,
                 )
+            val body = mapper.writeValueAsString(request)
             val routes = listOf("" to "TRAINEE", "/pre-standard" to "STANDARD", "/field" to "TRAINEE", "/field/standard" to "STANDARD")
             for ((index, route) in routes.withIndex()) {
                 // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
                 startedDay = if (route.first == "/pre-standard") today.plusDays(1) else today
+                val submittedAnswers = if (index == 0) "{}" else answers
+                val submittedBody = mapper.writeValueAsString(request + ("informationJson" to submittedAnswers))
                 mvc
                     .perform(
                         post(
                             "/application${route.first}/$expoId",
-                        ).header("Idempotency-Key", "request-$index").contentType(MediaType.APPLICATION_JSON).content(body),
+                        ).header("Idempotency-Key", "request-$index").contentType(MediaType.APPLICATION_JSON).content(submittedBody),
                     ).andExpect(status().isCreated)
                     .andExpect(content().string(""))
                 val (path, sent) = requests.last()
                 assertEquals(if (route.second == "STANDARD") "/internal/standard-participants" else "/internal/trainees", path)
                 assertEquals(if (index < 2) "PRE" else "FIELD", sent.get("applicationType").stringValue())
                 assertEquals("request-$index", sent.get("requestId").stringValue())
-                assertEquals(answers, sent.get("informationJson").stringValue())
+                assertEquals(submittedAnswers, sent.get("informationJson").stringValue())
                 assertEquals("type=${route.second}&applicationType=${if (index < 2) "PRE" else "FIELD"}", queries.last())
                 if (index == 1) {
                     assertEquals("JEONNAM", sent.path("region").stringValue())
