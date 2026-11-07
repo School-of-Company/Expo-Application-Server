@@ -37,7 +37,7 @@ similar trigger makes both fire unpredictably.
 Start with the script — one command, either search backend:
 
 ```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/search-registry.sh" "what the skill should do"
+bash ".agents/skills/find-skill/scripts/search-registry.sh" "what the skill should do"
 ```
 
 **GitHub search is the working path.** Run it as-is and you get keyword search through the GitHub API,
