@@ -57,6 +57,16 @@ echo "$COMMAND" | grep -qE 'git[[:space:]]+reset[[:space:]]+[^|;]*--hard' &&
 echo "$COMMAND" | grep -qE 'git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*f' &&
     block "git clean -f" "추적되지 않은 파일이 영구 삭제됩니다. git clean -n 으로 먼저 확인하세요."
 
+# 작업 트리 전체를 되돌리는 명령도 커밋하지 않은 변경을 복구할 수 없게 만든다. `git restore --staged .` 는
+# 인덱스만 건드려 변경이 남으므로 통과시키고, `--worktree` 가 함께 있으면 막는다.
+echo "$COMMAND" | grep -qE 'git[[:space:]]+checkout[[:space:]]+(--[[:space:]]+)?\.([[:space:]]|$|[;&|])' &&
+    block "git checkout ." "커밋하지 않은 변경이 사라집니다. git stash 로 치워두고 진행하세요."
+while IFS= read -r restore_args; do
+    [[ "$restore_args" == *--staged* && "$restore_args" != *--worktree* && "$restore_args" != *-W* ]] && continue
+    echo "$restore_args" | grep -qE '(^|[[:space:]])\.([[:space:]]|$)' &&
+        block "git restore ." "커밋하지 않은 변경이 사라집니다. git stash 로 치워두고 진행하세요."
+done < <(echo "$COMMAND" | grep -oE 'git[[:space:]]+restore[^;&|]*')
+
 # ── 원격 리소스 삭제 ────────────────────────────────────────────────────────
 # 조회·수정(GET/PATCH/PUT)은 통과시키고 DELETE 만 막는다 — 이건 복구 수단이 없다.
 echo "$COMMAND" | grep -qE 'gh[[:space:]]+api[^|;]*(-X|--method)[[:space:]]+DELETE' &&
