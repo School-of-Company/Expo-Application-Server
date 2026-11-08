@@ -2018,11 +2018,12 @@ class AdminApplicationHttpTests {
                 createContext("/internal/expo/") { exchange ->
                     assertEquals("expo-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
                     val id = exchange.requestURI.path.split("/")[3]
+                    val permission = if (exchange.requestURI.rawQuery == "permission=STATS_READ") "STATS_READ" else "APPLICATION_READ"
                     val isAccess = exchange.requestURI.path.endsWith("/admin-access")
                     if (isAccess) expoRequests.add(exchange.requestHeaders.getFirst("Authorization"))
                     val body =
                         expoBody ?: if (isAccess) {
-                            """{"expoId":"$id","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
+                            """{"expoId":"$id","adminId":1,"permission":"$permission","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
                         } else {
                             """{"expoId":"$id","items":[{"expoId":"$id","programType":"STANDARD","id":99,"title":"Empty session","startedAt":"2026-10-12T09:00","endedAt":"2026-10-12T10:00","groupId":"00000000-0000-0000-0000-000000000099","revision":1,"policy":null}],"page":0,"size":20,"totalElements":1,"definitionVersion":"version-one"}"""
                         }

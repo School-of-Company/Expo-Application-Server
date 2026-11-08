@@ -20,6 +20,8 @@
 - "교원·예비교사"는 클라이언트가 합산한다. SCHOOL_STAFF 포함 여부는 미정이다.
 - 같은 집계를 `GET /internal/expos/{expoId}/preregistrations/summary`(X-Internal-Token)로도 낸다(#184, Notification 등록 인원 리포트용). 관리자 권한 검사만 빠지고 응답·삭제 행사 409·User 장애 502/503은 같으며, 원장에 없는 행사는 0명으로 200이다.
 
+두 관리자 통계 경로는 Expo `admin-access?permission=STATS_READ`를 매 요청 검증하며 응답 `permission`도 확인한다(#409, Expo #256). OWNER·MANAGER·STAFF·VIEWER의 역할 및 스태프 토큰 유효성 판정은 Expo가 맡는다. 접수대장 등 개인정보 경로는 기존 권한 요청을 유지한다. 배포 전에 Expo #256의 권한 파라미터 지원이 필요하다.
+
 ## 신청화면 PV·UV
 
 - 기록: `POST /application/expos/{expoId}/page-views`, 본문 `{"visitorId":"<UUID>"}`, 204. 로그인과 CSRF가 없는 공개 경로다.
@@ -27,7 +29,7 @@
   - 진입과 새로고침마다 PV가 1 늘고, UV는 같은 `visitorId`를 Asia/Seoul 날짜별 한 번 센다.
   - 서버는 `SHA-256(expoId:date:visitorId)`만 저장한다. IP와 쿠키는 쓰지 않는다.
   - 행사 존재는 확인하지 않는다. Gateway의 IP별 기본 제한이 무의미한 행을 제한한다.
-- 조회: `GET /application/admin/expos/{expoId}/page-views`는 Expo `APPLICATION_READ` 검증 뒤 `today{date,pageViews,uniqueVisitors}`, `totalPageViews`, 날짜 오름차순 `daily[]`를 `no-store`로 반환한다.
+- 조회: `GET /application/admin/expos/{expoId}/page-views`는 Expo `STATS_READ` 검증 뒤 `today{date,pageViews,uniqueVisitors}`, `totalPageViews`, 날짜 오름차순 `daily[]`를 `no-store`로 반환한다.
 
 ## 배포 조건
 

@@ -104,6 +104,34 @@ class ApplicationPageViewHttpTests {
     }
 
     @Test
+    fun `VIEWER는 통계만 조회하고 접수대장은 거절된다`() {
+        val expoId = UUID.randomUUID()
+        expoStatus = 200
+
+        fun read(suffix: String) =
+            mvc
+                .perform(
+                    get("/application/admin/expos/$expoId/$suffix").header("Authorization", "Bearer viewer-jwt"),
+                ).andReturn()
+                .response
+
+        assertEquals(200, read("page-views").status)
+        assertEquals(200, read("preregistrations/summary").status)
+        assertEquals(403, read("preregistrations").status)
+    }
+
+    @Test
+    fun `통계 권한 응답이 요청 권한과 다르면 거절한다`() {
+        expoStatus = 200
+        accessPermission = "APPLICATION_READ"
+        try {
+            assertEquals(502, admin(UUID.randomUUID()).status)
+        } finally {
+            accessPermission = null
+        }
+    }
+
+    @Test
     fun `방문자 해시는 KST 일자 종료 48시간 뒤 지우고 일별 합계는 유지한다`() {
         val expoId = UUID.randomUUID()
         val days = listOf(LocalDate.parse("2001-10-10"), LocalDate.parse("2001-10-11"))
@@ -135,14 +163,22 @@ class ApplicationPageViewHttpTests {
 
     companion object {
         private var expoStatus = 200
+        private var accessPermission: String? = null
         private val expo =
             HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/internal/expo/") { exchange ->
                     val id = exchange.requestURI.path.split("/")[3]
+                    val permission = if (exchange.requestURI.rawQuery == "permission=STATS_READ") "STATS_READ" else "APPLICATION_READ"
                     val body =
-                        """{"expoId":"$id","adminId":1,"permission":"APPLICATION_READ","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
+                        """{"expoId":"$id","adminId":1,"permission":"${accessPermission ?: permission}","policyVersion":"GLOBAL_ADMIN_APPLICATION_READ_V1","scope":"GLOBAL_ADMIN"}"""
                             .toByteArray()
-                    exchange.sendResponseHeaders(expoStatus, body.size.toLong())
+                    val status =
+                        if (exchange.requestHeaders.getFirst("Authorization") == "Bearer viewer-jwt" && permission != "STATS_READ") {
+                            403
+                        } else {
+                            expoStatus
+                        }
+                    exchange.sendResponseHeaders(status, body.size.toLong())
                     exchange.responseBody.use { it.write(body) }
                     exchange.close()
                 }

@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 import team.startup.application.domain.application.presentation.dto.AdminApplicationPageViews
+import team.startup.application.domain.application.presentation.dto.AdminReadPermission
 import team.startup.application.domain.application.presentation.dto.AuthorizeAdminApplicationCommand
 import team.startup.application.domain.application.presentation.dto.RecordApplicationPageViewCommand
 import team.startup.application.domain.application.presentation.dto.RecordApplicationPageViewRequest
@@ -49,7 +50,7 @@ class ApplicationPageViewController(
         responses = [
             ApiResponse(responseCode = "200", description = "신청화면 조회 집계"),
             ApiResponse(responseCode = "401", description = "관리자 JWT 인증 실패"),
-            ApiResponse(responseCode = "403", description = "행사 APPLICATION_READ 권한 없음"),
+            ApiResponse(responseCode = "403", description = "행사 STATS_READ 권한 없음"),
             ApiResponse(responseCode = "502", description = "Expo 권한 응답 계약 오류"),
             ApiResponse(responseCode = "503", description = "Expo 연동 불가"),
         ],
@@ -59,7 +60,7 @@ class ApplicationPageViewController(
         @PathVariable expoId: UUID,
         @RequestHeader("Authorization", required = false) bearer: String?,
     ): ResponseEntity<AdminApplicationPageViews> {
-        authorization.execute(AuthorizeAdminApplicationCommand(expoId, bearer))
+        authorization.execute(AuthorizeAdminApplicationCommand(expoId, bearer, AdminReadPermission.STATS_READ))
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(pageViews.execute(expoId))
     }
 }
