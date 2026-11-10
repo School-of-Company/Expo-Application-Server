@@ -1,14 +1,12 @@
 package team.startup.application.domain.application.service.impl
 
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.Producer
-import org.apache.kafka.clients.producer.ProducerRecord
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler
 import org.springframework.stereotype.Component
@@ -22,14 +20,12 @@ class ProgramPromotionKafkaConfig {
     @Bean
     fun programPromotionScheduler(): ThreadPoolTaskScheduler = ThreadPoolTaskScheduler().apply { setThreadNamePrefix("program-promotion-") }
 
-    @Bean(destroyMethod = "close")
+    @Bean
     fun promotionProducer(
         @Value("\${application.promotions.bootstrap-servers:}") servers: String,
-    ): Producer<String, String> {
+    ): KafkaTemplate<String, String> {
         require(servers.isNotBlank()) { "APPLICATION_PROMOTIONS_BOOTSTRAP_SERVERS must be configured" }
-        return KafkaProducer(
-            kafkaProducerProperties(servers),
-        )
+        return kafkaTemplate(servers)
     }
 }
 
@@ -37,7 +33,7 @@ class ProgramPromotionKafkaConfig {
 @ConditionalOnProperty(name = ["application.promotions.enabled"], havingValue = "true")
 class ProgramPromotionPublisher(
     private val repository: ProgramPromotionRepository,
-    @Qualifier("promotionProducer") private val producer: Producer<String, String>,
+    @Qualifier("promotionProducer") private val producer: KafkaTemplate<String, String>,
     private val mapper: ObjectMapper,
     private val policy: ProgramPromotionPolicy,
 ) {
@@ -51,9 +47,8 @@ class ProgramPromotionPublisher(
                 repository.publish(eventId, cutoff) { event ->
                     require(event.participantId in 1..9007199254740991 && event.programId in 1..9007199254740991)
                     producer
-                        .send(
-                            ProducerRecord("application.program-session.promoted", eventId.toString(), mapper.writeValueAsString(event)),
-                        ).get(35, TimeUnit.SECONDS)
+                        .send("application.program-session.promoted", eventId.toString(), mapper.writeValueAsString(event))
+                        .get(35, TimeUnit.SECONDS)
                 }
             } catch (exception: Exception) {
                 if (exception is InterruptedException || exception.cause is InterruptedException) {

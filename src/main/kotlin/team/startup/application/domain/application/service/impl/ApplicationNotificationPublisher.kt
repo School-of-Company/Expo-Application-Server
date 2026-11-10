@@ -1,9 +1,6 @@
 package team.startup.application.domain.application.service.impl
 
 import com.fasterxml.jackson.annotation.JsonInclude
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.Producer
-import org.apache.kafka.clients.producer.ProducerRecord
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
@@ -11,6 +8,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler
@@ -45,14 +43,12 @@ class ApplicationNotificationKafkaConfig {
     fun applicationNotificationScheduler(): ThreadPoolTaskScheduler =
         ThreadPoolTaskScheduler().apply { setThreadNamePrefix("application-notification-") }
 
-    @Bean(destroyMethod = "close")
+    @Bean
     fun applicationNotificationProducer(
         @Value("\${application.notifications.bootstrap-servers:}") servers: String,
-    ): Producer<String, String> {
+    ): KafkaTemplate<String, String> {
         require(servers.isNotBlank()) { "APPLICATION_NOTIFICATIONS_BOOTSTRAP_SERVERS must be configured" }
-        return KafkaProducer(
-            kafkaProducerProperties(servers),
-        )
+        return kafkaTemplate(servers)
     }
 }
 
@@ -68,7 +64,7 @@ class ApplicationNotificationPublisher(
     private val repository: ApplicationNotificationRepository,
     private val resolver: ApplicationNotificationResolver,
     private val jdbc: JdbcTemplate,
-    @Qualifier("applicationNotificationProducer") private val producer: Producer<String, String>,
+    @Qualifier("applicationNotificationProducer") private val producer: KafkaTemplate<String, String>,
     private val mapper: ObjectMapper,
     @Value("\${application.notifications.publish-from:}") publishFrom: String,
     @Value("\${application.notifications.topic:notification.sms.requested}") private val topic: String,
@@ -149,7 +145,7 @@ class ApplicationNotificationPublisher(
                 cancelledBy = first.row.cancelledBy,
                 scope = first.scope,
             )
-        producer.send(ProducerRecord(topic, eventId.toString(), mapper.writeValueAsString(event))).get(35, TimeUnit.SECONDS)
+        producer.send(topic, eventId.toString(), mapper.writeValueAsString(event)).get(35, TimeUnit.SECONDS)
     }
 
     companion object {
