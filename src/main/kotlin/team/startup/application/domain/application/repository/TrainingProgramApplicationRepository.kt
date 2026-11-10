@@ -43,7 +43,7 @@ interface TrainingProgramApplicationRepository : JpaRepository<TrainingProgramAp
 
     fun findAllByTrainingProgramIdOrderByIdAsc(trainingProgramId: Long): List<TrainingProgramApplication>
 
-    // ponytail: 필수 프로그램은 신청이 99,999건까지 가능하므로 엔티티 단건 삭제 대신 벌크 삭제
+    // 필수 프로그램은 신청이 99,999건까지 가능하므로 엔티티 단건 삭제 대신 벌크 삭제
     @Modifying
     @Query("DELETE FROM TrainingProgramApplication a WHERE a.trainingProgramId = :programId")
     fun deleteAllByTrainingProgramId(

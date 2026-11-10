@@ -44,7 +44,7 @@ data class RegistrationRequest(
 )
 
 // #238: 서비스의 409 사유 문구 -> (code, 화면 문구). 다른 사람의 개인정보는 싣지 않는다.
-// ponytail: 사유 문구를 키로 쓴다. 문구가 바뀌면 CONFLICT로 떨어지므로 PreregisterRegistrationHttpTests가 code를 단언한다.
+// 사유 문구를 키로 쓴다. 문구가 바뀌면 CONFLICT로 떨어지므로 PreregisterRegistrationHttpTests가 code를 단언한다.
 private val conflictCodes =
     run {
         val pending = "REQUEST_PENDING" to "이전 신청을 확인하는 중입니다. 나의 신청 현황을 확인하거나 행사 담당자에게 문의해 주세요."

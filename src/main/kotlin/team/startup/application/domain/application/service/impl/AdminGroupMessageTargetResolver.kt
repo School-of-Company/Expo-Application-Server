@@ -351,7 +351,7 @@ class AdminGroupMessageTargetResolver(
             (body.contains("{장소}") && variables.location == null) ||
             (body.contains("{상태}") && variables.status == null) ||
             (body.contains("{신청내역}") && variables.applicationSummary == null) ||
-            // ponytail: QR code 공급 계약(User 일괄 조회)이 정해지기 전까지 링크는 늘 없는 값이다. 연수 신청도 일반 참가자 QR이라 같다.
+            // QR code 공급 계약(User 일괄 조회)이 정해지기 전까지 링크는 늘 없는 값이다. 연수 신청도 일반 참가자 QR이라 같다.
             body.contains("{URL}")
 
     private fun missingKakaoValue(

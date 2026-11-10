@@ -119,7 +119,7 @@ class ProductionOwnerCancellationGuard(
 
     // #261: 관리자 프로그램 취소는 그 프로그램에 출석하지 않았으면 입장 여부와 취소 마감에 관계없이 허용한다. 입장자와 다른 프로그램
     // 출석자를 막는 Attendance 취소 보호는 걸지 않는다.
-    // ponytail: 출석 확인과 로컬 취소 사이의 스캔은 막지 못한다. 막아야 하면 Attendance에 프로그램 단위 보호를 둔다.
+    // 출석 확인과 로컬 취소 사이의 스캔은 막지 못한다. 막아야 하면 Attendance에 프로그램 단위 보호를 둔다.
     override fun acquireAdminProgram(
         command: CancelOwnerApplicationCommand,
         participantId: Long,

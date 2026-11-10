@@ -25,7 +25,8 @@ private val SEOUL = ExpoProgramTime.seoul
 class RecordApplicationPageViewServiceImpl(
     private val repository: ApplicationPageViewRepository,
 ) : RecordApplicationPageViewService {
-    // ponytail: unknown expoIds are accepted without an Expo call; the Gateway per-IP limit bounds junk rows.
+    // ponytail: unknown expoIds are accepted without an Expo call; the Gateway per-IP limit bounds junk rows and
+    // purgeVisitorsBefore drops their visitor hashes, leaving one daily row per expoId and day. Check expoId if those rows grow.
     @Transactional
     override fun execute(command: RecordApplicationPageViewCommand) {
         val date = LocalDate.now(SEOUL)

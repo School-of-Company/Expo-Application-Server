@@ -123,6 +123,7 @@ class AdminParticipantGateway(
     ): Map<Long, String>? {
         if (participantIds.isEmpty()) return emptyMap()
         // ponytail: one call; callers pass at most one admin page or report source (<= 10000 rows), under User's 10,000-ID limit.
+        // Split the call if a caller's page or report size can exceed 10,000.
         val ids = participantIds.distinct().sorted()
         return try {
             val tree =

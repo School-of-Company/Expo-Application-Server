@@ -224,7 +224,7 @@ class RegistrationWorkflow(
     }
 
     // #275: User names who became FIELD by this request; an older User response without it leaves only the representative.
-    // ponytail: the representative stays in even when User omits it, as before, so a retry after a lost outbox insert still
+    // the representative stays in even when User omits it, as before, so a retry after a lost outbox insert still
     // releases it; Attendance's field-registration PUT is idempotent and the outbox only queues participants with history here.
     private fun fieldRegistered(result: ParticipantRegistrationResult): List<Long> =
         (listOf(result.participantId) + result.fieldParticipantIds.orEmpty()).distinct()

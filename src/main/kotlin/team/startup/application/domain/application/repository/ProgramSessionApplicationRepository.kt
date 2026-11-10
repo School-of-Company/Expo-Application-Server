@@ -528,7 +528,7 @@ class ProgramSessionApplicationRepository(
                 ).toMap()
         }
         // 연수 대기 행은 trainee_id가 없으므로 로컬에 기록된 연수자-참가자 연결로 대기 행도 찾는다(#146).
-        // ponytail: 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
+        // 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
         val expo = UUID.fromString(expoId)
         return jdbc
             .query(
