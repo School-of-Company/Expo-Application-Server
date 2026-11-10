@@ -103,7 +103,7 @@ class ProgramSessionAdmission(
                     }
                 }
             } catch (ex: DataAccessException) {
-                // 그룹 잠금 대기가 lock_timeout(5초)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
+                // 그룹 잠금 대기가 lock_timeout(ProgramSessionApplicationRepository.limitLockWait)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
                 if (ex !is PessimisticLockingFailureException &&
                     (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != LOCK_NOT_AVAILABLE)
                 ) {

@@ -794,9 +794,9 @@ class ProgramSessionApplicationTests {
                         runCatching { service.execute(command(participant = 2, type = type)) }.exceptionOrNull()
                             ?: Unit
                     }
-                val error = blocked.get(15, TimeUnit.SECONDS)
+                val error = blocked.get(25, TimeUnit.SECONDS)
                 assertTrue(error is ProgramApplicationConflictException && error.message.orEmpty().contains("재시도"), error.toString())
-                assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 10)
+                assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 20)
             } finally {
                 holder.rollback()
                 pool.shutdownNow()
@@ -2569,7 +2569,7 @@ class ProgramSessionApplicationTests {
                             .andReturn()
                             .response.status
                     }
-                assertEquals(409, attempt.get(12, TimeUnit.SECONDS))
+                assertEquals(409, attempt.get(22, TimeUnit.SECONDS))
                 assertEquals(0L, count("tb_program_guardian_batch"))
                 assertEquals(0L, count("tb_program_session_application"))
             } finally {

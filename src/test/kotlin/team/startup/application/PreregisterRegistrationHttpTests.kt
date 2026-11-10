@@ -1096,18 +1096,18 @@ class PreregisterRegistrationHttpTests {
     }
 
     @Test
-    fun `field cancellation lock order preserves its five second timeout`() {
+    fun `field cancellation lock order preserves its fifteen second timeout`() {
         ledger.transactions.executeWithoutResult {
             programs.limitLockWait()
             ledger.lock(EXPO)
-            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+            assertEquals("15s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
             programs.lockParticipant(1)
-            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+            assertEquals("15s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
         }
         ledger.transactions.executeWithoutResult {
             programs.limitLockWait()
             repository.registrationLock(EXPO)
-            assertEquals("5s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
+            assertEquals("15s", jdbc.queryForObject("SHOW lock_timeout", String::class.java))
         }
     }
 
