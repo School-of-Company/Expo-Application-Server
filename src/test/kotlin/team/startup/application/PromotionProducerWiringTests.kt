@@ -1,7 +1,6 @@
 package team.startup.application
 
 import org.apache.kafka.clients.producer.MockProducer
-import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.common.serialization.StringSerializer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -10,6 +9,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.ApplicationContext
+import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler
 import team.startup.application.domain.application.repository.ProgramPromotionRepository
 import team.startup.application.domain.application.repository.PromotionOfferRepository
@@ -24,10 +24,10 @@ import team.startup.application.domain.application.service.impl.PromotionOffers
 import tools.jackson.databind.ObjectMapper
 import java.time.Clock
 
-// #272: 두 기능을 같이 켜면 Producer 빈이 둘이 된다. 실제 Kafka 대신 설정 클래스와 같은 이름의 MockProducer를 등록한다.
+// #272: 두 기능을 같이 켜면 KafkaTemplate 빈이 둘이 된다. 실제 Kafka 대신 설정 클래스와 같은 이름의 MockProducer 템플릿을 등록한다.
 class PromotionProducerWiringTests {
-    private val promotion = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
-    private val offer = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
+    private val promotion = kafkaTemplateOf(MockProducer(true, null, StringSerializer(), StringSerializer()))
+    private val offer = kafkaTemplateOf(MockProducer(true, null, StringSerializer(), StringSerializer()))
 
     private fun runner(
         promotions: Boolean,
@@ -42,7 +42,7 @@ class PromotionProducerWiringTests {
         if (promotions) {
             runner =
                 runner
-                    .withBean("promotionProducer", Producer::class.java, { promotion })
+                    .withBean("promotionProducer", KafkaTemplate::class.java, { promotion })
                     .withBean("programPromotionScheduler", ThreadPoolTaskScheduler::class.java, { ThreadPoolTaskScheduler() })
                     .withBean(ProgramPromotionRepository::class.java, { mock(ProgramPromotionRepository::class.java) })
                     .withBean(ProgramPromotionPolicy::class.java, { mock(ProgramPromotionPolicy::class.java) })
@@ -50,7 +50,7 @@ class PromotionProducerWiringTests {
         if (offers) {
             runner =
                 runner
-                    .withBean("promotionOfferProducer", Producer::class.java, { offer })
+                    .withBean("promotionOfferProducer", KafkaTemplate::class.java, { offer })
                     .withBean("promotionOfferTaskScheduler", ThreadPoolTaskScheduler::class.java, { ThreadPoolTaskScheduler() })
                     .withBean(PromotionOfferRepository::class.java, { mock(PromotionOfferRepository::class.java) })
                     .withBean(PromotionOffers::class.java, { mock(PromotionOffers::class.java) })
@@ -96,7 +96,7 @@ class PromotionProducerWiringTests {
             assertNull(context.startupFailure)
             assertEquals(0, context.getBeanNamesForType(ProgramPromotionPublisher::class.java).size)
             assertEquals(0, context.getBeanNamesForType(PromotionOfferScheduler::class.java).size)
-            assertEquals(0, context.getBeanNamesForType(Producer::class.java).size)
+            assertEquals(0, context.getBeanNamesForType(KafkaTemplate::class.java).size)
         }
     }
 }

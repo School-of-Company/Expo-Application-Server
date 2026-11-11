@@ -1,14 +1,12 @@
 package team.startup.application.domain.application.service.impl
 
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.Producer
-import org.apache.kafka.clients.producer.ProducerRecord
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler
@@ -31,14 +29,12 @@ class PromotionOfferKafkaConfig {
     @Bean
     fun promotionOfferTaskScheduler(): ThreadPoolTaskScheduler = ThreadPoolTaskScheduler().apply { setThreadNamePrefix("promotion-offer-") }
 
-    @Bean(destroyMethod = "close")
+    @Bean
     fun promotionOfferProducer(
         @Value("\${application.promotion-offers.bootstrap-servers:}") servers: String,
-    ): Producer<String, String> {
+    ): KafkaTemplate<String, String> {
         require(servers.isNotBlank()) { "APPLICATION_PROMOTION_OFFERS_BOOTSTRAP_SERVERS must be configured" }
-        return KafkaProducer(
-            kafkaProducerProperties(servers),
-        )
+        return kafkaTemplate(servers)
     }
 }
 
@@ -54,7 +50,7 @@ class PromotionOfferScheduler(
     private val reconcile: ReconcileProgramSessionService,
     private val preregisterWaitlist: PreregisterWaitlist,
     private val ledger: PreregisterSessionLedger,
-    @Qualifier("promotionOfferProducer") private val producer: Producer<String, String>,
+    @Qualifier("promotionOfferProducer") private val producer: KafkaTemplate<String, String>,
     private val mapper: ObjectMapper,
     private val clock: Clock,
 ) {
@@ -79,13 +75,8 @@ class PromotionOfferScheduler(
                 }
                 offers.publish(id) { eventId ->
                     producer
-                        .send(
-                            ProducerRecord(
-                                TOPIC,
-                                eventId.toString(),
-                                mapper.writeValueAsString(PromotionOfferEvent(1, eventId, offer.id, offer.expoId)),
-                            ),
-                        ).get(35, TimeUnit.SECONDS)
+                        .send(TOPIC, eventId.toString(), mapper.writeValueAsString(PromotionOfferEvent(1, eventId, offer.id, offer.expoId)))
+                        .get(35, TimeUnit.SECONDS)
                 }
             } catch (exception: Exception) {
                 if (exception is InterruptedException || exception.cause is InterruptedException) {
