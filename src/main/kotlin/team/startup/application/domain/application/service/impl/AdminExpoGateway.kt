@@ -11,6 +11,7 @@ import team.startup.application.domain.application.presentation.dto.AdminCurrent
 import team.startup.application.domain.application.presentation.dto.AdminExpoAccess
 import team.startup.application.domain.application.presentation.dto.AdminExpoHistoryPage
 import team.startup.application.domain.application.presentation.dto.AdminExpoHistoryQuery
+import team.startup.application.domain.application.presentation.dto.AdminReadPermission
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.time.ExpoProgramTime
 import tools.jackson.databind.ObjectMapper
@@ -118,13 +119,15 @@ class AdminExpoGateway(
     fun requireAccess(
         expoId: UUID,
         authorization: String?,
+        permission: AdminReadPermission = AdminReadPermission.APPLICATION_READ,
     ): AdminExpoAccess {
         if (authorization == null || !authorization.startsWith("Bearer ") || authorization.removePrefix("Bearer ").isBlank()) {
             throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "관리자 인증이 필요합니다.")
         }
         val tree =
             http.read(
-                "/internal/expo/$expoId/admin-access",
+                "/internal/expo/$expoId/admin-access" +
+                    if (permission == AdminReadPermission.STATS_READ) "?permission=STATS_READ" else "",
                 authorization = authorization,
                 propagatedStatuses = setOf(401, 403, 404),
             )
@@ -132,7 +135,7 @@ class AdminExpoGateway(
             require(tree["adminId"]?.isIntegralNumber == true && tree["adminId"].canConvertToLong())
             mapper.treeToValue(tree, AdminExpoAccess::class.java).also {
                 require(
-                    it.expoId == expoId && it.adminId > 0 && it.permission == "APPLICATION_READ" &&
+                    it.expoId == expoId && it.adminId > 0 && it.permission == permission.name &&
                         it.policyVersion == "GLOBAL_ADMIN_APPLICATION_READ_V1" && it.scope == "GLOBAL_ADMIN",
                 )
             }

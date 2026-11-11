@@ -13,5 +13,5 @@ class AuthorizeAdminApplicationServiceImpl(
 ) : AuthorizeAdminApplicationService {
     @Transactional(readOnly = true, propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: AuthorizeAdminApplicationCommand): AdminExpoAccess =
-        expo.requireAccess(command.expoId, command.authorization)
+        expo.requireAccess(command.expoId, command.authorization, command.permission)
 }

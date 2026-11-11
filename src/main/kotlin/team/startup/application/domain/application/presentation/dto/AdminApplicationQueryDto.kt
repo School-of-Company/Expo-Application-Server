@@ -114,9 +114,12 @@ data class AdminExpoAccess(
     val scope: String,
 )
 
+enum class AdminReadPermission { APPLICATION_READ, STATS_READ }
+
 data class AuthorizeAdminApplicationCommand(
     val expoId: UUID,
     val authorization: String?,
+    val permission: AdminReadPermission = AdminReadPermission.APPLICATION_READ,
 )
 
 data class AdminCurrentSessionQuery(
