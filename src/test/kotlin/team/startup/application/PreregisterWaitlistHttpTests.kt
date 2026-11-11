@@ -235,8 +235,8 @@ class PreregisterWaitlistHttpTests {
         waitlist.flush()
     }
 
-    // #144: a party waiting for a session that starts tomorrow (KST) gets an offer instead of an automatic promotion.
-    private fun offerDay() {
+    // Pins the clock to 10:00 KST today so an hour-long step never crosses into the expo start day (tomorrow, #171).
+    private fun kstMorning() {
         val kst = java.time.ZoneId.of("Asia/Seoul")
         now.set(
             LocalDate
@@ -245,6 +245,11 @@ class PreregisterWaitlistHttpTests {
                 .atZone(kst)
                 .toInstant(),
         )
+    }
+
+    // #144: a party waiting for a session that starts tomorrow (KST) gets an offer instead of an automatic promotion.
+    private fun offerDay() {
+        kstMorning()
         startedAt.set(now.get().plus(20, ChronoUnit.HOURS))
         capacity.set(2)
     }
@@ -783,6 +788,7 @@ class PreregisterWaitlistHttpTests {
 
     @Test
     fun `started sessions stop queueing and stale waiting parties release the representative phone`() {
+        kstMorning()
         startedAt.set(now.get().plus(1, ChronoUnit.HOURS))
         assertEquals(201, submit("a", 1, "01000000001").status)
         waiting(submit("b", 1, "01000000002"), 1)
