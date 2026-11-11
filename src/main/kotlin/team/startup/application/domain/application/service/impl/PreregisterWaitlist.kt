@@ -32,7 +32,7 @@ class PreregisterWaitlist(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    // ponytail: one daemon thread keeps Expo/Form calls off requests and the shared scheduler; promotions serialize on the Expo lock anyway.
+    // one daemon thread keeps Expo/Form calls off requests and the shared scheduler; promotions serialize on the Expo lock anyway.
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "preregister-waitlist").apply { isDaemon = true } }
     private val queued = ConcurrentHashMap.newKeySet<Pair<UUID, Long>>()
 
@@ -81,7 +81,7 @@ class PreregisterWaitlist(
             ledger.lock(expoId)
             if (repository.deleted(expoId, sessionId) || repository.pending(expoId, sessionId) != null) return@executeWithoutResult
             val definition = ledger.current(expoId, sessionId, observation)
-            // ponytail: target sessions (#173) take no waiting party, so a single-capacity promotion can never apply to them.
+            // target sessions (#173) take no waiting party, so a single-capacity promotion can never apply to them.
             if (definition.targeted) return@executeWithoutResult
             offers.capSession(expoId, sessionId, minOf(applicationEndedAt, definition.startedAt))
             val now = clock.instant()
@@ -95,7 +95,7 @@ class PreregisterWaitlist(
             val sendAfter = offerPolicy.sendAfter(now)
             if (offerMode && !sendAfter.isBefore(hardDeadline)) return@executeWithoutResult
             while (true) {
-                // ponytail: strict FIFO, a large head party holds back smaller parties behind it by design (#99 P5).
+                // strict FIFO, a large head party holds back smaller parties behind it by design (#99 P5).
                 val head = reservations.waitingHead(expoId, sessionId) ?: break
                 if (head.applicants > free) break
                 if (offerMode) {

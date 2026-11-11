@@ -24,7 +24,7 @@ class CancelPreregisterSessionServiceImpl(
 ) : CancelPreregisterSessionService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     override fun execute(command: CancelPreregisterSessionCommand): List<PreregisterApplicationReceipt> {
-        // ponytail: each guard holds a pooled connection until commit, so one request is capped at a whole party.
+        // each guard holds a pooled connection until commit, so one request is capped at a whole party.
         if (command.sessionId <= 0 || command.applicationIds.isEmpty() || command.applicationIds.size > MAX_PARTY ||
             command.applicationIds.any { it <= 0 } ||
             command.applicationIds.distinct().size != command.applicationIds.size ||

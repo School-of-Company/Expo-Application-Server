@@ -555,7 +555,7 @@ class PreregisterReservationRepository(
         )
 
     // Only open, not yet started sessions whose queue head fits the stored free seats can promote; the rest never need remote calls.
-    // ponytail: sessions after the PRE form end still match until they start; they cost one Form call per sweep.
+    // sessions after the PRE form end still match until they start; they cost one Form call per sweep.
     fun promotableSessions(now: java.time.Instant): List<Pair<UUID, Long>> =
         jdbc.query(
             "SELECT r.expo_id, r.session_id FROM tb_preregister_reservation r JOIN tb_preregister_session_state st " +

@@ -103,7 +103,7 @@ class ProgramSessionAdmission(
                     }
                 }
             } catch (ex: DataAccessException) {
-                // 그룹 잠금 대기가 lock_timeout(5초)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
+                // 그룹 잠금 대기가 lock_timeout(ProgramSessionApplicationRepository.limitLockWait)을 넘기면 409로 응답해 같은 멱등 키 재시도를 안내한다.
                 if (ex !is PessimisticLockingFailureException &&
                     (ex !is UncategorizedSQLException || ex.sqlException?.sqlState != LOCK_NOT_AVAILABLE)
                 ) {
@@ -143,7 +143,7 @@ class ProgramSessionAdmission(
         }
         if (waitlist.isDeleted(definition)) conflict("삭제된 프로그램입니다.")
         // #261: 현장 신청은 같은 묶음의 본인 사전 대기를 취소하고 진행한다. 아래 거절은 모두 롤백되어 대기가 그대로 남는다.
-        // ponytail: 다른 프로그램 대기의 제안 좌석이 풀리면 그 프로그램 승급은 다음 계기(스케줄러·취소·신청)에 맡긴다.
+        // 다른 프로그램 대기의 제안 좌석이 풀리면 그 프로그램 승급은 다음 계기(스케줄러·취소·신청)에 맡긴다.
         val replaced =
             if (command.onsite) {
                 ledger.onsiteReplaceableWaiting(

@@ -55,7 +55,7 @@ data class AdminGroupMessageScope(
                 }
             }
 
-    // ponytail: 발송은 별도 User 토큰을 쓰므로 목록용 사람 후보 조회를 섞지 않는다. 무시하면 대상이 넓어지므로 거부한다.
+    // 발송은 별도 User 토큰을 쓰므로 목록용 사람 후보 조회를 섞지 않는다. 무시하면 대상이 넓어지므로 거부한다.
     @get:AssertTrue(message = "filtered group messages do not support q or occupation; select applicationIds instead")
     @get:JsonIgnore
     val isPersonFilterAbsent: Boolean get() = filter == null || (filter.q == null && filter.occupation == null)

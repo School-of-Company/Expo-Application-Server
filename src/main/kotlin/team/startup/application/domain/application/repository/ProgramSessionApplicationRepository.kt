@@ -30,9 +30,12 @@ class ProgramSessionApplicationRepository(
     private val attribution: LegacyTraineeAttributionRepository,
     private val gateway: RegistrationGateway,
 ) {
-    // ponytail: 회차 신청 트랜잭션 전체에 고정 5초. 락 안의 User 연수자 호출(최대 8초)이 길어지면 대기자는 재시도로 빠진다.
+    // ponytail: 회차 신청 트랜잭션 전체에 고정 15초. 락 안의 User 연수자 호출 한 번(RegistrationGateway 연결 3초 + 응답 8초 = 최대 11초)에
+    // 여유 4초를 더했다. 그 타임아웃을 바꾸거나, 락 안 대기 승급이 여러 명을 연달아 User·Expo로 확인해 더 오래 쥐면 다시 맞춘다.
+    // 대기자도 DB 커넥션(풀 15개, 대기 3초)을 쥔 채 기다려 User가 느릴 때 같은 락에 14건 넘게 몰리면 풀이 차고 다른 API도 실패한다.
+    // 그런 부하가 보이면 연수자 확인을 락 밖으로 빼거나 풀을 늘린다.
     fun limitLockWait() {
-        jdbc.execute("SET LOCAL lock_timeout = '5s'")
+        jdbc.execute("SET LOCAL lock_timeout = '15s'")
     }
 
     fun lockParticipant(participantId: Long) {
@@ -525,7 +528,7 @@ class ProgramSessionApplicationRepository(
                 ).toMap()
         }
         // 연수 대기 행은 trainee_id가 없으므로 로컬에 기록된 연수자-참가자 연결로 대기 행도 찾는다(#146).
-        // ponytail: 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
+        // 확정 이력·귀속이 없는 연수자는 로컬에서 참가자를 알 수 없어 대기 행을 보지 못한다.
         val expo = UUID.fromString(expoId)
         return jdbc
             .query(
