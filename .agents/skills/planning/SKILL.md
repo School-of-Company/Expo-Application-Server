@@ -58,4 +58,5 @@ check:
 
 Fix the gaps that hold up. Review once; don't loop.
 
-Don't start implementing. The spec is the deliverable.
+Don't start implementing. The spec is the deliverable. If the user wants to build it test-first, the
+next step is the `tdd` skill (when installed): its seams come from the spec's behaviors.

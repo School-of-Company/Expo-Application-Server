@@ -66,7 +66,7 @@ Finish each phase before starting the next.
 1. **Write a failing test first** — the simplest reproduction, automated if the project has a framework,
    a throwaway script if not. Use the `write-test` skill for a test that fails on the current code.
 2. **One fix, aimed at the root cause.** No "while I'm here" cleanups, no bundled refactoring.
-3. **Verify**: the new test passes, no other test broke, the Phase 1 loop is green against the original
+3. **Verify** (`verification-before-completion` is the gate, when installed): the new test passes, no other test broke, the Phase 1 loop is green against the original
    (un-shrunk) scenario, and every `[DEBUG-…]` log and throwaway script is gone. The `test` skill runs the
    suite. Put the hypothesis that turned out right in the commit or PR message.
 4. **If the fix didn't work**, stop and count the attempts so far. Under 3: back to Phase 1 with what you

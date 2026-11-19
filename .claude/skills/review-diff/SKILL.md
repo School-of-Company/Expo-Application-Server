@@ -42,7 +42,7 @@ input cost by the number of lenses.** A large diff of one concern (a rename, a g
 config change) is still a direct review — the gain below only exists when the lenses really differ.
 
 The reason to fan out isn't speed. **One context holding bugs, security, tests, and performance at once
-reviews all four shallowly** — attention gets split and the later lenses get whatever is left. A
+reviews every concern shallowly** — attention gets split and the later lenses get whatever is left. A
 subagent per lens reads the same diff with one question in mind, and a large diff doesn't have to fit in
 the main context at all.
 
@@ -59,6 +59,8 @@ Which lenses to spawn:
 - **security** — only if it touches input handling, auth, secrets, logging of values, or shell/path/query construction
 - **tests** — only if it adds or changes behavior, or touches test files
 - **performance** — only if it touches data access, loops over I/O, or a hot path
+- **error-handling** — only if it adds or changes `try`/`catch`, fallbacks, retries, async calls, or I/O
+- **lean** — only if it adds a meaningful amount of new code (a new helper, wrapper, option, or dependency)
 
 Give every subagent the same things, **as pointers rather than pasted content** — the diff range
 (`origin/$BASE...HEAD`) and the changed-file list from Step 1, its single lens, and the rule file *paths*
@@ -76,6 +78,8 @@ Tell each one explicitly:
 | **security**    | Input reaching a filesystem path, URL path, query, or shell command without validation; secrets or tokens in source, logs, or client-facing errors; an endpoint whose shape changed but not its authorization check; whether changing an id in the request can reach another user's data |
 | **tests**       | New behavior with no test; failure paths with no test; a test that would pass even if the code were wrong — the classic being an assertion that "X wins over Y" with fixtures that don't collide, which proves union and not precedence; a test that depends on another having run first |
 | **performance** | Blocking I/O on an async path; a network or filesystem call inside a loop that could be batched; a query added without an index; an N+1. Skip this lens entirely when the diff has no data access or hot path                                                                            |
+| **error-handling** | An empty `catch`, or an error turned into `null`/`[]`/`false` with no trace; a fallback value returned when the real call failed, so the next bug appears far from its cause; a rethrow that drops the original cause or stack; a network, file, or database call with no timeout or error path; a multi-step write with no rollback. A handler that swallows on purpose and says why is a decision, not a finding |
+| **lean** | Code that should not exist or should be smaller: dead code, an option nobody sets, an abstraction with one implementation, a near-copy of something that must change together, a dependency added for a few lines. **Name the existing helper or standard-library call** that replaces it (path or API) — no replacement named, no finding |
 
 Ask each subagent to flag violations of the Step 1 rules by name.
 
@@ -118,5 +122,5 @@ after the first phantom.
 ## If Subagents Aren't Available
 
 Some setups have no `general-purpose` agent type, and `Agent` may be missing from the tool set entirely.
-Don't stop — review directly with the same four lenses, **one pass per lens** rather than all at once,
+Don't stop — review directly with the same lenses, **one pass per lens** rather than all at once,
 and say in the report that it was a single-context review.
