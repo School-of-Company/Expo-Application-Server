@@ -14,7 +14,10 @@ if [[ "$TOOL_NAME" == "Write" ]] || [[ "$TOOL_NAME" == "Edit" ]]; then
     CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // empty')
     FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
     # .env 자체는 값을 담는 게 목적인 파일이라 검사 대상이 아니다 (커밋은 .gitignore 가 막는다).
-    if [[ "$FILE_PATH" == *.env* ]] || [[ "$(basename "$FILE_PATH")" == ".env" ]]; then
+    # 파일 *이름*으로만 판단한다. `*.env*` 로 경로 전체를 보면 `config.environment.ts` 같은 일반 코드까지
+    # 검사에서 빠진다.
+    BASE_NAME=$(basename "$FILE_PATH")
+    if [[ "$BASE_NAME" == ".env" || "$BASE_NAME" == .env.* || "$BASE_NAME" == *.env ]]; then
         exit 0
     fi
     PATTERNS=(
@@ -40,10 +43,10 @@ fi
 if [[ "$TOOL_NAME" == "Bash" ]]; then
     COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
-    # 값이 비어 있는 템플릿은 읽어도 문제가 없다 — 먼저 예외 처리한다.
-    if echo "$COMMAND" | grep -qE '\.env\.(example|sample|template|dist)'; then
-        exit 0
-    fi
+    # 값이 비어 있는 템플릿(.env.example 등)은 읽어도 문제가 없다. 다만 명령 전체를 통과시키면
+    # `cat .env.example .env` 처럼 진짜 .env 를 함께 읽는 명령까지 열리므로, 템플릿 이름만 지우고
+    # 나머지를 그대로 검사한다.
+    COMMAND=$(echo "$COMMAND" | sed -E 's/\.env\.(example|sample|template|dist)/TEMPLATE/g')
 
     # 내용을 뿜는 명령이 시크릿 파일을 직접 지목하는 경우만 막는다.
     # (`grep -r` 로 트리를 훑는 것까지 막으면 평범한 검색이 불가능해진다)

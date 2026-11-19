@@ -1,5 +1,6 @@
 #!/bin/bash
-set -e
+# pipefail: `gh api ... | jq -s` 의 앞쪽 gh 가 실패해도 빈 배열로 지나가지 않게 한다.
+set -eo pipefail
 
 PR_NUMBER=$(gh pr view --json number -q .number 2>/dev/null)
 if [ -z "$PR_NUMBER" ]; then
@@ -21,15 +22,17 @@ git log -1 --format=%cI HEAD > "$PR_TMP_DIR"/last_push.txt
 
 # 인라인 리뷰 코멘트. `in_reply_to_id == null` 필터가 핵심이다 — 이게 없으면 이 스킬이 Step 6에서
 # 남긴 답글이 다음 실행에 리뷰 코멘트로 다시 잡혀서, 자기 답글을 리뷰로 판정하게 된다.
-gh api "repos/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
-  --jq '[.[] | select(.in_reply_to_id == null) | {id, path, line, body, created_at, user: .user.login}]' \
-  > "$PR_TMP_DIR"/pr_comments.json
+# `--paginate` 가 모든 페이지를 가져온다. 이게 없으면 첫 100개만 오고, 그보다 많은 PR 에서는 가장 최근 피드백이
+# 경고 없이 빠진다. 페이지마다 --jq 가 따로 적용되므로 항목을 하나씩 내보내고 `jq -s` 로 한 배열로 합친다.
+gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments?per_page=100" \
+  --jq '.[] | select(.in_reply_to_id == null) | {id, path, line, body, created_at, user: .user.login}' \
+  | jq -s '.' > "$PR_TMP_DIR"/pr_comments.json
 
 # PR 레벨 리뷰 본문. 봇 리뷰어(CodeRabbit, Gemini 등)는 지적을 인라인이 아니라 리뷰 본문에 싣기
 # 때문에, 위 엔드포인트만 보면 그런 리뷰어의 지적이 통째로 0건으로 보인다.
-gh api "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-  --jq '[.[] | select(.body | length > 0) | {id, state, body, submitted_at, user: .user.login}]' \
-  > "$PR_TMP_DIR"/pr_reviews.json
+gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
+  --jq '.[] | select(.body | length > 0) | {id, state, body, submitted_at, user: .user.login}' \
+  | jq -s '.' > "$PR_TMP_DIR"/pr_reviews.json
 
 git log "origin/$BASE..HEAD" --pretty=format:"%H %h %s" > "$PR_TMP_DIR"/pr_commits.txt
 

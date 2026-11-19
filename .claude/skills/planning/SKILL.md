@@ -64,4 +64,5 @@ Reply format: `PASS`, or a list of gaps with the section for each, under ~150 wo
 before acting on it — fix the ones that hold and note why you left the rest. Review **once**; don't loop.
 Without `Agent`, re-read the spec against the same four checks yourself.
 
-Don't start implementing. The spec is the deliverable.
+Don't start implementing. The spec is the deliverable. If the user wants to build it test-first, the
+next step is the `tdd` skill (when installed): its seams come from the spec's behaviors.
