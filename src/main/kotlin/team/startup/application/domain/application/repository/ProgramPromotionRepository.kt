@@ -50,15 +50,9 @@ class ProgramPromotionRepository(
             Timestamp.from(cutoff),
         )
 
-    fun expoId(eventId: UUID): UUID? =
-        jdbc
-            .query(select + "AND e.event_id = ?", { rs, _ -> rs.getObject(3, UUID::class.java) }, eventId)
-            .singleOrNull()
-
     fun publish(
         eventId: UUID,
         cutoff: Instant,
-        notify: Boolean? = true,
         send: (ProgramPromotionEvent) -> Unit,
     ) {
         jdbc.withDeliveryLock(47, eventId.toString()) { scoped ->
@@ -83,9 +77,7 @@ class ProgramPromotionRepository(
                     ).singleOrNull()
                     ?: return@withDeliveryLock
             try {
-                // null(정책 확인 불가)은 아래 실패 처리로 attempts·next_attempt_at을 늘린다.
-                if (notify == null) throw IllegalStateException("AUTO_NOTIFICATION policy unavailable")
-                if (notify) send(event)
+                send(event)
                 scoped.update("UPDATE tb_program_session_event SET delivered_at = clock_timestamp() WHERE event_id = ?", eventId)
             } catch (exception: Exception) {
                 scoped.update(

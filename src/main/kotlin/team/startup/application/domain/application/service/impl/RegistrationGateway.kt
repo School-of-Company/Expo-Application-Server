@@ -147,19 +147,10 @@ class RegistrationGateway(
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
     private val clock: Clock = Clock.systemUTC(),
-    @Value("\${application.notifications.enabled:false}") notificationsEnabled: Boolean = false,
-    @Value("\${application.promotions.enabled:false}") promotionsEnabled: Boolean = false,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     init {
-        // #418: 결과 문자·승급 안내 발행기는 발행 직전 AUTO_NOTIFICATION을 이 Expo 주소·토큰으로 본다. 배포 환경 근거가 없어 시작은 막지 않고,
-        // 없으면 조회가 503으로 실패해 행이 재시도 간격으로 보류된다.
-        if ((notificationsEnabled || promotionsEnabled) && (expoUrl.isBlank() || expoInternalToken.isBlank())) {
-            org.slf4j.LoggerFactory.getLogger(javaClass).warn(
-                "APPLICATION_REGISTRATION_EXPO_URL or APPLICATION_REGISTRATION_EXPO_INTERNAL_TOKEN is missing; notifications stay deferred",
-            )
-        }
         if (registrationEnabled) {
             mapOf("EXPO" to expoInternalToken, "FORM" to formInternalToken, "USER" to userInternalToken).forEach { (target, token) ->
                 require(

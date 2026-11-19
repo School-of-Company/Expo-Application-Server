@@ -46,10 +46,6 @@ class PromotionProducerWiringTests {
                     .withBean("programPromotionScheduler", ThreadPoolTaskScheduler::class.java, { ThreadPoolTaskScheduler() })
                     .withBean(ProgramPromotionRepository::class.java, { mock(ProgramPromotionRepository::class.java) })
                     .withBean(ProgramPromotionPolicy::class.java, { mock(ProgramPromotionPolicy::class.java) })
-                    .withBean(
-                        team.startup.application.domain.application.service.impl.RegistrationGateway::class.java,
-                        { mock(team.startup.application.domain.application.service.impl.RegistrationGateway::class.java) },
-                    )
         }
         if (offers) {
             runner =

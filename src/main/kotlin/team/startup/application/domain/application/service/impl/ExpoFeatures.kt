@@ -64,17 +64,6 @@ fun RegistrationGateway.featureEnabled(
         false
     }
 
-// 발행기용: 확인 불가(조회 실패)는 null이다.
-fun RegistrationGateway.featureStateOrNull(
-    expoId: String,
-    key: String,
-): Boolean? =
-    try {
-        featureEnabled(expoId, key)
-    } catch (_: ResponseStatusException) {
-        null
-    }
-
 // 프로그램 정의의 `featureEnabled`(그 종류 프로그램 기능의 실효 값). 빈 목록·404와 구분되는 OFF 사유다.
 fun ProgramSessionDefinition.requireFeatureEnabled() {
     when (featureEnabled) {
