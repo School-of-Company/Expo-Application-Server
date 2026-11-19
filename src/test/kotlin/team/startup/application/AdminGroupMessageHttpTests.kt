@@ -63,6 +63,7 @@ class AdminGroupMessageHttpTests {
         representativePhone = "010-1234-5678"
         companionName = "동행"
         expoTitle = "광주 박람회"
+        bulkMessage = true
         calls.clear()
         targetTokens.clear()
         requests.clear()
@@ -660,6 +661,51 @@ class AdminGroupMessageHttpTests {
     }
 
     @Test
+    fun `bulk message OFF rejects job creation and retry while preview and job history stay readable`() {
+        val preview = mapper.readTree(preview(selected(standard), "공통").contentAsString)
+        val execution = execution(preview["targetFingerprint"].stringValue(), selected(standard), "공통")
+
+        fun create() =
+            mvc
+                .perform(
+                    post("$base/previews/${preview["previewId"].stringValue()}/jobs")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(execution),
+                ).andReturn()
+                .response
+        val created = create()
+        assertEquals(202, created.status, created.contentAsString)
+        val jobId = mapper.readTree(created.contentAsString)["jobId"].stringValue()
+        bulkMessage = false
+        calls.clear()
+        val disabled = create()
+        assertEquals(409, disabled.status)
+        assertEquals("FEATURE_DISABLED", mapper.readTree(disabled.contentAsString)["detail"].stringValue())
+        val retry =
+            mvc
+                .perform(
+                    post("$base/jobs/$jobId/retries")
+                        .header("Authorization", "Bearer admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(execution),
+                ).andReturn()
+                .response
+        assertEquals(409, retry.status)
+        assertEquals(
+            200,
+            mvc
+                .perform(get("$base/jobs/$jobId").header("Authorization", "Bearer admin"))
+                .andReturn()
+                .response.status,
+        )
+        assertEquals(201, preview(selected(standard), "공통").status)
+        bulkMessage = null
+        assertEquals(503, create().status)
+        assertTrue(calls.none { it == "notification-job" || it == "notification-retry" })
+    }
+
+    @Test
     fun `malformed partial participant response and notification timeout never become partial success`() {
         userStatus.set(206)
         val partial = preview(selected(standard, companion), "공통")
@@ -846,6 +892,9 @@ class AdminGroupMessageHttpTests {
         @Volatile private var companionName = "동행"
 
         @Volatile private var expoTitle = "광주 박람회"
+
+        // #418: null이면 features를 빼 구형 Expo 응답을 흉내 낸다.
+        @Volatile private var bulkMessage: Boolean? = true
         private const val KAKAO_DISABLED = """{"enabled":false,"templates":[]}"""
         private val KAKAO_CHANNEL =
             """
@@ -867,7 +916,11 @@ class AdminGroupMessageHttpTests {
                 createContext("/internal/expo/") { exchange ->
                     if (exchange.requestURI.path == "/internal/expo/0190abcd-0000-7000-8000-000000000001") {
                         calls.add("expo-title")
-                        respond(exchange, 200, mapper.writeValueAsString(mapOf("title" to expoTitle, "startedDay" to "2026-10-12")))
+                        val body = mutableMapOf<String, Any>("title" to expoTitle, "startedDay" to "2026-10-12")
+                        bulkMessage?.let {
+                            body["features"] = listOf(mapOf("key" to "BULK_MESSAGE", "configuredEnabled" to it, "effectiveEnabled" to it))
+                        }
+                        respond(exchange, 200, mapper.writeValueAsString(body))
                         return@createContext
                     }
                     calls.add(

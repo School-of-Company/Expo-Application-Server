@@ -30,6 +30,7 @@ class ApplyTrainingProgramsServiceImpl(
 
         val oldIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }.toSet()
         val definitions = gateway.programDefinitions(command.trainee.expoId, ProgramSessionType.TRAINING, programIds)
+        definitions.forEach { it.requireFeatureEnabled() }
         val known =
             if (definitions.isEmpty()) {
                 emptyMap()

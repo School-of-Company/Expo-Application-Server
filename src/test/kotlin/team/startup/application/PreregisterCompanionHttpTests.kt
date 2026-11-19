@@ -484,6 +484,35 @@ class PreregisterCompanionHttpTests {
     }
 
     @Test
+    fun `companion or preregistration OFF blocks a new addition but replays the same key and keeps the party`() {
+        capacity.set(4)
+        assertEquals(201, register(PHONE, null).status)
+        val id = representativeItem()["applicationId"].asString()
+        val created = add(id, companion("second"), key = "before-off")
+        assertEquals(201, created.status)
+        val sent = userRequests.size
+        try {
+            for (feature in listOf("COMPANION_REGISTRATION", "PRE_REGISTRATION")) {
+                ExpoFeatureFixtures.off = setOf(feature)
+                val disabled = add(id, companion("third"), key = "after-off-$feature")
+                assertEquals(409, disabled.status)
+                assertEquals("FEATURE_DISABLED", mapper.readTree(disabled.contentAsString)["code"].asString())
+                val replay = add(id, companion("second"), key = "before-off")
+                assertEquals(201, replay.status)
+                assertEquals(mapper.readTree(created.contentAsString), mapper.readTree(replay.contentAsString))
+            }
+        } finally {
+            ExpoFeatureFixtures.off = emptySet()
+        }
+        assertEquals(sent, userRequests.size)
+        assertEquals(
+            0,
+            jdbc.queryForObject("SELECT count(*) FROM tb_preregister_reservation WHERE request_id LIKE 'after-off%'", Int::class.java),
+        )
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM tb_preregister_application", Int::class.java))
+    }
+
+    @Test
     fun `User rejection releases held seats and an idempotent retry does not save twice`() {
         capacity.set(4)
         assertEquals(201, register(PHONE, null).status)
@@ -946,7 +975,7 @@ class PreregisterCompanionHttpTests {
                             else -> {
                                 val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(1)
                                 200 to
-                                    """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                                    """{"features":${ExpoFeatureFixtures.json()},"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                             }
                         }
                     val bytes = body.toByteArray()

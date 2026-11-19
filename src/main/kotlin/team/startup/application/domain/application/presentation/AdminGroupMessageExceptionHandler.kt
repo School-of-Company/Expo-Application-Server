@@ -13,6 +13,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.service.impl.AdminExpoGateway
+import team.startup.application.domain.application.service.impl.ExpoFeature
 
 @RestControllerAdvice(
     assignableTypes = [
@@ -48,7 +49,12 @@ class AdminGroupMessageExceptionHandler {
         ResponseEntity
             .status(status)
             .header("Cache-Control", "no-store")
-            .body(ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(status), detail))
+            .body(
+                ProblemDetail.forStatusAndDetail(HttpStatus.valueOf(status), detail).apply {
+                    // #418: 기능 OFF는 code로도 구분한다.
+                    if (detail == ExpoFeature.DISABLED) setProperty("code", detail)
+                },
+            )
 }
 
 // #267: 관리자 권한 거절 사유 코드면 ProblemDetail에 code와 고정 문구를 싣는다. 아니면 null로 호출자의 기존 응답을 유지한다.

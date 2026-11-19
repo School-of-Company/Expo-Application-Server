@@ -71,6 +71,7 @@ class StudentGuardianBatchAdmission(
         val provider = eligibility.ifAvailable ?: unavailable()
         val definition =
             gateway.programDefinition(command.key.expoId.toString(), command.key.programType, command.key.programId) ?: unavailable()
+        definition.requireFeatureEnabled()
         val policy = definition.policy ?: conflict("참가자 신청 정책이 없습니다.")
         if (!policy.channelsValid() || !policy.admissionCapacitiesValid()) throw ResponseStatusException(HttpStatus.BAD_GATEWAY)
         if (command.onsite && !policy.hasAdmissionCapacities()) conflict("현장 접수 정원이 없는 프로그램입니다.")

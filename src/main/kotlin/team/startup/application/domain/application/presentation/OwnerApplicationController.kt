@@ -39,6 +39,8 @@ import team.startup.application.domain.application.service.GetOwnerApplicationsS
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistService
 import team.startup.application.domain.application.service.GetOwnerPreregisterWaitlistsService
 import team.startup.application.domain.application.service.WithdrawOwnerPreregisterWaitlistService
+import team.startup.application.domain.application.service.impl.ExpoFeature
+import team.startup.application.domain.application.service.impl.FeatureDisabledException
 import team.startup.application.domain.application.service.impl.OccupationNotOpenException
 import team.startup.application.domain.application.service.impl.OwnerApplicationRejectedException
 import team.startup.application.domain.application.service.impl.OwnerCompanionsActiveException
@@ -323,6 +325,10 @@ class OwnerApplicationSessionExceptionHandler {
                 mapOf("status" to ex.statusCode.value(), "code" to ex.code)
             },
         )
+
+    @ExceptionHandler(FeatureDisabledException::class)
+    fun featureDisabled(): ResponseEntity<Map<String, Any>> =
+        ResponseEntity.status(HttpStatus.CONFLICT).body(mapOf("status" to 409, "code" to ExpoFeature.DISABLED))
 
     @ExceptionHandler(OwnerCompanionsActiveException::class)
     fun companionsActive(ex: OwnerCompanionsActiveException): ResponseEntity<Map<String, Any>> =

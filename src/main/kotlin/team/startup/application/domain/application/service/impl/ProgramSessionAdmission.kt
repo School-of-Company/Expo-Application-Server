@@ -68,6 +68,7 @@ class ProgramSessionAdmission(
         val definition =
             gateway.programDefinition(command.expoId, command.programType, command.programId)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정책 공급자가 준비되지 않았습니다.")
+        definition.requireFeatureEnabled()
         val policy = definition.policy ?: conflict("참가자 신청 정책이 없는 프로그램입니다.")
         val guardianProvider = guardianEligibility.ifAvailable
         if (policy.guardianPolicy != null && guardianProvider == null) {

@@ -36,6 +36,8 @@ class PromoteAdminApplicationServiceImpl(
         val definition =
             gateway.programDefinition(original.key.expoId.toString(), original.key.programType, original.key.programId)
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정의 공급자가 준비되지 않았습니다.")
+        // #418: 이미 확정된 신청의 재시도는 잠금 안에서 그대로 끝난다. 새 확정만 막는다.
+        if (original.status != "CONFIRMED") definition.requireFeatureEnabled()
         transactions.executeWithoutResult {
             val batchId = batches.batchId(original.id)
             val members = batchId?.let { id -> batches.members(id).filter { it.status == "WAITING" } } ?: listOf(original)

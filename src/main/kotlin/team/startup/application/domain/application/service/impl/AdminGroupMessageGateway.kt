@@ -154,6 +154,18 @@ class AdminGroupMessageGateway(
         return adminId.longValue()
     }
 
+    // #418: 실제 발송 생성·재시도 직전에 BULK_MESSAGE를 동기로 본다(projection 금지). 404 외 조회 실패·해석 불가는 503, OFF는 409다.
+    fun requireBulkMessage(expoId: UUID) {
+        val features =
+            try {
+                node(call(Provider.EXPO, expoUrl, "/internal/expo/$expoId", token = expoToken)).get("features")
+            } catch (exception: ResponseStatusException) {
+                if (exception.statusCode == HttpStatus.NOT_FOUND) throw exception
+                ExpoFeature.unavailable()
+            }
+        ExpoFeature.require(ExpoFeature.parse(features), ExpoFeature.BULK_MESSAGE)
+    }
+
     // 카카오 `#{행사명}`: 발송하는 박람회의 현재 제목. 공백 제목은 없는 값으로 보고 대상별 누락으로 처리한다.
     fun expoName(expoId: UUID): String? {
         projection?.expo(expoId)?.let { return it.title.trim().takeIf { title -> title.isNotEmpty() } }

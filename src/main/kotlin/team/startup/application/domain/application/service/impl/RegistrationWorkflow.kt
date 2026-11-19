@@ -94,6 +94,8 @@ class RegistrationWorkflow(
         if (sessionRegistration) {
             preregistration.resume(authenticatedCommand)?.let { return it.pendingOrNull() }
         }
+        // #418: 이미 받은 예약의 재조회·복구(위 resume)는 OFF여도 계속하고, 새 접수만 이 경로의 등록 기능으로 막는다.
+        expo.requireFeatures(if (applicationType == "PRE") ExpoFeature.PRE_REGISTRATION else ExpoFeature.FIELD_REGISTRATION)
         val today = LocalDate.ofInstant(clock.instant(), ExpoProgramTime.seoul)
         val (started, finished) =
             try {
@@ -187,6 +189,7 @@ class RegistrationWorkflow(
                 companionOccupations.add(it.path("occupation").asString())
             }
         }
+        if (companionCount > 0) expo.requireFeatures(ExpoFeature.COMPANION_REGISTRATION)
         if (sessionRegistration) {
             PreregisterSeatCategory.requireOpen(form?.occupationOpenAt, Instant.now(), listOf(occupation) + companionOccupations)
         }

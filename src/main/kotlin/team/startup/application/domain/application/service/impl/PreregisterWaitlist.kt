@@ -75,6 +75,8 @@ class PreregisterWaitlist(
                 head.applicants > capacity - repository.occupied(expoId, sessionId)
             }
         if (blocked != false) return
+        // #418: 사전등록 OFF면 대기 일행을 그대로 두고 승급하지 않는다. 확인 불가(503)는 호출자가 보류로 남긴다. 잠금 밖에서 조회한다.
+        if (!gateway.featureEnabled(expoId.toString(), ExpoFeature.PRE_REGISTRATION)) return
         val observation = ledger.observe(expoId, sessionId)
         val applicationEndedAt = applicationEndedAt(expoId)
         ledger.transactions.executeWithoutResult {

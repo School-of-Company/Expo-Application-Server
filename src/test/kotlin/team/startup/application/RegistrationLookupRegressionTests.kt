@@ -205,7 +205,7 @@ class RegistrationLookupRegressionTests {
                     }
 
                     path.contains("/standard-programs/") -> {
-                        mapper.writeValueAsString(definition)
+                        ExpoFeatureFixtures.programEnabled(mapper.writeValueAsString(definition))
                     }
 
                     path.endsWith("/qr") -> {
@@ -214,7 +214,7 @@ class RegistrationLookupRegressionTests {
                     }
 
                     else -> {
-                        """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                        """{"features":${ExpoFeatureFixtures.json()},"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                     }
                 }
             exchange.responseHeaders.set("Connection", "close")

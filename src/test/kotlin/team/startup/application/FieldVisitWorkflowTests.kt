@@ -25,6 +25,7 @@ import team.startup.application.domain.application.presentation.dto.RegisterFiel
 import team.startup.application.domain.application.repository.FieldVisitRegistrationRepository
 import team.startup.application.domain.application.repository.FieldVisitRequestRepository
 import team.startup.application.domain.application.repository.StoredFieldVisitRequest
+import team.startup.application.domain.application.service.impl.ExpoFeature
 import team.startup.application.domain.application.service.impl.ExpoPeriod
 import team.startup.application.domain.application.service.impl.RegisterFieldVisitServiceImpl
 import team.startup.application.domain.application.service.impl.RegistrationGateway
@@ -107,6 +108,45 @@ class FieldVisitWorkflowTests {
                 workflow.execute(FieldVisitCommand(expoId, "session", "key", request))
             }.statusCode.value(),
         )
+    }
+
+    @Test
+    fun `현장·동행자 기능 OFF는 새 방문일 요청만 저장 전에 막고 같은 키 재시도는 마무리한다`() {
+        val alone = RegisterFieldVisitRequest(listOf(1), emptyList(), true)
+        val withNew = RegisterFieldVisitRequest(listOf(1), listOf(NewFieldParticipant("new", "신규", "GENERAL", null, "GWANGJU")), true)
+        for ((request, off) in listOf(alone to "FIELD_REGISTRATION", withNew to "COMPANION_REGISTRATION")) {
+            prepare(request)
+            `when`(gateway.expoPeriod(expoId.toString()))
+                .thenReturn(ExpoPeriod(today.toString(), today.toString()).apply { featureStates = ExpoFeature.ALL_ON + (off to false) })
+            val disabled = assertThrows<ResponseStatusException> { workflow.execute(FieldVisitCommand(expoId, "session", "key", request)) }
+            assertEquals(409, disabled.statusCode.value())
+            assertEquals("FEATURE_DISABLED", disabled.reason)
+        }
+        `when`(
+            gateway.expoPeriod(expoId.toString()),
+        ).thenReturn(ExpoPeriod(today.toString(), today.toString()).apply { featureStates = null })
+        assertEquals(
+            503,
+            assertThrows<ResponseStatusException> {
+                workflow.execute(
+                    FieldVisitCommand(expoId, "session", "key", alone),
+                )
+            }.statusCode.value(),
+        )
+        verify(gateway, never()).resolveFieldParticipants(expoId, phone, "key", alone)
+        // 이미 저장한 같은 키 요청은 OFF여도 처음 응답을 돌려준다.
+        val original = FieldVisitReceipt(today, emptyList())
+        `when`(requests.exists(expoId, "key")).thenReturn(true)
+        `when`(gateway.expoPeriod(expoId.toString()))
+            .thenReturn(
+                ExpoPeriod(today.toString(), today.toString()).apply {
+                    featureStates =
+                        ExpoFeature.ALL_ON + ("FIELD_REGISTRATION" to false)
+                },
+            )
+        `when`(requests.reserve(expoId, "key", ownerHash, phone, today, alone, 1, (1L..5L).toList()))
+            .thenReturn(StoredFieldVisitRequest(today, alone, phone, emptyList(), original))
+        assertEquals(original, workflow.execute(FieldVisitCommand(expoId, "session", "key", alone)))
     }
 
     @Test

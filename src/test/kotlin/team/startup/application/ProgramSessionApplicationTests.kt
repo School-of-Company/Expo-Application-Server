@@ -161,6 +161,7 @@ class ProgramSessionApplicationTests {
         channels = null
         admissionCapacities = null
         promotionPolicy = null
+        featureEnabled = true
         promoteAccessStatus = 200
         closed = false
         expired = false
@@ -658,6 +659,64 @@ class ProgramSessionApplicationTests {
         assertEquals("연수자 연결이 거부되었습니다.", error.reason)
         assertEquals(0L, count("tb_program_session_application"))
         assertEquals(0L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `program feature OFF or unreadable rejects new applications before local writes`() {
+        featureEnabled = false
+        val disabled = assertThrows(ResponseStatusException::class.java) { service.execute(command()) }
+        assertEquals(409, disabled.statusCode.value())
+        assertEquals("FEATURE_DISABLED", disabled.reason)
+        mvc
+            .perform(
+                post("/application/expos/$EXPO/program-sessions/STANDARD/1/applications")
+                    .with(csrf())
+                    .cookie(Cookie("PARTICIPANT_SESSION", "session"))
+                    .header("Idempotency-Key", "feature-off")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"participantId":1,"formVersion":1,"answers":{"101":"a"}}"""),
+            ).andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("FEATURE_DISABLED"))
+        featureEnabled = null
+        assertEquals(503, assertThrows(ResponseStatusException::class.java) { service.execute(command()) }.statusCode.value())
+        assertEquals(0L, count("tb_program_session_application"))
+        assertEquals(0L, count("tb_program_session_receipt"))
+        featureEnabled = true
+        service.execute(command())
+        assertEquals(1L, count("tb_program_session_application"))
+    }
+
+    @Test
+    fun `legacy internal HTTP checks the program feature too`() {
+        noPolicyProgram = 1
+        featureEnabled = false
+        for (path in listOf("standard", "training")) {
+            val person = if (path == "standard") "participant" else "trainee"
+            val category = if (path == "training") ",\"category\":\"CHOICE\"" else ""
+            mvc
+                .perform(
+                    post("/internal/$path-program-applications")
+                        .header("X-Internal-Token", "test-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""{"$person":{"id":2,"expoId":"$EXPO"},"programs":[{"id":1,"expoId":"$EXPO"$category}]}"""),
+                ).andExpect(status().isConflict)
+        }
+        assertEquals(0L, count("tb_standard_program_application"))
+        assertEquals(0L, count("tb_training_program_application"))
+    }
+
+    @Test
+    fun `cancellation under program feature OFF succeeds and does not promote the waiting applicant`() {
+        waitingCapacity = 1
+        val confirmed = service.execute(command())
+        val waiting = service.execute(command(participant = 2))
+        featureEnabled = false
+        cancel(confirmed.applicationId)
+        assertEquals("CANCELLED", status(confirmed.applicationId))
+        assertEquals("WAITING", status(waiting.applicationId))
+        featureEnabled = true
+        cancel(waiting.applicationId)
+        assertEquals("CANCELLED", status(waiting.applicationId))
     }
 
     @Test
@@ -2172,6 +2231,27 @@ class ProgramSessionApplicationTests {
             ),
         )
         assertEquals(4L, count("tb_program_session_event"))
+    }
+
+    @Test
+    fun `training feature OFF still lets a trainee drop one program but not add one`() {
+        groups = mapOf("2" to UUID.randomUUID().toString(), "3" to UUID.randomUUID().toString())
+        val first = service.execute(command(type = ProgramSessionType.TRAINING))
+        val second = service.execute(command(program = 2, key = "second", type = ProgramSessionType.TRAINING))
+        featureEnabled = false
+
+        fun replace(programs: String) =
+            mvc.perform(
+                put("/internal/training-program-applications/trainee/501")
+                    .header("X-Internal-Token", "test-token")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"trainee":{"id":501,"expoId":"$EXPO"},"programs":[$programs]}"""),
+            )
+        replace("""{"id":1,"expoId":"$EXPO","category":"CHOICE"},{"id":3,"expoId":"$EXPO","category":"CHOICE"}""")
+            .andExpect(status().isConflict)
+        replace("""{"id":1,"expoId":"$EXPO","category":"CHOICE"}""").andExpect(status().isNoContent)
+        assertEquals("CONFIRMED", status(first.applicationId))
+        assertEquals("CANCELLED", status(second.applicationId))
     }
 
     @Test
@@ -5389,6 +5469,9 @@ class ProgramSessionApplicationTests {
 
         @Volatile private var places: Map<String, String?> = emptyMap()
 
+        // #418: Expo가 항목마다 싣는 그 종류 프로그램 기능의 실효 값. null이면 필드를 빼 구형 Expo 응답을 흉내 낸다.
+        @Volatile private var featureEnabled: Boolean? = true
+
         @Volatile private var admissionCapacities: String? = null
 
         @Volatile private var promotionPolicy: String? = null
@@ -5422,6 +5505,7 @@ class ProgramSessionApplicationTests {
             val window = windows[type to id.toLong()] ?: (localStart.format(formatter) to localStart.plusHours(1).format(formatter))
             json.put("startedAt", window.first)
             json.put("endedAt", window.second)
+            featureEnabled?.let { json.put("featureEnabled", it) }
             if (noPolicyProgram == id.toLong() || noPolicyProgram == 0L) {
                 json.putNull("policy")
                 return json.toString()

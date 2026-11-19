@@ -935,11 +935,15 @@ class OwnerApplicationTests {
                                     entered.countDown()
                                     check(release.await(15, TimeUnit.SECONDS))
                                 }
-                                ObjectMapper().writeValueAsString(currentDefinition)
+                                ExpoFeatureFixtures.programEnabled(ObjectMapper().writeValueAsString(currentDefinition))
                             }
 
                             path.endsWith("training-programs/batch") -> {
-                                ObjectMapper().writeValueAsString(listOf(currentDefinition.copy(programType = ProgramSessionType.TRAINING)))
+                                ExpoFeatureFixtures.programEnabled(
+                                    ObjectMapper().writeValueAsString(
+                                        listOf(currentDefinition.copy(programType = ProgramSessionType.TRAINING)),
+                                    ),
+                                )
                             }
 
                             path.endsWith("resolve-or-create-by-participant") -> {

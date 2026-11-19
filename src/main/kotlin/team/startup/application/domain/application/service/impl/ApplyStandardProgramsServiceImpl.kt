@@ -27,6 +27,7 @@ class ApplyStandardProgramsServiceImpl(
 
         val oldIds = applications.findAllByParticipantId(command.participant.id).map { it.standardProgramId }.toSet()
         val definitions = gateway.programDefinitions(command.participant.expoId, ProgramSessionType.STANDARD, programIds)
+        definitions.forEach { it.requireFeatureEnabled() }
         val known =
             if (definitions.isEmpty()) {
                 emptyMap()

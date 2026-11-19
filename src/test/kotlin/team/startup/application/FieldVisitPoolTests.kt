@@ -189,7 +189,7 @@ class FieldVisitPoolTests {
 
                             path == "/internal/expo/$expo" -> {
                                 """
-                                {"startedDay":"$today","finishedDay":"$today",
+                                {"features":${ExpoFeatureFixtures.json()},"startedDay":"$today","finishedDay":"$today",
                                  "participantPhoneVerificationRequired":true,"participantPhoneVerificationRevision":1}
                                 """.trimIndent()
                             }

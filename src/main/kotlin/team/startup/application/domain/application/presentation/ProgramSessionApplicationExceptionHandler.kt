@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.server.ResponseStatusException
 import team.startup.application.domain.application.exception.ProgramApplicationConflictException
 import team.startup.application.domain.application.presentation.dto.ProgramIneligibleReason
+import team.startup.application.domain.application.service.impl.ExpoFeature
 
 @Schema(description = "프로그램 신청 오류")
 data class ProgramSessionError(
@@ -38,7 +39,9 @@ class ProgramSessionApplicationExceptionHandler {
         // Every 409 reaches the client as APPLICATION_CONFLICT; the fixed reason identifies the failing stage (#122).
         if (status == 409) log.warn("Program application conflict: {}", ex.reason)
         val code =
-            if (status == 401 && ex.reason in setOf("SESSION_REQUIRED", "SESSION_EXPIRED")) {
+            if ((status == 401 && ex.reason in setOf("SESSION_REQUIRED", "SESSION_EXPIRED")) ||
+                (status == 409 && ex.reason == ExpoFeature.DISABLED)
+            ) {
                 ex.reason!!
             } else {
                 when (status) {
