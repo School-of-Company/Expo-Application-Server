@@ -37,7 +37,10 @@ data class ExpoPeriod(
     val finishedDay: String,
     val participantPhoneVerificationRequired: Boolean = false,
     val participantPhoneVerificationRevision: Long = 0,
-)
+) {
+    // #418: 생성자 밖이라 equals·copy에 들지 않는다. expoPeriod()가 응답의 features로 늘 다시 채우고 해석할 수 없으면 null(503)이다.
+    var featureStates: Map<String, Boolean>? = ExpoFeature.ALL_ON
+}
 
 data class RegistrationForm(
     val id: String,
@@ -144,10 +147,19 @@ class RegistrationGateway(
     private val fieldVisits: FieldVisitRegistrationRepository? = null,
     private val circuits: DownstreamCircuits = DownstreamCircuits(),
     private val clock: Clock = Clock.systemUTC(),
+    @Value("\${application.notifications.enabled:false}") notificationsEnabled: Boolean = false,
+    @Value("\${application.promotions.enabled:false}") promotionsEnabled: Boolean = false,
 ) {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     init {
+        // #418: 결과 문자·승급 안내 발행기는 발행 직전 AUTO_NOTIFICATION을 이 Expo 주소·토큰으로 본다. 배포 환경 근거가 없어 시작은 막지 않고,
+        // 없으면 조회가 503으로 실패해 행이 재시도 간격으로 보류된다.
+        if ((notificationsEnabled || promotionsEnabled) && (expoUrl.isBlank() || expoInternalToken.isBlank())) {
+            org.slf4j.LoggerFactory.getLogger(javaClass).warn(
+                "APPLICATION_REGISTRATION_EXPO_URL or APPLICATION_REGISTRATION_EXPO_INTERNAL_TOKEN is missing; notifications stay deferred",
+            )
+        }
         if (registrationEnabled) {
             mapOf("EXPO" to expoInternalToken, "FORM" to formInternalToken, "USER" to userInternalToken).forEach { (target, token) ->
                 require(
@@ -217,7 +229,9 @@ class RegistrationGateway(
                 if (!existing && definition.pendingRevision != null) {
                     throw ResponseStatusException(HttpStatus.CONFLICT, "프로그램 정책 변경 중입니다.")
                 }
-                definition.copy(expoId = canonicalExpo)
+                definition.copy(expoId = canonicalExpo).apply {
+                    featureEnabled = node.get("featureEnabled")?.takeIf { it.isBoolean }?.booleanValue()
+                }
             }
         if (definitions.map { it.id }.distinct().size != definitions.size ||
             (!existing && definitions.size != ids.size)
@@ -529,8 +543,21 @@ class RegistrationGateway(
     private fun invalidProgramResponse(): Nothing = throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "프로그램 정책 응답이 올바르지 않습니다.")
 
     fun expoPeriod(expoId: String): ExpoPeriod {
-        val response = call(Downstream.EXPO, expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
-        val node = decode(response.body(), JsonNode::class.java)
+        val response =
+            try {
+                call(Downstream.EXPO, expoUrl, "/internal/expo/$expoId", token = expoInternalToken)
+            } catch (ex: ResponseStatusException) {
+                // #418: 정책 조회의 토큰 오류(401/403)·알 수 없는 상태도 503이다. 404(박람회 없음)·409는 기존 처리 그대로다.
+                if (ex.statusCode == HttpStatus.BAD_GATEWAY) throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, ex.reason, ex)
+                throw ex
+            }
+        // #418: 본문 해석 실패는 기능 정책도 알 수 없으므로 503이다.
+        val node =
+            try {
+                mapper.readTree(response.body())
+            } catch (ex: Exception) {
+                throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "박람회 응답을 해석할 수 없습니다.", ex)
+            }
         val required = node.path("participantPhoneVerificationRequired")
         val revision = node.path("participantPhoneVerificationRevision")
         if (response.statusCode() != 200 || !required.isBoolean || !revision.isIntegralNumber ||
@@ -538,8 +565,13 @@ class RegistrationGateway(
         ) {
             throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 전화번호 인증 설정 응답이 올바르지 않습니다.")
         }
-        return decode(response.body(), ExpoPeriod::class.java)
+        return decode(response.body(), ExpoPeriod::class.java).apply { featureStates = ExpoFeature.parse(node.get("features")) }
     }
+
+    fun requireFeatures(
+        expoId: String,
+        vararg keys: String,
+    ) = expoPeriod(expoId).requireFeatures(*keys)
 
     fun form(
         expoId: String,

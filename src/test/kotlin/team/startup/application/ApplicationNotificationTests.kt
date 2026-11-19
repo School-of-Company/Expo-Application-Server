@@ -33,8 +33,11 @@ import team.startup.application.domain.application.service.impl.ApplicationNotic
 import team.startup.application.domain.application.service.impl.ApplicationNotificationPublisher
 import team.startup.application.domain.application.service.impl.ApplicationNotificationResolver
 import team.startup.application.domain.application.service.impl.ApplicationNotifications
+import team.startup.application.domain.application.service.impl.ExpoFeature
+import team.startup.application.domain.application.service.impl.FeatureDisabledException
 import team.startup.application.domain.application.service.impl.NoticeContact
 import team.startup.application.domain.application.service.impl.ProgramPromotionGateway
+import team.startup.application.domain.application.service.impl.RegistrationGateway
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
@@ -111,7 +114,10 @@ class ApplicationNotificationTests {
         "2020-01-01T00:00:00Z",
         "notification.sms.requested",
         expoIds,
+        features,
     )
+
+    private val features: RegistrationGateway = org.mockito.Mockito.mock(RegistrationGateway::class.java)
 
     @BeforeEach
     fun reset() {
@@ -390,6 +396,43 @@ class ApplicationNotificationTests {
 
         assertEquals(0, sent().size)
         assertEquals(2L, count("skip_reason = 'NO_REPRESENTATIVE_PHONE'"))
+    }
+
+    @Test
+    fun `auto notification OFF skips the message but keeps the committed state change`() {
+        val id = application()
+        record { programAdmitted(EXPO, id, "CONFIRMED") }
+        org.mockito.Mockito
+            .doThrow(FeatureDisabledException())
+            .`when`(features)
+            .requireFeatures(EXPO.toString(), ExpoFeature.AUTO_NOTIFICATION)
+
+        publisher().publishDue()
+
+        assertTrue(sent().isEmpty())
+        assertEquals(1L, count("skipped_at IS NOT NULL AND skip_reason = 'FEATURE_DISABLED' AND delivered_at IS NULL"))
+        assertEquals(
+            "CONFIRMED",
+            jdbc.queryForObject("SELECT status FROM tb_program_session_application WHERE id = ?", String::class.java, id),
+        )
+    }
+
+    @Test
+    fun `an unreadable feature policy sends nothing and defers the notification with backoff`() {
+        val id = application()
+        record { programAdmitted(EXPO, id, "CONFIRMED") }
+        org.mockito.Mockito
+            .doThrow(
+                org.springframework.web.server
+                    .ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE),
+            ).`when`(features)
+            .requireFeatures(EXPO.toString(), ExpoFeature.AUTO_NOTIFICATION)
+
+        publisher().publishDue()
+
+        assertTrue(sent().isEmpty())
+        // 보류는 attempts·next_attempt_at을 늘려 다른 박람회 행이 밀리지 않게 한다.
+        assertEquals(1L, count("delivered_at IS NULL AND skipped_at IS NULL AND attempts = 1"))
     }
 
     @Test

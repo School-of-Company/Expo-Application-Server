@@ -121,6 +121,26 @@ class PreregisterSessionAdditionHttpTests {
     }
 
     @Test
+    fun `preregistration OFF blocks a new session addition but the stored addition still replays`() {
+        assertEquals(201, register(companion("friend")).status)
+        val created = addSession(2, listOf(42, 43), key = "add-before-off")
+        assertEquals(201, created.status, created.contentAsString)
+        val before = applications()
+        try {
+            ExpoFeatureFixtures.off = setOf("PRE_REGISTRATION")
+            val replay = addSession(2, listOf(42, 43), key = "add-before-off")
+            assertEquals(201, replay.status, replay.contentAsString)
+            assertEquals(mapper.readTree(created.contentAsString), mapper.readTree(replay.contentAsString))
+            val disabled = addSession(2, listOf(42), key = "add-after-off")
+            assertEquals(409, disabled.status, disabled.contentAsString)
+            assertEquals("FEATURE_DISABLED", mapper.readTree(disabled.contentAsString)["code"].asString())
+        } finally {
+            ExpoFeatureFixtures.off = emptySet()
+        }
+        assertEquals(before, applications())
+    }
+
+    @Test
     fun `the representative may stay out and students alone may attend`() {
         assertEquals(
             201,
@@ -374,7 +394,8 @@ class PreregisterSessionAdditionHttpTests {
                             else -> {
                                 val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(1)
                                 200 to
-                                    """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,""" +
+                                    """{"features":${ExpoFeatureFixtures.json()},""" +
+                                    """"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":false,""" +
                                     """"participantPhoneVerificationRevision":0}"""
                             }
                         }

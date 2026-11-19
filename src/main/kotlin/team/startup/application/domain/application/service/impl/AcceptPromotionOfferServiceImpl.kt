@@ -52,6 +52,8 @@ class AcceptPromotionOfferServiceImpl(
         val definition =
             gateway.programDefinition(offer.expoId.toString(), requireNotNull(offer.programType), requireNotNull(offer.programId))
                 ?: throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "프로그램 정의 공급자가 준비되지 않았습니다.")
+        // #418: 이미 수락한 제안의 재시도는 잠금 안에서 그대로 돌려준다. 새 수락만 막는다.
+        if (offer.state != "ACCEPTED") definition.requireFeatureEnabled()
         ledger.transactions.executeWithoutResult {
             val current = shared.lockProgram(offer, definition) ?: shared.notFound()
             applications.observe(definition)
@@ -78,6 +80,7 @@ class AcceptPromotionOfferServiceImpl(
     ): OwnerPromotionOffer {
         val phone = gateway.participantSessionPhone(command.expoId.toString(), command.participantSession)
         val reservation = shared.reservation(offer)?.takeIf { shared.ownsReservation(it, phone) } ?: shared.notFound()
+        if (offer.state != "ACCEPTED") gateway.requireFeatures(offer.expoId.toString(), ExpoFeature.PRE_REGISTRATION)
         val observation = ledger.observe(offer.expoId, requireNotNull(offer.sessionId))
         val applicationEndedAt = preregisterWaitlist.applicationEndedAt(offer.expoId)
         ledger.transactions.executeWithoutResult {

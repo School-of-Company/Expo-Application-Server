@@ -24,6 +24,7 @@ import team.startup.application.domain.application.service.RegisterStandardPreSe
 import team.startup.application.domain.application.service.RegisterTraineeFieldService
 import team.startup.application.domain.application.service.RegisterTraineePreService
 import team.startup.application.domain.application.service.RegistrationCommand
+import team.startup.application.domain.application.service.impl.ExpoFeature
 import team.startup.application.domain.application.service.impl.OccupationNotOpenException
 import team.startup.application.domain.application.service.impl.ParticipantSessionException
 import team.startup.application.domain.application.service.impl.RegistrationWorkflow
@@ -69,6 +70,7 @@ private val conflictCodes =
             "삭제된 박람회입니다." to ("EXPO_DELETED" to "삭제된 박람회입니다."),
             RegistrationWorkflow.PREREGISTERED_TODAY to
                 ("ALREADY_PREREGISTERED_TODAY" to "이미 사전등록하셨습니다. 받으신 QR로 입장해 주세요."),
+            ExpoFeature.DISABLED to (ExpoFeature.DISABLED to "지금은 이 박람회에서 이용할 수 없는 기능입니다."),
             "FIELD_VISIT_SELECTION_REQUIRED" to
                 ("FIELD_VISIT_SELECTION_REQUIRED" to "방문일 등록 화면에서 기존 참가자를 선택하거나 새 동행자를 추가해 주세요."),
         )

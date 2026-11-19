@@ -641,11 +641,11 @@ class AdminOperationsHttpTests {
                             }
 
                             path.endsWith("/standard-programs/7") -> {
-                                jacksonObjectMapper().writeValueAsString(definition)
+                                ExpoFeatureFixtures.programEnabled(jacksonObjectMapper().writeValueAsString(definition))
                             }
 
                             path.endsWith("/training-programs/batch") -> {
-                                "[${jacksonObjectMapper().writeValueAsString(definition)}]"
+                                "[${ExpoFeatureFixtures.programEnabled(jacksonObjectMapper().writeValueAsString(definition))}]"
                             }
 
                             path.endsWith("/history") -> {

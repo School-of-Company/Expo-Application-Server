@@ -31,6 +31,8 @@ class ReplaceTrainingProgramsServiceImpl(
 
         val previousIds = applications.findAllByTraineeId(command.trainee.id).map { it.trainingProgramId }.toSet()
         val definitions = gateway.programDefinitions(command.trainee.expoId, ProgramSessionType.TRAINING, programIds)
+        // #418: 새로 더하는 프로그램만 막는다. 빈 목록 교체·일부 철회는 OFF여도 통과한다.
+        definitions.filter { it.id !in previousIds }.forEach { it.requireFeatureEnabled() }
         val previousDefinitions =
             gateway.programDefinitions(
                 command.trainee.expoId,

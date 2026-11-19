@@ -70,6 +70,11 @@ class RegisterFieldVisitServiceImpl(
                 } catch (ex: java.time.format.DateTimeParseException) {
                     throw ResponseStatusException(HttpStatus.BAD_GATEWAY, "박람회 날짜 응답이 올바르지 않습니다.", ex)
                 }
+            // #418: 같은 키 재시도(이미 저장한 요청)는 OFF여도 마무리하고, 새 요청만 현장·동행자 기능으로 막는다.
+            if (!requests.exists(command.expoId, command.requestId)) {
+                expo.requireFeatures(ExpoFeature.FIELD_REGISTRATION)
+                if (request.newParticipants.isNotEmpty()) expo.requireFeatures(ExpoFeature.COMPANION_REGISTRATION)
+            }
             if (!requests.exists(command.expoId, command.requestId) &&
                 (today.isBefore(period.first) || today.isAfter(period.second))
             ) {

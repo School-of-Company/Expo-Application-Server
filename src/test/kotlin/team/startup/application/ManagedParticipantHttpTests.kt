@@ -535,11 +535,11 @@ class ManagedParticipantHttpTests {
 
                             path.endsWith("standard-programs/1") -> {
                                 if (missingPolicy) responseStatus = 404
-                                """{"expoId":"$expo","programType":"STANDARD","id":1,"groupId":"$expo","revision":1,"policy":{"formId":"$expo","allowedOccupations":["TEACHER"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}}"""
+                                """{"expoId":"$expo","programType":"STANDARD","id":1,"groupId":"$expo","revision":1,"featureEnabled":true,"policy":{"formId":"$expo","allowedOccupations":["TEACHER"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}}"""
                             }
 
                             path.endsWith("training-programs/batch") -> {
-                                """[{"expoId":"$expo","programType":"TRAINING","id":1,"groupId":"$expo","revision":1,"policy":{"formId":"$expo","allowedOccupations":["TEACHER","STUDENT"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}}]"""
+                                """[{"expoId":"$expo","programType":"TRAINING","id":1,"groupId":"$expo","revision":1,"featureEnabled":true,"policy":{"formId":"$expo","allowedOccupations":["TEACHER","STUDENT"],"capacity":5,"waitingCapacity":0,"applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","cancelEndedAt":"2100-01-01T00:00:00Z","promotionEndedAt":"2100-01-01T00:00:00Z","closed":false}}]"""
                             }
 
                             path.endsWith("managed/select") -> {

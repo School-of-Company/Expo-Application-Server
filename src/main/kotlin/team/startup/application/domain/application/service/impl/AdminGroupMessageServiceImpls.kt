@@ -65,6 +65,7 @@ class ExecuteAdminGroupMessageServiceImpl(
         request: ExecuteAdminGroupMessageRequest,
     ): AdminGroupMessageJob {
         val requesterId = gateway.authorize(expoId, authorization)
+        gateway.requireBulkMessage(expoId)
         val resolved = resolveForExecution(resolver, expoId, request)
         ensureUnchanged(request.targetFingerprint, resolved.fingerprint)
         return gateway.execute(previewId, requesterId, expoId, resolved.fingerprint, request.idempotencyKey)
@@ -94,6 +95,7 @@ class RetryAdminGroupMessageServiceImpl(
         request: ExecuteAdminGroupMessageRequest,
     ): AdminGroupMessageJob {
         val requesterId = gateway.authorize(expoId, authorization)
+        gateway.requireBulkMessage(expoId)
         val resolved = resolveForExecution(resolver, expoId, request)
         ensureUnchanged(request.targetFingerprint, resolved.fingerprint)
         return gateway.retry(jobId, requesterId, expoId, resolved.fingerprint, request.idempotencyKey)

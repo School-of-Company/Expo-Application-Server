@@ -64,6 +64,12 @@ class ProgramWaitlist(
         val policy = definition.policy ?: return
         offers.capProgram(definition, minOf(policy.applicationEndedAt, policy.promotionEndedAt))
         if (!policy.autoPromotionOpen(now)) return
+        // #418: 기능 OFF(또는 확인 불가)인 프로그램은 대기·정원을 그대로 두고 새 승급·제안을 만들지 않는다. 취소로 빈 자리도 우회하지 않는다.
+        if (definition.featureEnabled == false) return
+        if (definition.featureEnabled == null) {
+            defer(definition, "FEATURE_UNKNOWN")
+            return
+        }
         if (isDeleted(definition)) return
         if (offerPolicy.offerMode(offerPolicy.programStart(definition.startedAt), now)) return offer(definition, now)
         // shortcut: 승급당 최대 10명으로 원격 호출 잠금을 제한한다. 일괄 연결 API가 제공되면 교체한다.

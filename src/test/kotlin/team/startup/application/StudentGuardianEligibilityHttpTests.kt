@@ -294,7 +294,7 @@ class StudentGuardianEligibilityHttpTests {
         private fun role(id: Long) = if (id == 3L) parentRole else "ELEMENTARY_STUDENT"
 
         private fun definition(type: String) =
-            """{"expoId":"$EXPO","programType":"$type","id":1,"groupId":"$GROUP","revision":1,
+            """{"expoId":"$EXPO","programType":"$type","id":1,"groupId":"$GROUP","revision":1,"featureEnabled":true,
             "startedAt":"2099-01-01T10:00:00","endedAt":"2099-01-01T11:00:00",
             "policy":{"formId":"$FORM","allowedOccupations":["ELEMENTARY_STUDENT","PARENT","TEACHER"],"capacity":$capacity,"waitingCapacity":10,
             "applicationStartedAt":"2020-01-01T00:00:00Z","applicationEndedAt":"2100-01-01T00:00:00Z","closed":false,

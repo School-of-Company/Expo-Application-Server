@@ -106,7 +106,9 @@ class FieldVisitInitialPartyTests {
                         }
 
                         path.startsWith("/internal/expo/") -> {
-                            200 to """{"startedDay":"${expoDays.first}","finishedDay":"${expoDays.second}",""" +
+                            200 to
+                                """{"features":${ExpoFeatureFixtures.json()},""" +
+                                """"startedDay":"${expoDays.first}","finishedDay":"${expoDays.second}",""" +
                                 """"participantPhoneVerificationRequired":true,"participantPhoneVerificationRevision":1}"""
                         }
 

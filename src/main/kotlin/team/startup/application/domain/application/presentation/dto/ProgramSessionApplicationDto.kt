@@ -1,5 +1,6 @@
 package team.startup.application.domain.application.presentation.dto
 
+import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonInclude
 import io.swagger.v3.oas.annotations.media.Schema
 import jakarta.validation.Valid
@@ -138,7 +139,15 @@ data class ProgramSessionDefinition(
     @field:JsonInclude(JsonInclude.Include.NON_NULL)
     @field:Schema(description = "회차 장소. 미입력은 null이며 행사·사전등록 장소로 대체하지 않음")
     val place: String? = null,
-)
+) {
+    /**
+     * #418: Expo가 실은 그 종류 프로그램 기능(STANDARD_PROGRAM·TRAINING_PROGRAM)의 실효 값. 생성자 밖이라 정의 비교(equals)·copy에 들지 않는다.
+     * RegistrationGateway가 Expo 응답 원문으로 언제나 다시 채우며 없거나 boolean이 아니면 null(503)이다. 직접 만든 값의 기본은 true다.
+     */
+    @get:JsonIgnore
+    @set:JsonIgnore
+    var featureEnabled: Boolean? = true
+}
 
 internal fun ProgramSessionDefinition.hasValidPlace(): Boolean =
     place == null || (place.isNotBlank() && place == place.trim() && place.codePointCount(0, place.length) <= 255)

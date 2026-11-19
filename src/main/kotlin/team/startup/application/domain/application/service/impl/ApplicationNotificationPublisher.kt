@@ -69,6 +69,7 @@ class ApplicationNotificationPublisher(
     @Value("\${application.notifications.publish-from:}") publishFrom: String,
     @Value("\${application.notifications.topic:notification.sms.requested}") private val topic: String,
     @Value("\${application.notifications.expo-ids:}") expoIds: List<String>,
+    private val gateway: RegistrationGateway,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val cutoff =
@@ -79,9 +80,15 @@ class ApplicationNotificationPublisher(
 
     @Scheduled(fixedDelayString = "\${application.notifications.delay-ms:5000}", scheduler = "applicationNotificationScheduler")
     fun publishDue() {
+        val enabled = mutableMapOf<UUID, Boolean?>()
         repository.due(cutoff).filter { allowed.isEmpty() || it.expoId in allowed }.forEach { batch ->
             try {
-                publish(batch)
+                // #418: 발행 직전에 잠금 밖에서 AUTO_NOTIFICATION을 본다(주기당 박람회별 1회). 확인 불가(null)는 행을 보류해 뒤로 미룬다.
+                // getOrPut은 null을 저장하지 않으므로 확인 불가도 주기 안에서 다시 묻지 않게 직접 넣는다.
+                if (batch.expoId !in enabled) {
+                    enabled[batch.expoId] = gateway.featureStateOrNull(batch.expoId.toString(), ExpoFeature.AUTO_NOTIFICATION)
+                }
+                publish(batch, enabled[batch.expoId])
             } catch (exception: Exception) {
                 if (exception is InterruptedException || exception.cause is InterruptedException) {
                     Thread.currentThread().interrupt()
@@ -93,10 +100,22 @@ class ApplicationNotificationPublisher(
         }
     }
 
-    fun publish(batch: Batch) {
+    // notify=false(자동 알림 OFF)면 보내지 않고 건너뜀으로 닫고, null(확인 불가)이면 보류한다. 신청·취소 상태 전이는 이미 커밋되어 그대로다.
+    fun publish(
+        batch: Batch,
+        notify: Boolean? = true,
+    ) {
         jdbc.withDeliveryLock(49, "${batch.batchKey}:${batch.type}:${batch.expoId}") { scoped ->
             val rows = repository.pending(scoped, batch, cutoff)
             if (rows.isEmpty()) return@withDeliveryLock
+            if (notify == null) {
+                repository.deferred(scoped, rows.map { it.id })
+                ExpoFeature.unavailable()
+            }
+            if (!notify) {
+                repository.skipped(scoped, rows.map { it.id }, ExpoFeature.DISABLED)
+                return@withDeliveryLock
+            }
             val resolved =
                 try {
                     resolver.resolveBatch(rows)

@@ -1507,7 +1507,7 @@ class PreregisterRegistrationHttpTests {
                             else -> {
                                 val today = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).plusDays(expoDayOffset.get().toLong())
                                 200 to
-                                    """{"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":$phoneVerificationRequired,"participantPhoneVerificationRevision":0}"""
+                                    """{"features":${ExpoFeatureFixtures.json()},"startedDay":"$today","finishedDay":"$today","participantPhoneVerificationRequired":$phoneVerificationRequired,"participantPhoneVerificationRevision":0}"""
                             }
                         }
                     if (status != 0) {

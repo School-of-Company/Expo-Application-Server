@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
+import team.startup.application.domain.application.service.impl.ExpoFeature
 import team.startup.application.domain.application.service.impl.ExpoPeriod
 import team.startup.application.domain.application.service.impl.ParticipantRegistration
 import team.startup.application.domain.application.service.impl.ParticipantRegistrationResult
@@ -36,6 +37,7 @@ import team.startup.application.domain.application.service.impl.RegistrationFiel
 import team.startup.application.domain.application.service.impl.RegistrationForm
 import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.domain.application.service.impl.RegistrationQuestion
+import team.startup.application.domain.application.service.impl.requireFeatures
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
@@ -1270,6 +1272,150 @@ class RegistrationHttpTests {
         verify(gateway).form(EXPO_1, "TRAINEE", "FIELD", false)
         verifyNoMoreInteractions(gateway)
     }
+
+    // #418: 각 등록 경로의 기능 OFF는 409 FEATURE_DISABLED, 정책 해석 불가는 503이며 폼·User 호출 전에 끝난다.
+    @Test
+    fun `등록 기능이 꺼졌거나 확인할 수 없으면 네 등록 경로는 폼과 User 호출 전에 거절한다`() {
+        val day = LocalDate.now(ZoneId.of("Asia/Seoul")).plusDays(1).toString()
+        for ((route, feature) in listOf(
+            "pre-standard" to "PRE_REGISTRATION",
+            "" to "PRE_REGISTRATION",
+            "field/standard" to "FIELD_REGISTRATION",
+            "field" to "FIELD_REGISTRATION",
+        )) {
+            val path = if (route.isEmpty()) "/application/$EXPO_5" else "/application/$route/$EXPO_5"
+            `when`(gateway.expoPeriod(EXPO_5)).thenReturn(
+                ExpoPeriod(day, day).apply { featureStates = ExpoFeature.ALL_ON + (feature to false) },
+            )
+            mockMvc
+                .perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body("{}", "training-1")))
+                .andExpect(status().isConflict)
+                .andExpect(jsonPath("$.code").value("FEATURE_DISABLED"))
+            `when`(gateway.expoPeriod(EXPO_5)).thenReturn(ExpoPeriod(day, day).apply { featureStates = null })
+            mockMvc
+                .perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body("{}", "training-1")))
+                .andExpect(status().isServiceUnavailable)
+        }
+        verify(gateway, never()).form(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyBoolean(),
+        )
+        verify(gateway, never()).participant(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.any(ParticipantRegistration::class.java) ?: registrationStub(),
+        )
+    }
+
+    @Test
+    fun `동행자 등록이 꺼지면 동행자가 있는 등록만 User 호출 전에 거절한다`() {
+        val today = LocalDate.now(ZoneId.of("Asia/Seoul"))
+        `when`(gateway.expoPeriod(EXPO_2)).thenReturn(
+            ExpoPeriod(
+                today.toString(),
+                today.toString(),
+            ).apply { featureStates = ExpoFeature.ALL_ON + ("COMPANION_REGISTRATION" to false) },
+        )
+        val fields = listOf(RegistrationField(9, "함께 오는 사람", "COMPANION", mapper.readTree("{}"), null, "DEFAULT"))
+        `when`(gateway.form(EXPO_2, "TRAINEE", "FIELD", false)).thenReturn(registrationForm(today.toString(), today.toString(), fields))
+        val companion =
+            mapper.writeValueAsString(
+                mapOf("함께 오는 사람" to listOf(mapOf("name" to "김동행", "occupation" to "GENERAL", "region" to "OTHER"))),
+            )
+        mockMvc
+            .perform(post("/application/field/$EXPO_2").contentType(MediaType.APPLICATION_JSON).content(body(companion, "training-1")))
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("FEATURE_DISABLED"))
+        verify(gateway, never()).participant(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.any(ParticipantRegistration::class.java) ?: registrationStub(),
+        )
+        val questions =
+            fields.mapIndexed { order, item ->
+                RegistrationQuestion(item.id, item.title, order, item.formType, item.jsonData, item.otherJson, item.dynamicFormType)
+            }
+        val alone = mapper.writeValueAsString(mapOf("함께 오는 사람" to emptyList<Any>()))
+        val registration =
+            ParticipantRegistration(
+                EXPO_2,
+                "홍길동",
+                "01012345678",
+                alone,
+                true,
+                "FIELD",
+                "training-1",
+                null,
+                null,
+                "companion-off",
+                FORM_ID,
+                questions,
+            )
+        `when`(gateway.participant("TRAINEE", registration)).thenReturn(ParticipantRegistrationResult(7, "01012345678"))
+        mockMvc
+            .perform(
+                post("/application/field/$EXPO_2")
+                    .header("Idempotency-Key", "companion-off")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body(alone, "training-1")),
+            ).andExpect(status().isCreated)
+        verify(gateway).participant("TRAINEE", registration)
+    }
+
+    @Test
+    fun `Expo 기능 응답은 effectiveEnabled 배열만 허용하고 토큰 오류와 구형 응답은 503이다`() {
+        val responses =
+            ArrayDeque(
+                listOf(
+                    200 to
+                        """"features":[{"key":"PRE_REGISTRATION","configuredEnabled":true,"effectiveEnabled":true},{"key":"FIELD_REGISTRATION","configuredEnabled":true,"effectiveEnabled":false}],""",
+                    200 to "",
+                    200 to """"features":{"PRE_REGISTRATION":true},""",
+                    200 to """"features":[{"key":"PRE_REGISTRATION","effectiveEnabled":"true"}],""",
+                    200 to
+                        """"features":[{"key":"PRE_REGISTRATION","effectiveEnabled":true},{"key":"PRE_REGISTRATION","effectiveEnabled":true}],""",
+                    401 to "",
+                    500 to "",
+                ),
+            )
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/internal/expo/") { exchange ->
+            val (code, features) = responses.removeFirst()
+            val response =
+                """{$features"startedDay":"2026-10-01","finishedDay":"2026-10-31","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                    .toByteArray()
+            exchange.sendResponseHeaders(code, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val url = "http://127.0.0.1:${server.address.port}"
+            val actual = RegistrationGateway(mapper, url, url, url, "expo-token", "form-token", "user-token")
+            val period = actual.expoPeriod(EXPO_1)
+            period.requireFeatures("PRE_REGISTRATION")
+            assertEquals(
+                HttpStatus.CONFLICT,
+                assertThrows<ResponseStatusException> { period.requireFeatures("FIELD_REGISTRATION") }.statusCode,
+            )
+            assertEquals(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                assertThrows<ResponseStatusException> { period.requireFeatures("COMPANION_REGISTRATION") }.statusCode,
+            )
+            repeat(4) {
+                assertEquals(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    assertThrows<ResponseStatusException> { actual.requireFeatures(EXPO_1, "PRE_REGISTRATION") }.statusCode,
+                )
+            }
+            repeat(2) {
+                assertEquals(HttpStatus.SERVICE_UNAVAILABLE, assertThrows<ResponseStatusException> { actual.expoPeriod(EXPO_1) }.statusCode)
+            }
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    private fun registrationStub() = ParticipantRegistration("", "", "", "", true, "", null, null, null, "", null, null)
 
     private fun body(
         answers: String,

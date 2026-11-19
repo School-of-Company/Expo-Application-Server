@@ -158,6 +158,16 @@ class PreregisterRegistrationWorkflow(
         return deliver(expoId, reserved)
     }
 
+    // #418: 같은 키의 기존 예약 재조회는 OFF여도 잠금 안 replay가 돌려준다. 정책 조회는 Expo 잠금 밖에서 새 작업에만 한다.
+    private fun requireFeaturesUnlessReplay(
+        expoId: UUID,
+        idempotencyKey: String?,
+        fingerprint: String,
+        vararg keys: String,
+    ) {
+        if (reservations.find(expoId, idempotencyKey, fingerprint) == null) gateway.requireFeatures(expoId.toString(), *keys)
+    }
+
     /**
      * 확정된 대표자 일행에 동행자를 더한다(#169). 정원은 일반 신청과 같은 박람회 잠금·좌석 예약으로 지킨다.
      * 자리가 모자라면 대기열 뒤에 세우고, 일반 대기 일행과 같은 승급(#144: 전날 전 자동, 전날부터 참여 제안)으로 RESERVED가 된다.
@@ -175,6 +185,7 @@ class PreregisterRegistrationWorkflow(
                 ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "신청을 찾을 수 없습니다.")
         val observation = companions.observe(expoId, sessionId)
         val fingerprint = mapper.writeValueAsString(mapOf("companionsOf" to applicationId, "companions" to added))
+        requireFeaturesUnlessReplay(expoId, idempotencyKey, fingerprint, ExpoFeature.PRE_REGISTRATION, ExpoFeature.COMPANION_REGISTRATION)
         val key = idempotencyKey ?: UUID.randomUUID().toString()
         val reserved =
             requireNotNull(
@@ -307,6 +318,7 @@ class PreregisterRegistrationWorkflow(
                     "participantIds" to participantIds.sorted(),
                 ),
             )
+        requireFeaturesUnlessReplay(expoId, idempotencyKey, fingerprint, ExpoFeature.PRE_REGISTRATION)
         val key = idempotencyKey ?: UUID.randomUUID().toString()
         val reserved =
             requireNotNull(

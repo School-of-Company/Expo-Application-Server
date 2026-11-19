@@ -43,9 +43,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 import team.startup.application.domain.application.presentation.dto.ProgramPromotionEvent
 import team.startup.application.domain.application.presentation.dto.ProgramSessionType
 import team.startup.application.domain.application.repository.ProgramPromotionRepository
+import team.startup.application.domain.application.service.impl.ExpoFeature
+import team.startup.application.domain.application.service.impl.FeatureDisabledException
 import team.startup.application.domain.application.service.impl.ProgramPromotionKafkaConfig
 import team.startup.application.domain.application.service.impl.ProgramPromotionPolicy
 import team.startup.application.domain.application.service.impl.ProgramPromotionPublisher
+import team.startup.application.domain.application.service.impl.RegistrationGateway
 import team.startup.application.global.scheduling.DefaultTaskSchedulerConfig
 import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
@@ -71,6 +74,8 @@ class ProgramPromotionTests {
     @Autowired private lateinit var mapper: ObjectMapper
 
     @Autowired private lateinit var mvc: MockMvc
+
+    private val features: RegistrationGateway = org.mockito.Mockito.mock(RegistrationGateway::class.java)
 
     @BeforeEach
     fun reset() {
@@ -138,6 +143,7 @@ class ProgramPromotionTests {
             kafkaTemplateOf(producer),
             mapper,
             ProgramPromotionPolicy(true, CUTOFF.toString()),
+            features,
         ).publishDue()
         assertEquals(current.eventId.toString(), producer.history().single().key())
         assertNull(
@@ -272,7 +278,7 @@ class ProgramPromotionTests {
                 "publisher",
                 ProgramPromotionPublisher::class.java,
                 Supplier {
-                    ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY)
+                    ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features)
                 },
             )
             context.registerBean("heartbeat", Heartbeat::class.java, Supplier { heartbeat })
@@ -329,7 +335,7 @@ class ProgramPromotionTests {
                 "acks" to "all",
             ),
         ).use { producer ->
-            ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY).publishDue()
+            ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
         }
         assertTrue(repository.due(CUTOFF).isEmpty())
         KafkaConsumer<String, String>(
@@ -363,7 +369,7 @@ class ProgramPromotionTests {
             "UPDATE tb_program_session_history SET created_at = CASE WHEN status = 'WAITING' THEN '2030-01-01'::timestamptz ELSE '2020-01-01'::timestamptz END",
         )
         val producer = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
-        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY).publishDue()
+        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
         assertEquals(1, producer.history().size)
         assertEquals("application.program-session.promoted", producer.history().single().topic())
         assertEquals(promoted.eventId.toString(), producer.history().single().key())
@@ -372,10 +378,50 @@ class ProgramPromotionTests {
     }
 
     @Test
+    fun `auto notification OFF closes the promotion notice without sending it`() {
+        val promoted = application()
+        org.mockito.Mockito
+            .doThrow(FeatureDisabledException())
+            .`when`(features)
+            .requireFeatures(promoted.expoId.toString(), ExpoFeature.AUTO_NOTIFICATION)
+        val producer = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
+
+        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
+
+        assertTrue(producer.history().isEmpty())
+        assertTrue(repository.due(CUTOFF).isEmpty())
+        assertEquals("CONFIRMED", repository.find(promoted.applicationId)?.status)
+    }
+
+    @Test
+    fun `an unreadable feature policy defers the promotion notice with backoff`() {
+        val promoted = application()
+        org.mockito.Mockito
+            .doThrow(
+                org.springframework.web.server
+                    .ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE),
+            ).`when`(features)
+            .requireFeatures(promoted.expoId.toString(), ExpoFeature.AUTO_NOTIFICATION)
+        val producer = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
+
+        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
+
+        assertTrue(producer.history().isEmpty())
+        assertEquals(
+            1,
+            jdbc.queryForObject(
+                "SELECT attempts FROM tb_program_session_event WHERE event_id = ? AND delivered_at IS NULL",
+                Int::class.java,
+                promoted.eventId,
+            ),
+        )
+    }
+
+    @Test
     fun `ACK is required and failure retains stable event for restart retry`() {
         val event = application()
         val producer = MockProducer<String, String>(false, null, StringSerializer(), StringSerializer())
-        val publisher = ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY)
+        val publisher = ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features)
         val executor = Executors.newSingleThreadExecutor()
         try {
             val task = executor.submit { publisher.publishDue() }
@@ -398,7 +444,7 @@ class ProgramPromotionTests {
             assertTrue(repository.due(CUTOFF).isEmpty())
             jdbc.update("UPDATE tb_program_session_event SET next_attempt_at = clock_timestamp()")
             val retry = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
-            ProgramPromotionPublisher(repository, kafkaTemplateOf(retry), mapper, POLICY).publishDue()
+            ProgramPromotionPublisher(repository, kafkaTemplateOf(retry), mapper, POLICY, features).publishDue()
             assertEquals(producer.history().single().value(), retry.history().single().value())
         } finally {
             executor.shutdownNow()
@@ -411,14 +457,14 @@ class ProgramPromotionTests {
         jdbc.execute("ALTER TABLE tb_program_session_event ADD CONSTRAINT test_no_completion CHECK (delivered_at IS NULL)")
         val producer = MockProducer<String, String>(true, null, StringSerializer(), StringSerializer())
         try {
-            ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY).publishDue()
+            ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
             assertEquals(1, producer.history().size)
             assertEquals(event, repository.find(event.applicationId)!!.event)
         } finally {
             jdbc.execute("ALTER TABLE tb_program_session_event DROP CONSTRAINT test_no_completion")
         }
         jdbc.update("UPDATE tb_program_session_event SET next_attempt_at = clock_timestamp()")
-        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY).publishDue()
+        ProgramPromotionPublisher(repository, kafkaTemplateOf(producer), mapper, POLICY, features).publishDue()
         assertEquals(2, producer.history().size)
         assertEquals(producer.history()[0].value(), producer.history()[1].value())
     }

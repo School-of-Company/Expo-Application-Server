@@ -45,7 +45,7 @@ class RegistrationIntegrationContractTests {
         val requests = mutableListOf<String>()
         val saved = mutableListOf<JsonNode>()
         var expoStatus = 200
-        var dates = """"startedDay":"$today","finishedDay":"$today""""
+        var dates = """"features":${ExpoFeatureFixtures.json()},"startedDay":"$today","finishedDay":"$today""""
         var setting = """"participantPhoneVerificationRequired":true,"participantPhoneVerificationRevision":1"""
         var sessionStatus = 200
         var sessionBody = """{"expoId":"$expoId","phoneNumber":"01099998888","expiresAt":"2100-01-01T00:00:00"}"""
@@ -143,7 +143,7 @@ class RegistrationIntegrationContractTests {
             for (route in listOf("", "/pre-standard", "/field", "/field/standard")) {
                 // 일반 사전등록은 행사 전날까지만 신규 접수한다(#171).
                 val startedDay = if (route == "/pre-standard") today.plusDays(1) else today
-                dates = """"startedDay":"$startedDay","finishedDay":"$startedDay""""
+                dates = """"features":${ExpoFeatureFixtures.json()},"startedDay":"$startedDay","finishedDay":"$startedDay""""
 
                 fun submit(sessionCookie: String? = "valid") =
                     mvc.perform(
@@ -208,7 +208,8 @@ class RegistrationIntegrationContractTests {
                     assertEquals(listOf("/internal/expo/$expoId"), requests)
                 }
                 setting = """"participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0"""
-                for ((code, expected) in listOf(401 to 502, 404 to 404, 409 to 409, 503 to 503, 201 to 502)) {
+                // #418: 정책 조회의 토큰 오류는 기능 정책을 알 수 없으므로 503이다.
+                for ((code, expected) in listOf(401 to 503, 404 to 404, 409 to 409, 503 to 503, 201 to 502)) {
                     requests.clear()
                     expoStatus = code
                     submit().andExpect(status().`is`(expected))
@@ -365,7 +366,7 @@ class RegistrationIntegrationContractTests {
                         assertEquals("GET", exchange.requestMethod)
                         assertEquals("expo-token", exchange.requestHeaders.getFirst("X-Internal-Token"))
                         200 to
-                            """{"startedDay":"$startedDay","finishedDay":"$startedDay","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
+                            """{"features":${ExpoFeatureFixtures.json()},"startedDay":"$startedDay","finishedDay":"$startedDay","participantPhoneVerificationRequired":false,"participantPhoneVerificationRevision":0}"""
                     }
 
                     path.startsWith("/internal/forms/") -> {
